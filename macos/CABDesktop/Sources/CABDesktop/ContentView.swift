@@ -143,27 +143,32 @@ struct ContentView: View {
                     HStack {
                         Button("默认浏览器登录") { store.loginInDefaultBrowser(account.name) }
                             .buttonStyle(.borderedProminent)
-                        Button("设备码登录") { store.loginWithDeviceCode(account.name) }
-                            .help("显示一次性代码，并自动在系统默认浏览器打开官方登录页面")
                         Menu {
+                            Button {
+                                store.loginWithDeviceCode(account.name)
+                            } label: {
+                                Label("系统默认浏览器", systemImage: "safari")
+                            }
+                            Divider()
                             if store.availablePrivateBrowsers.isEmpty {
                                 Text("未检测到 Chrome、Edge、Brave 或 Firefox")
                             } else {
-                                ForEach(store.availablePrivateBrowsers) { browser in
-                                    Button(browser.title) { store.loginPrivately(account.name, browser: browser) }
+                                Section("无痕窗口") {
+                                    ForEach(store.availablePrivateBrowsers) { browser in
+                                        Button(browser.title) { store.loginPrivately(account.name, browser: browser) }
+                                    }
                                 }
                             }
                         } label: {
-                            Label("无痕登录", systemImage: "eye.slash")
+                            Label("设备码登录", systemImage: "key.horizontal")
                         }
-                        .disabled(store.availablePrivateBrowsers.isEmpty)
-                        .help("使用设备码流程，并在所选浏览器的无痕窗口打开官方登录页面")
+                        .help("先选择系统默认浏览器或已安装浏览器的无痕窗口")
                         Spacer()
                         Button("设为默认") { store.setDefault(account.name) }.disabled(account.default)
                         Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
                         Button("移除登记", role: .destructive) { store.remove(account.name) }
                     }
-                    Text("设备码登录会自动打开默认浏览器；无痕登录会打开所选浏览器的私人窗口。两者都需输入上方显示的一次性代码。")
+                    Text("设备码登录会先让你选择默认浏览器或无痕窗口，再打开官方页面并显示一次性代码。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -122,8 +122,7 @@ open "dist/CodexAccountBridge.app"
 账号登录提供三种入口：
 
 - 默认浏览器登录：执行官方 `codex login`，由 Codex 打开系统默认浏览器。
-- 设备码登录：执行官方 `codex login --device-auth`，显示短期有效的网址和一次性代码，并由桌面端在 Mac 的默认浏览器打开官方页面；也可在任意设备或任意浏览器中手动打开网址、输入代码并选择账号。
-- 无痕登录：使用同一官方设备码流程，检测输出中的 OpenAI/ChatGPT 官方 HTTPS 地址，并让用户选择 Chrome、Edge、Brave 或 Firefox 的无痕窗口打开。Safari 可手动使用“设备码登录”并在私人浏览窗口输入网址。
+- 设备码登录：先在菜单中明确选择系统默认浏览器，或 Chrome、Edge、Brave、Firefox 的无痕窗口；随后执行官方 `codex login --device-auth`，显示短期有效的网址和一次性代码并打开官方页面。Safari 可手动在私人浏览窗口输入网址。
 
 无痕登录不会绕过官方认证，也不会让应用看到浏览器 Cookie、密码或最终令牌。一次性代码只显示在当前操作输出中，不写入 CAB 配置。
 
