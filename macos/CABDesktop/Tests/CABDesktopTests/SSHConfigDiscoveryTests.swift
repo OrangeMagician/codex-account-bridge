@@ -30,5 +30,6 @@ struct SSHConfigDiscoveryTests {
         let service = CABService()
         #expect(service.officialLoginURL(in: "Open https://example.com/device") == nil)
         #expect(service.officialLoginURL(in: "Open https://auth.openai.com/codex/device and enter the code")?.absoluteString == "https://auth.openai.com/codex/device")
+        #expect(service.officialLoginURL(in: "Open \u{001B}[94mhttps://auth.openai.com/codex/device\u{001B}[0m now")?.absoluteString == "https://auth.openai.com/codex/device")
     }
 }

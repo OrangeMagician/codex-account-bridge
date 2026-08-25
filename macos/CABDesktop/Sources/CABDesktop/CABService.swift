@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 private final class CommandOutputBuffer: @unchecked Sendable {
@@ -113,15 +114,26 @@ final class CABService {
     }
 
     func officialLoginURL(in text: String) -> URL? {
+        let sanitized = text.replacingOccurrences(
+            of: "\u{001B}\\[[0-?]*[ -/]*[@-~]",
+            with: "",
+            options: .regularExpression
+        )
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
-        let range = NSRange(text.startIndex..., in: text)
-        for match in detector.matches(in: text, options: [], range: range) {
+        let range = NSRange(sanitized.startIndex..., in: sanitized)
+        for match in detector.matches(in: sanitized, options: [], range: range) {
             guard let url = match.url, url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { continue }
             if host == "openai.com" || host.hasSuffix(".openai.com") || host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") {
                 return url
             }
         }
         return nil
+    }
+
+    func openDefaultBrowser(url: URL) throws {
+        guard NSWorkspace.shared.open(url) else {
+            throw BridgeError.commandFailed("无法打开系统默认浏览器。")
+        }
     }
 
     func openPrivateBrowser(_ browser: PrivateBrowser, url: URL) throws {

@@ -1,6 +1,11 @@
 import Foundation
 import SwiftUI
 
+private enum LoginBrowser {
+    case systemDefault
+    case privateWindow(PrivateBrowser)
+}
+
 @MainActor
 final class CABStore: ObservableObject {
     @Published var target: BridgeTarget = .local
@@ -21,8 +26,8 @@ final class CABStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private let remoteServersKey = "remoteServers.v1"
     private let selectedRemoteKey = "selectedRemoteServer.v1"
-    private var privateLoginBuffer = ""
-    private var privateBrowserOpened = false
+    private var loginOutputBuffer = ""
+    private var loginBrowserOpened = false
 
     init() {
         if let data = defaults.data(forKey: remoteServersKey),
@@ -132,9 +137,11 @@ final class CABStore: ObservableObject {
     }
 
     func loginInDefaultBrowser(_ name: String) { run(["login", name]) }
-    func loginWithDeviceCode(_ name: String) { run(["login", "--device-auth", name]) }
+    func loginWithDeviceCode(_ name: String) {
+        run(["login", "--device-auth", name], loginBrowser: .systemDefault)
+    }
     func loginPrivately(_ name: String, browser: PrivateBrowser) {
-        run(["login", "--device-auth", name], privateBrowser: browser)
+        run(["login", "--device-auth", name], loginBrowser: .privateWindow(browser))
     }
 
     func setDefault(_ name: String) { run(["use", name]) }
@@ -223,16 +230,16 @@ final class CABStore: ObservableObject {
 
     private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
 
-    private func run(_ arguments: [String], privateBrowser: PrivateBrowser? = nil, afterSuccess: (() -> Void)? = nil) {
+    private func run(_ arguments: [String], loginBrowser: LoginBrowser? = nil, afterSuccess: (() -> Void)? = nil) {
         guard !isBusy else { return }
         Task {
             isBusy = true
             output = "$ cab \(arguments.joined(separator: " "))\n"
-            privateLoginBuffer = ""
-            privateBrowserOpened = false
+            loginOutputBuffer = ""
+            loginBrowserOpened = false
             do {
                 let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
-                    Task { @MainActor in self?.receiveOutput(chunk, privateBrowser: privateBrowser) }
+                    Task { @MainActor in self?.receiveOutput(chunk, loginBrowser: loginBrowser) }
                 }
                 if result.exitCode != 0 {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
@@ -246,17 +253,25 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func receiveOutput(_ chunk: String, privateBrowser: PrivateBrowser?) {
+    private func receiveOutput(_ chunk: String, loginBrowser: LoginBrowser?) {
         output += chunk
-        guard let privateBrowser, !privateBrowserOpened else { return }
-        privateLoginBuffer += chunk
-        guard let url = service.officialLoginURL(in: privateLoginBuffer) else { return }
+        guard let loginBrowser, !loginBrowserOpened else { return }
+        loginOutputBuffer += chunk
+        guard let url = service.officialLoginURL(in: loginOutputBuffer) else { return }
         do {
-            try service.openPrivateBrowser(privateBrowser, url: url)
-            privateBrowserOpened = true
-            output += "\n已在 \(privateBrowser.title) 无痕窗口打开官方设备登录页面。\n"
+            let destination: String
+            switch loginBrowser {
+            case .systemDefault:
+                try service.openDefaultBrowser(url: url)
+                destination = "系统默认浏览器"
+            case let .privateWindow(browser):
+                try service.openPrivateBrowser(browser, url: url)
+                destination = "\(browser.title) 无痕窗口"
+            }
+            loginBrowserOpened = true
+            output += "\n已在\(destination)打开官方设备登录页面，请输入上方的一次性代码。\n"
         } catch {
-            privateBrowserOpened = true
+            loginBrowserOpened = true
             errorMessage = error.localizedDescription
         }
     }

@@ -144,7 +144,7 @@ struct ContentView: View {
                         Button("默认浏览器登录") { store.loginInDefaultBrowser(account.name) }
                             .buttonStyle(.borderedProminent)
                         Button("设备码登录") { store.loginWithDeviceCode(account.name) }
-                            .help("显示一次性网址和代码，可在任意浏览器中完成登录")
+                            .help("显示一次性代码，并自动在系统默认浏览器打开官方登录页面")
                         Menu {
                             if store.availablePrivateBrowsers.isEmpty {
                                 Text("未检测到 Chrome、Edge、Brave 或 Firefox")
@@ -163,7 +163,7 @@ struct ContentView: View {
                         Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
                         Button("移除登记", role: .destructive) { store.remove(account.name) }
                     }
-                    Text("设备码登录会显示一个短期有效的网址和一次性代码，适合远程服务器或浏览器已登录其他账号的情况。")
+                    Text("设备码登录会自动打开默认浏览器；无痕登录会打开所选浏览器的私人窗口。两者都需输入上方显示的一次性代码。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
