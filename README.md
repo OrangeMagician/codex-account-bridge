@@ -1,6 +1,6 @@
 # codex-account-bridge
 
-`codex-account-bridge`（命令名 `cab`）是在 macOS 和 Linux 上管理多个官方 Codex 登录的安全型开源 CLI。它不实现 OAuth、不代理模型流量、不复制令牌，也不会自动轮换账号规避额度限制。
+`codex-account-bridge`（命令名 `cab`）是在 macOS 和 Linux 上管理多个官方 Codex 登录的安全型开源工具，包含 CLI 与原生 macOS 管理界面。它不实现 OAuth、不代理模型流量、不复制令牌，也不会根据额度或错误自动切换账号。
 
 > 当前状态：早期预览。请先在非关键账号和仓库中验证，再用于日常工作。
 
@@ -12,7 +12,7 @@
 - 不读取或解析 `auth.json` 内容；状态检查只查看文件是否存在及权限。
 - 不添加 `--dangerously-bypass-approvals-and-sandbox`。
 - 不修改项目 trust 配置。
-- 不探测额度、不自动换号。
+- 不探测额度，不因限额、认证失败或运行错误切换账号；用户可以明确配置“每次新启动轮换”。
 - 只有双重确认后才共享 `sessions/`，从不共享 `auth.json`、`config.toml` 或 SQLite/WAL。
 - 配置原子写入、保留上一版 `.backup` 并强制 `0600`；配置与账号目录拒绝符号链接并限制为 `0700`。
 - 运行官方 Codex 时不经过 shell，参数保持原样。
@@ -78,6 +78,37 @@ cab sessions disable --confirm-codex-stopped
 
 迁移遇到同路径但内容不同的会话会立即停止，不覆盖任何一方。启用共享时原目录会保留为带时间戳的 `.cab-backup-*`，用于人工恢复。
 
+## 用户配置的新启动轮换
+
+轮换默认关闭。它只在没有显式传入 `--account` 的 `cab run` 启动前，按用户保存的顺序选择下一个账号；不会读取额度，也不会在限额、认证失败或其他错误后自动重试或切换正在运行的任务：
+
+```bash
+cab rotation configure --accounts personal,work
+cab rotation enable
+cab rotation status
+
+# 每次新执行依次使用 personal、work、personal……
+cab run
+
+# 显式账号始终优先，且不会推进轮换位置
+cab run --account work
+
+cab rotation disable
+```
+
+同时启动多个 `cab run` 时，轮换位置通过权限为 `0600` 的本地文件锁串行更新。轮换只选择登录身份，不共享历史会话；会话继承仍需单独执行上面的双重确认流程。
+
+## macOS 可视化界面
+
+`CAB Desktop` 是原生 SwiftUI 管理界面，可管理本机或 SSH 主机上的账号、官方登录、默认/Remote 账号和轮换顺序。它调用 `cab` 的结构化状态接口，不读取 `auth.json` 内容。
+
+```bash
+make macos-app
+open "dist/CAB Desktop.app"
+```
+
+可以保存多个远程服务器并在侧边栏切换管理。服务器显示名称和 SSH 主机只存入当前 Mac 的 UserDefaults，不进入项目配置；远程主机需要能在登录 PATH 中直接执行 `cab`。隐私边界见 [docs/PRIVACY.md](docs/PRIVACY.md)。
+
 ## 手机 Remote → Mac → Ubuntu
 
 官方支持手机连接 Mac/Windows 桌面版，再由桌面版通过 SSH 启动 Ubuntu 上的 Codex app-server。详细步骤见 [docs/REMOTE.md](docs/REMOTE.md)。Ubuntu 侧的核心步骤是：
@@ -116,7 +147,7 @@ cab doctor
 
 ## 不提供的功能
 
-- 自动探测额度或自动轮换账号。
+- 自动探测额度、按限额/错误切号或失败后换号重试。
 - 第三方 OpenAI-compatible 代理配置。
 - OAuth 实现、令牌导入导出、网页令牌面板。
 - 多机器实时同步内部状态数据库。

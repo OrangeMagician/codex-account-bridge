@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/OrangeMagician/codex-account-bridge/internal/codex"
@@ -77,9 +79,13 @@ func Run(argv []string, version string) (int, error) {
 	case "login":
 		return loginCommand(cfg, args)
 	case "run":
-		return runCommand(cfg, args, false)
+		return runCommand(paths, cfg, args, false)
 	case "app-server":
-		return runCommand(cfg, args, true)
+		return runCommand(paths, cfg, args, true)
+	case "rotation":
+		return rotationCommand(paths, &cfg, args)
+	case "status":
+		return statusCommand(cfg, args)
 	case "sessions":
 		return sessionsCommand(paths, &cfg, args)
 	case "shim":
@@ -105,6 +111,10 @@ Commands:
   cab login [--device-auth] NAME
   cab run [--account NAME] -- [codex arguments]
   cab app-server [--account NAME] -- [app-server arguments]
+  cab status [--json]
+  cab rotation status [--json]
+  cab rotation configure --accounts NAME,NAME
+  cab rotation enable|disable|reset
   cab remote use NAME
   cab sessions enable --acknowledge-cross-account-context --confirm-codex-stopped
   cab sessions disable --confirm-codex-stopped
@@ -113,8 +123,8 @@ Commands:
   cab doctor
   cab version
 
-Safety defaults: no quota rotation, no proxy, no auth copying, no automatic
-project trust, and no approval/sandbox bypass flags.
+Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
+no proxy, auth copying, automatic project trust, or approval/sandbox bypass.
 `)
 }
 
@@ -177,13 +187,7 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 		if _, ok := cfg.Find(name); !ok {
 			return 2, fmt.Errorf("unknown account %q", name)
 		}
-		next := cfg.Accounts[:0]
-		for _, account := range cfg.Accounts {
-			if !strings.EqualFold(account.Name, name) {
-				next = append(next, account)
-			}
-		}
-		cfg.Accounts = next
+		cfg.Remove(name)
 		if strings.EqualFold(cfg.DefaultAccount, name) {
 			cfg.DefaultAccount = ""
 			if len(cfg.Accounts) > 0 {
@@ -254,13 +258,22 @@ func loginCommand(cfg config.Config, args []string) (int, error) {
 	return codex.Run(account.Home, loginArgs)
 }
 
-func runCommand(cfg config.Config, args []string, appServer bool) (int, error) {
+func runCommand(paths config.Paths, cfg config.Config, args []string, appServer bool) (int, error) {
 	flags := newFlags("run")
 	accountName := flags.String("account", "", "configured account name")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
 	}
-	account, err := selectedAccount(cfg, firstNonEmpty(*accountName, cfg.DefaultAccount))
+	var account config.Account
+	var err error
+	if *accountName == "" && !appServer && cfg.Rotation.Enabled {
+		account, err = takeNextRotationAccount(paths)
+		if err == nil {
+			fmt.Printf("rotation selected account: %s\n", account.Name)
+		}
+	} else {
+		account, err = selectedAccount(cfg, firstNonEmpty(*accountName, cfg.DefaultAccount))
+	}
 	if err != nil {
 		return 2, err
 	}
@@ -269,6 +282,186 @@ func runCommand(cfg config.Config, args []string, appServer bool) (int, error) {
 		commandArgs = append([]string{"app-server"}, commandArgs...)
 	}
 	return codex.Run(account.Home, commandArgs)
+}
+
+func rotationCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {
+	if len(args) == 0 {
+		return 2, errors.New("rotation requires status, configure, enable, disable, or reset")
+	}
+	switch args[0] {
+	case "status":
+		flags := newFlags("rotation status")
+		jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+			return 2, errors.New("usage: cab rotation status [--json]")
+		}
+		if *jsonOutput {
+			return printJSON(cfg.Rotation)
+		}
+		state := "disabled"
+		if cfg.Rotation.Enabled {
+			state = "enabled"
+		}
+		next := "-"
+		if len(cfg.Rotation.Accounts) > 0 {
+			next = cfg.Rotation.Accounts[cfg.Rotation.NextIndex]
+		}
+		fmt.Printf("rotation: %s\naccounts: %s\nnext: %s\n", state, strings.Join(cfg.Rotation.Accounts, ", "), next)
+		return 0, nil
+	case "configure":
+		flags := newFlags("rotation configure")
+		accounts := flags.String("accounts", "", "comma-separated account names in launch order")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 || strings.TrimSpace(*accounts) == "" {
+			return 2, errors.New("usage: cab rotation configure --accounts NAME,NAME")
+		}
+		names := splitAccountNames(*accounts)
+		if err := cfg.SetRotationAccounts(names); err != nil {
+			return 2, err
+		}
+		if err := config.Save(paths, *cfg); err != nil {
+			return 1, err
+		}
+		fmt.Printf("rotation order: %s\n", strings.Join(cfg.Rotation.Accounts, ", "))
+		return 0, nil
+	case "enable":
+		if len(args) != 1 {
+			return 2, errors.New("usage: cab rotation enable")
+		}
+		if len(cfg.Rotation.Accounts) < 2 {
+			return 2, errors.New("configure at least two rotation accounts first")
+		}
+		cfg.Rotation.Enabled = true
+		if err := config.Save(paths, *cfg); err != nil {
+			return 1, err
+		}
+		fmt.Println("launch rotation enabled; quota and errors never trigger switching")
+		return 0, nil
+	case "disable":
+		if len(args) != 1 {
+			return 2, errors.New("usage: cab rotation disable")
+		}
+		cfg.Rotation.Enabled = false
+		if err := config.Save(paths, *cfg); err != nil {
+			return 1, err
+		}
+		fmt.Println("launch rotation disabled")
+		return 0, nil
+	case "reset":
+		if len(args) != 1 {
+			return 2, errors.New("usage: cab rotation reset")
+		}
+		cfg.Rotation.NextIndex = 0
+		if err := config.Save(paths, *cfg); err != nil {
+			return 1, err
+		}
+		fmt.Println("rotation reset to the first configured account")
+		return 0, nil
+	default:
+		return 2, fmt.Errorf("unknown rotation command %q", args[0])
+	}
+}
+
+type statusAccount struct {
+	Name    string `json:"name"`
+	Home    string `json:"home"`
+	Login   string `json:"login"`
+	Default bool   `json:"default"`
+	Remote  bool   `json:"remote"`
+}
+
+type statusOutput struct {
+	DefaultAccount string          `json:"default_account,omitempty"`
+	RemoteAccount  string          `json:"remote_account,omitempty"`
+	SharedSessions bool            `json:"shared_sessions"`
+	Rotation       config.Rotation `json:"rotation"`
+	Accounts       []statusAccount `json:"accounts"`
+}
+
+func statusCommand(cfg config.Config, args []string) (int, error) {
+	flags := newFlags("status")
+	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+	if err := flags.Parse(args); err != nil {
+		return 2, err
+	}
+	if flags.NArg() != 0 {
+		return 2, errors.New("usage: cab status [--json]")
+	}
+	status := statusOutput{DefaultAccount: cfg.DefaultAccount, RemoteAccount: cfg.RemoteAccount, SharedSessions: cfg.SharedSessionsDir != "", Rotation: cfg.Rotation, Accounts: make([]statusAccount, 0, len(cfg.Accounts))}
+	for _, account := range cfg.Accounts {
+		status.Accounts = append(status.Accounts, statusAccount{Name: account.Name, Home: account.Home, Login: authStatus(account.Home), Default: strings.EqualFold(cfg.DefaultAccount, account.Name), Remote: strings.EqualFold(cfg.RemoteAccount, account.Name)})
+	}
+	if *jsonOutput {
+		return printJSON(status)
+	}
+	fmt.Printf("default: %s\nremote: %s\nsession sharing: %t\nrotation: %t\n", cfg.DefaultAccount, cfg.RemoteAccount, status.SharedSessions, cfg.Rotation.Enabled)
+	return 0, nil
+}
+
+func takeNextRotationAccount(paths config.Paths) (config.Account, error) {
+	if err := config.EnsureConfigDir(paths); err != nil {
+		return config.Account{}, err
+	}
+	lockPath := filepath.Join(paths.ConfigDir, "rotation.lock")
+	if info, err := os.Lstat(lockPath); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
+		return config.Account{}, fmt.Errorf("refusing unsafe rotation lock: %s", lockPath)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return config.Account{}, err
+	}
+	fd, err := syscall.Open(lockPath, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return config.Account{}, err
+	}
+	lock := os.NewFile(uintptr(fd), lockPath)
+	defer lock.Close()
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(fd, &stat); err != nil {
+		return config.Account{}, err
+	}
+	if stat.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		return config.Account{}, fmt.Errorf("rotation lock is not a regular file: %s", lockPath)
+	}
+	if err := lock.Chmod(0o600); err != nil {
+		return config.Account{}, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return config.Account{}, err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	latest, err := config.Load(paths)
+	if err != nil {
+		return config.Account{}, err
+	}
+	account, err := latest.NextRotationAccount()
+	if err != nil {
+		return config.Account{}, err
+	}
+	if err := config.Save(paths, latest); err != nil {
+		return config.Account{}, err
+	}
+	return account, nil
+}
+
+func splitAccountNames(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if name := strings.TrimSpace(part); name != "" {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+func printJSON(value any) (int, error) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return 1, err
+	}
+	fmt.Println(string(data))
+	return 0, nil
 }
 
 func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {

@@ -21,11 +21,18 @@ type Account struct {
 	Home string `json:"home"`
 }
 
+type Rotation struct {
+	Enabled   bool     `json:"enabled"`
+	Accounts  []string `json:"accounts,omitempty"`
+	NextIndex int      `json:"next_index,omitempty"`
+}
+
 type Config struct {
 	Version           int       `json:"version"`
 	DefaultAccount    string    `json:"default_account,omitempty"`
 	RemoteAccount     string    `json:"remote_account,omitempty"`
 	SharedSessionsDir string    `json:"shared_sessions_dir,omitempty"`
+	Rotation          Rotation  `json:"rotation,omitempty"`
 	Accounts          []Account `json:"accounts"`
 }
 
@@ -185,7 +192,8 @@ func secureDir(path string) error {
 	return os.Chmod(path, 0o700)
 }
 
-func EnsureDataDir(paths Paths) error { return secureDir(paths.DataDir) }
+func EnsureDataDir(paths Paths) error   { return secureDir(paths.DataDir) }
+func EnsureConfigDir(paths Paths) error { return secureDir(paths.ConfigDir) }
 
 func (cfg Config) Validate() error {
 	if cfg.Version != CurrentVersion {
@@ -219,6 +227,27 @@ func (cfg Config) Validate() error {
 			return fmt.Errorf("selected account %q is not configured", selected)
 		}
 	}
+	rotationNames := make(map[string]bool)
+	for _, selected := range cfg.Rotation.Accounts {
+		key := strings.ToLower(selected)
+		if !names[key] {
+			return fmt.Errorf("rotation account %q is not configured", selected)
+		}
+		if rotationNames[key] {
+			return fmt.Errorf("duplicate rotation account %q", selected)
+		}
+		rotationNames[key] = true
+	}
+	if cfg.Rotation.Enabled && len(cfg.Rotation.Accounts) < 2 {
+		return errors.New("rotation requires at least two configured accounts")
+	}
+	if len(cfg.Rotation.Accounts) == 0 {
+		if cfg.Rotation.NextIndex != 0 {
+			return errors.New("rotation next index must be zero when no accounts are configured")
+		}
+	} else if cfg.Rotation.NextIndex < 0 || cfg.Rotation.NextIndex >= len(cfg.Rotation.Accounts) {
+		return fmt.Errorf("rotation next index %d is out of range", cfg.Rotation.NextIndex)
+	}
 	return nil
 }
 
@@ -241,6 +270,68 @@ func (cfg *Config) Add(account Account) error {
 		cfg.DefaultAccount = account.Name
 	}
 	return cfg.Validate()
+}
+
+func (cfg *Config) Remove(name string) {
+	next := cfg.Accounts[:0]
+	for _, account := range cfg.Accounts {
+		if !strings.EqualFold(account.Name, name) {
+			next = append(next, account)
+		}
+	}
+	cfg.Accounts = next
+	rotation := cfg.Rotation.Accounts[:0]
+	for _, selected := range cfg.Rotation.Accounts {
+		if !strings.EqualFold(selected, name) {
+			rotation = append(rotation, selected)
+		}
+	}
+	cfg.Rotation.Accounts = rotation
+	if len(rotation) < 2 {
+		cfg.Rotation.Enabled = false
+	}
+	if len(rotation) == 0 || cfg.Rotation.NextIndex >= len(rotation) {
+		cfg.Rotation.NextIndex = 0
+	}
+}
+
+func (cfg *Config) SetRotationAccounts(names []string) error {
+	canonical := make([]string, 0, len(names))
+	seen := make(map[string]bool)
+	for _, name := range names {
+		account, ok := cfg.Find(name)
+		if !ok {
+			return fmt.Errorf("unknown account %q", name)
+		}
+		key := strings.ToLower(account.Name)
+		if seen[key] {
+			return fmt.Errorf("duplicate rotation account %q", account.Name)
+		}
+		seen[key] = true
+		canonical = append(canonical, account.Name)
+	}
+	cfg.Rotation.Accounts = canonical
+	cfg.Rotation.NextIndex = 0
+	if len(canonical) < 2 {
+		cfg.Rotation.Enabled = false
+	}
+	return cfg.Validate()
+}
+
+func (cfg *Config) NextRotationAccount() (Account, error) {
+	if !cfg.Rotation.Enabled {
+		return Account{}, errors.New("rotation is disabled")
+	}
+	if len(cfg.Rotation.Accounts) < 2 {
+		return Account{}, errors.New("rotation requires at least two configured accounts")
+	}
+	name := cfg.Rotation.Accounts[cfg.Rotation.NextIndex]
+	account, ok := cfg.Find(name)
+	if !ok {
+		return Account{}, fmt.Errorf("rotation account %q is not configured", name)
+	}
+	cfg.Rotation.NextIndex = (cfg.Rotation.NextIndex + 1) % len(cfg.Rotation.Accounts)
+	return account, nil
 }
 
 func ExpandPath(value string) (string, error) {

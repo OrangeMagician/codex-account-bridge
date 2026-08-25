@@ -2,4 +2,13 @@
 /dist/
 *.test
 .DS_Store
-
+/macos/CABDesktop/.build/
+/macos/CABDesktop/.swiftpm/
+**/auth.json
+**/config.toml
+.env
+.env.*
+*.local.json
+*.private.json
+*.pem
+*.key

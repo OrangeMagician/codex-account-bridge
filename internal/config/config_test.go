@@ -71,3 +71,55 @@ func TestValidateRejectsDuplicateHomes(t *testing.T) {
 		t.Fatal("expected duplicate home rejection")
 	}
 }
+
+func TestRotationRoundRobinAndValidation(t *testing.T) {
+	root := t.TempDir()
+	cfg := Empty()
+	cfg.Accounts = []Account{
+		{Name: "one", Home: filepath.Join(root, "one")},
+		{Name: "two", Home: filepath.Join(root, "two")},
+	}
+	if err := cfg.SetRotationAccounts([]string{"two", "one"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Rotation.Enabled = true
+	first, err := cfg.NextRotationAccount()
+	if err != nil || first.Name != "two" {
+		t.Fatalf("first rotation = %q, err=%v", first.Name, err)
+	}
+	second, err := cfg.NextRotationAccount()
+	if err != nil || second.Name != "one" {
+		t.Fatalf("second rotation = %q, err=%v", second.Name, err)
+	}
+	third, err := cfg.NextRotationAccount()
+	if err != nil || third.Name != "two" {
+		t.Fatalf("wrapped rotation = %q, err=%v", third.Name, err)
+	}
+	if err := cfg.SetRotationAccounts([]string{"one", "missing"}); err == nil {
+		t.Fatal("expected unknown rotation account rejection")
+	}
+}
+
+func TestRemovingRotationAccountDisablesUnsafeRotation(t *testing.T) {
+	root := t.TempDir()
+	cfg := Empty()
+	cfg.Accounts = []Account{
+		{Name: "one", Home: filepath.Join(root, "one")},
+		{Name: "two", Home: filepath.Join(root, "two")},
+	}
+	if err := cfg.SetRotationAccounts([]string{"one", "two"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Rotation.Enabled = true
+	cfg.Rotation.NextIndex = 1
+	cfg.Remove("two")
+	if cfg.Rotation.Enabled {
+		t.Fatal("rotation should be disabled with fewer than two accounts")
+	}
+	if cfg.Rotation.NextIndex != 0 {
+		t.Fatalf("next index = %d, want 0", cfg.Rotation.NextIndex)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,4 +1,4 @@
-.PHONY: check build release clean
+.PHONY: check build macos-app release clean
 
 VERSION ?= dev
 LDFLAGS := -s -w -X main.version=$(VERSION)
@@ -12,9 +12,11 @@ build:
 	mkdir -p bin
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/cab ./cmd/cab
 
+macos-app:
+	./scripts/build-macos-app.sh
+
 release:
 	./scripts/build-release.sh "$(VERSION)"
 
 clean:
 	rm -rf bin dist
-
