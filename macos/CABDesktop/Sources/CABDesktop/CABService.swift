@@ -117,8 +117,12 @@ final class CABService {
         try SSHConfigDiscovery().discover()
     }
 
-    func installedPrivateBrowsers() -> [PrivateBrowser] {
-        PrivateBrowser.allCases.filter { browserApplicationURL($0) != nil }
+    func installedBrowsers() -> [BrowserChoice] {
+        BrowserChoice.allCases.filter { browserApplicationURL($0) != nil }
+    }
+
+    func installedPrivateBrowsers() -> [BrowserChoice] {
+        installedBrowsers().filter { $0.privateArgument != nil }
     }
 
     func officialLoginURL(in text: String) -> URL? {
@@ -151,14 +155,25 @@ final class CABService {
         }
     }
 
-    func openPrivateBrowser(_ browser: PrivateBrowser, url: URL) throws {
+    func openBrowser(_ browser: BrowserChoice, url: URL, privateWindow: Bool) throws {
         guard let application = browserApplicationURL(browser) else {
             throw BridgeError.commandFailed("未找到 \(browser.title)。")
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-na", application.path, "--args", browser.privateArgument, url.absoluteString]
+        if privateWindow {
+            guard let privateArgument = browser.privateArgument else {
+                throw BridgeError.commandFailed("\(browser.title) 不支持由 CAB 自动打开私人窗口。")
+            }
+            process.arguments = ["-na", application.path, "--args", privateArgument, url.absoluteString]
+        } else {
+            process.arguments = ["-a", application.path, url.absoluteString]
+        }
         try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw BridgeError.commandFailed("无法在 \(browser.title) 打开登录页面。")
+        }
     }
 
     private func cabExecutable() -> URL? {
@@ -174,7 +189,7 @@ final class CABService {
         return candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
     }
 
-    private func browserApplicationURL(_ browser: PrivateBrowser) -> URL? {
+    private func browserApplicationURL(_ browser: BrowserChoice) -> URL? {
         let roots = [URL(fileURLWithPath: "/Applications"), fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
         for root in roots {
             for name in browser.applicationNames {

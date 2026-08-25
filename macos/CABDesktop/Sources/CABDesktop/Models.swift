@@ -83,7 +83,8 @@ enum BridgeTarget: String, CaseIterable, Identifiable {
     var icon: String { self == .local ? "laptopcomputer" : "server.rack" }
 }
 
-enum PrivateBrowser: String, CaseIterable, Identifiable {
+enum BrowserChoice: String, CaseIterable, Identifiable {
+    case safari
     case chrome
     case edge
     case brave
@@ -92,6 +93,7 @@ enum PrivateBrowser: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .safari: return "Safari"
         case .chrome: return "Google Chrome"
         case .edge: return "Microsoft Edge"
         case .brave: return "Brave Browser"
@@ -101,6 +103,7 @@ enum PrivateBrowser: String, CaseIterable, Identifiable {
 
     var applicationNames: [String] {
         switch self {
+        case .safari: return ["Safari.app"]
         case .chrome: return ["Google Chrome.app"]
         case .edge: return ["Microsoft Edge.app"]
         case .brave: return ["Brave Browser.app"]
@@ -108,8 +111,9 @@ enum PrivateBrowser: String, CaseIterable, Identifiable {
         }
     }
 
-    var privateArgument: String {
+    var privateArgument: String? {
         switch self {
+        case .safari: return nil
         case .edge: return "--inprivate"
         case .firefox: return "-private-window"
         case .chrome, .brave: return "--incognito"

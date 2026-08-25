@@ -144,6 +144,15 @@ struct ContentView: View {
                         Button("默认浏览器登录") { store.loginInDefaultBrowser(account.name) }
                             .buttonStyle(.borderedProminent)
                         Menu {
+                            ForEach(store.availableBrowsers) { browser in
+                                Button(browser.title) { store.loginInBrowser(account.name, browser: browser) }
+                            }
+                        } label: {
+                            Label("指定浏览器登录", systemImage: "globe")
+                        }
+                        .disabled(store.availableBrowsers.isEmpty)
+                        .help("使用普通 ChatGPT OAuth，在所选浏览器的普通窗口登录")
+                        Menu {
                             if store.availablePrivateBrowsers.isEmpty {
                                 Text("未检测到 Chrome、Edge、Brave 或 Firefox")
                             } else {
@@ -159,11 +168,14 @@ struct ContentView: View {
                         Button("设备码登录") { store.loginWithDeviceCode(account.name) }
                             .help("仅用于远程或无浏览器环境，需要在 ChatGPT 安全设置中启用设备代码授权")
                         Spacer()
+                    }
+                    HStack {
+                        Spacer()
                         Button("设为默认") { store.setDefault(account.name) }.disabled(account.default)
                         Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
                         Button("移除登记", role: .destructive) { store.remove(account.name) }
                     }
-                    Text("无痕浏览器登录使用普通 ChatGPT OAuth，不需要启用设备码授权；设备码仅作为无浏览器环境的备用方式。")
+                    Text("指定浏览器和无痕浏览器登录都使用普通 ChatGPT OAuth；设备码仅作为无浏览器环境的备用方式。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

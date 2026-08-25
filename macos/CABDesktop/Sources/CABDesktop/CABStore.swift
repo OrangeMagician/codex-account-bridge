@@ -3,7 +3,7 @@ import SwiftUI
 
 private enum LoginBrowser {
     case systemDefault
-    case privateWindow(PrivateBrowser)
+    case selected(BrowserChoice, privateWindow: Bool)
 }
 
 @MainActor
@@ -59,7 +59,11 @@ final class CABStore: ObservableObject {
         status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
     }
 
-    var availablePrivateBrowsers: [PrivateBrowser] {
+    var availableBrowsers: [BrowserChoice] {
+        service.installedBrowsers()
+    }
+
+    var availablePrivateBrowsers: [BrowserChoice] {
         service.installedPrivateBrowsers()
     }
 
@@ -140,8 +144,11 @@ final class CABStore: ObservableObject {
     func loginWithDeviceCode(_ name: String) {
         run(["login", "--device-auth", name], loginBrowser: .systemDefault)
     }
-    func loginPrivately(_ name: String, browser: PrivateBrowser) {
-        run(["login", "--browser-auth", name], loginBrowser: .privateWindow(browser))
+    func loginInBrowser(_ name: String, browser: BrowserChoice) {
+        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: false))
+    }
+    func loginPrivately(_ name: String, browser: BrowserChoice) {
+        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: true))
     }
 
     func setDefault(_ name: String) { run(["use", name]) }
@@ -264,9 +271,9 @@ final class CABStore: ObservableObject {
             case .systemDefault:
                 try service.openDefaultBrowser(url: url)
                 destination = "系统默认浏览器"
-            case let .privateWindow(browser):
-                try service.openPrivateBrowser(browser, url: url)
-                destination = "\(browser.title) 无痕窗口"
+            case let .selected(browser, privateWindow):
+                try service.openBrowser(browser, url: url, privateWindow: privateWindow)
+                destination = privateWindow ? "\(browser.title) 无痕窗口" : browser.title
             }
             loginBrowserOpened = true
             output += "\n已在\(destination)打开官方设备登录页面，请输入上方的一次性代码。\n"

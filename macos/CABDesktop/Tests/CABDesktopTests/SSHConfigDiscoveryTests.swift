@@ -36,4 +36,10 @@ struct SSHConfigDiscoveryTests {
         #expect(service.officialLoginURL(in: "Open \(oauth)")?.absoluteString == oauth)
         #expect(service.officialLoginURL(in: "https://auth.openai.com/oauth/authorize?redirect_uri=https%3A%2F%2Fevil.example%2Fcallback") == nil)
     }
+
+    @Test func safariIsAvailableOnlyForRegularBrowserLogin() {
+        #expect(BrowserChoice.safari.privateArgument == nil)
+        #expect(BrowserChoice.chrome.privateArgument == "--incognito")
+        #expect(BrowserChoice.edge.privateArgument == "--inprivate")
+    }
 }
