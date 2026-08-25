@@ -111,6 +111,26 @@ func Run(home string, args []string) (int, error) {
 	return 1, err
 }
 
+func LoggedIn(home string) (bool, error) {
+	binary, err := FindReal("codex")
+	if err != nil {
+		return false, err
+	}
+	cmd := exec.Command(binary, "login", "status")
+	cmd.Env = environment(home)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	err = cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false, nil
+	}
+	return false, err
+}
+
 func environment(home string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, value := range os.Environ() {

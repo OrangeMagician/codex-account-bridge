@@ -49,3 +49,28 @@ func TestFindRealRejectsSelfOverride(t *testing.T) {
 		t.Fatal("expected self-recursion rejection")
 	}
 }
+
+func TestLoggedInUsesOfficialStatusWithoutReadingCredentials(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	output := filepath.Join(root, "output")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" > \"$CAB_TEST_OUTPUT\"\nprintf '%s\\n' \"$@\" >> \"$CAB_TEST_OUTPUT\"\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_OUTPUT", output)
+	home := filepath.Join(root, "existing")
+	loggedIn, err := LoggedIn(home)
+	if err != nil || !loggedIn {
+		t.Fatalf("loggedIn=%t err=%v", loggedIn, err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := home + "\nlogin\nstatus\n"
+	if string(data) != want {
+		t.Fatalf("output = %q, want %q", data, want)
+	}
+}

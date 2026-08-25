@@ -105,6 +105,7 @@ Secure, explicit account selection for the official Codex CLI.
 Commands:
   cab init
   cab account add [--home PATH] NAME
+  cab account import-current NAME
   cab account list
   cab account remove NAME
   cab use NAME
@@ -130,7 +131,7 @@ no proxy, auth copying, automatic project trust, or approval/sandbox bypass.
 
 func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {
 	if len(args) == 0 {
-		return 2, errors.New("account requires add, list, or remove")
+		return 2, errors.New("account requires add, import-current, list, or remove")
 	}
 	switch args[0] {
 	case "list":
@@ -175,6 +176,37 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 		}
 		fmt.Printf("added %s at %s\n", name, home)
 		fmt.Printf("next: cab login --device-auth %s\n", name)
+		return 0, nil
+	case "import-current":
+		if len(args) != 2 {
+			return 2, errors.New("usage: cab account import-current NAME")
+		}
+		home, err := config.DefaultCodexHome()
+		if err != nil {
+			return 1, err
+		}
+		for _, account := range cfg.Accounts {
+			if filepath.Clean(account.Home) == filepath.Clean(home) {
+				return 2, fmt.Errorf("current Codex home is already registered as %q", account.Name)
+			}
+		}
+		loggedIn, err := codex.LoggedIn(home)
+		if err != nil {
+			return 1, fmt.Errorf("check current Codex login: %w", err)
+		}
+		if !loggedIn {
+			return 2, errors.New("the default Codex home is not logged in")
+		}
+		if err := ensureAccountHome(home); err != nil {
+			return 1, err
+		}
+		if err := cfg.Add(config.Account{Name: args[1], Home: home}); err != nil {
+			return 2, err
+		}
+		if err := config.Save(paths, *cfg); err != nil {
+			return 1, err
+		}
+		fmt.Printf("registered existing Codex login as %s; credentials were not copied\n", args[1])
 		return 0, nil
 	case "remove":
 		if len(args) != 2 {
@@ -377,7 +409,14 @@ type statusOutput struct {
 	RemoteAccount  string          `json:"remote_account,omitempty"`
 	SharedSessions bool            `json:"shared_sessions"`
 	Rotation       config.Rotation `json:"rotation"`
+	CurrentLogin   currentLogin    `json:"current_login"`
 	Accounts       []statusAccount `json:"accounts"`
+}
+
+type currentLogin struct {
+	Home         string `json:"home"`
+	Login        string `json:"login"`
+	RegisteredAs string `json:"registered_as,omitempty"`
 }
 
 func statusCommand(cfg config.Config, args []string) (int, error) {
@@ -392,6 +431,21 @@ func statusCommand(cfg config.Config, args []string) (int, error) {
 	status := statusOutput{DefaultAccount: cfg.DefaultAccount, RemoteAccount: cfg.RemoteAccount, SharedSessions: cfg.SharedSessionsDir != "", Rotation: cfg.Rotation, Accounts: make([]statusAccount, 0, len(cfg.Accounts))}
 	for _, account := range cfg.Accounts {
 		status.Accounts = append(status.Accounts, statusAccount{Name: account.Name, Home: account.Home, Login: authStatus(account.Home), Default: strings.EqualFold(cfg.DefaultAccount, account.Name), Remote: strings.EqualFold(cfg.RemoteAccount, account.Name)})
+	}
+	if home, err := config.DefaultCodexHome(); err == nil {
+		status.CurrentLogin.Home = home
+		status.CurrentLogin.Login = "missing"
+		if loggedIn, loginErr := codex.LoggedIn(home); loginErr == nil && loggedIn {
+			status.CurrentLogin.Login = "present"
+		} else if loginErr != nil {
+			status.CurrentLogin.Login = "unknown"
+		}
+		for _, account := range cfg.Accounts {
+			if filepath.Clean(account.Home) == filepath.Clean(home) {
+				status.CurrentLogin.RegisteredAs = account.Name
+				break
+			}
+		}
 	}
 	if *jsonOutput {
 		return printJSON(status)
@@ -604,10 +658,14 @@ func doctor(paths config.Paths, cfg config.Config) (int, error) {
 		if err == nil {
 			check(info.Mode().Perm()&0o077 == 0, account.Name+" home permissions exclude group/other")
 		}
+		loggedIn, loginErr := codex.LoggedIn(account.Home)
+		check(loginErr == nil && loggedIn, account.Name+" is logged in through the official Codex CLI")
 		authInfo, authErr := os.Lstat(filepath.Join(account.Home, "auth.json"))
-		check(authErr == nil && authInfo.Mode().IsRegular() && authInfo.Mode()&os.ModeSymlink == 0, account.Name+" has a regular auth.json")
 		if authErr == nil {
+			check(authInfo.Mode().IsRegular() && authInfo.Mode()&os.ModeSymlink == 0, account.Name+" auth.json is a regular file")
 			check(authInfo.Mode().Perm()&0o077 == 0, account.Name+" auth.json permissions exclude group/other")
+		} else if !errors.Is(authErr, fs.ErrNotExist) {
+			check(false, account.Name+" auth storage can be inspected safely")
 		}
 	}
 	if cfg.SharedSessionsDir != "" {
@@ -652,8 +710,11 @@ func ensureAccountHome(path string) error {
 }
 
 func authStatus(home string) string {
-	info, err := os.Lstat(filepath.Join(home, "auth.json"))
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+	loggedIn, err := codex.LoggedIn(home)
+	if err != nil {
+		return "unknown"
+	}
+	if !loggedIn {
 		return "missing"
 	}
 	return "present"

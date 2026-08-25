@@ -58,6 +58,14 @@ cab run --account work -- exec "explain this repository"
 
 `cab run` 后面的参数直接传递给官方 `codex`。`cab account remove` 只移除登记，不删除账号目录、登录或会话。
 
+如果默认 `~/.codex` 已经通过官方 Codex 登录，不需要重复登录，可以直接登记：
+
+```bash
+cab account import-current current
+```
+
+该命令先调用官方 `codex login status` 确认登录状态，再登记原目录；不会读取或复制凭据。CAB Desktop 会自动显示同等功能的“登记现有登录”入口。
+
 ## 跨账号继承本机会话
 
 这会让账号 B 在恢复会话时看到账号 A 的历史上下文，必须先停止涉及这些账号的全部 Codex 进程，并明确确认：
@@ -100,11 +108,11 @@ cab rotation disable
 
 ## macOS 可视化界面
 
-`CAB Desktop` 是原生 SwiftUI 管理界面，可管理本机或 SSH 主机上的账号、官方登录、默认/Remote 账号和轮换顺序。它调用 `cab` 的结构化状态接口，不读取 `auth.json` 内容。
+`CodexAccountBridge`（简体中文显示为“Codex账号桥”）是原生 SwiftUI 管理界面，可管理本机或 SSH 主机上的账号、官方登录、默认/Remote 账号和轮换顺序。它会检测默认 `~/.codex` 是否已有官方登录，并允许用户为其填写本地名称后直接登记，不要求重复登录，也不读取 `auth.json` 内容。
 
 ```bash
 make macos-app
-open "dist/CAB Desktop.app"
+open "dist/CodexAccountBridge.app"
 ```
 
 可以保存多个远程服务器并在侧边栏切换管理。服务器显示名称和 SSH 主机只存入当前 Mac 的 UserDefaults，不进入项目配置；远程主机需要能在登录 PATH 中直接执行 `cab`。隐私边界见 [docs/PRIVACY.md](docs/PRIVACY.md)。

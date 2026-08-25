@@ -10,6 +10,7 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     targetHeader
+                    if store.canImportCurrentLogin { existingLoginCard }
                     if let account = store.selectedAccountStatus {
                         accountCard(account)
                     } else {
@@ -108,7 +109,7 @@ struct ContentView: View {
             }
             .padding()
         }
-        .navigationTitle("CAB Desktop")
+        .navigationTitle("app.name")
     }
 
     private var targetHeader: some View {
@@ -151,6 +152,37 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label("账号详情", systemImage: "person.crop.circle")
+        }
+    }
+
+    private var existingLoginCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("检测到现有 Codex 登录").font(.headline)
+                        Text("可以直接登记默认 ~/.codex，无需再次登录。凭据不会被读取或复制。")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    statusBadge("已登录", color: .green)
+                }
+                HStack {
+                    TextField("本地显示名称", text: $store.existingAccountName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                        .onSubmit(store.importCurrentLogin)
+                    Button("登记现有登录", action: store.importCurrentLogin)
+                        .buttonStyle(.borderedProminent)
+                    Spacer()
+                    if let home = store.status.currentLogin?.home {
+                        Text(home).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("现有登录", systemImage: "person.crop.circle.badge.checkmark")
         }
     }
 

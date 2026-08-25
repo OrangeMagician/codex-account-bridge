@@ -4,9 +4,10 @@ import SwiftUI
 @MainActor
 final class CABStore: ObservableObject {
     @Published var target: BridgeTarget = .local
-    @Published var status = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), accounts: [])
+    @Published var status = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
     @Published var selectedAccount: String?
     @Published var newAccountName = ""
+    @Published var existingAccountName = "current"
     @Published var rotationOrder: [String] = []
     @Published var rotationIncluded: Set<String> = []
     @Published var output = ""
@@ -45,6 +46,10 @@ final class CABStore: ObservableObject {
 
     var selectedAccountStatus: AccountStatus? {
         status.accounts.first { $0.name == selectedAccount }
+    }
+
+    var canImportCurrentLogin: Bool {
+        status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
     }
 
     func refresh() {
@@ -101,6 +106,17 @@ final class CABStore: ObservableObject {
         }
         run(["account", "add", name]) { [weak self] in
             self?.newAccountName = ""
+            self?.selectedAccount = name
+        }
+    }
+
+    func importCurrentLogin() {
+        let name = existingAccountName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", options: .regularExpression) != nil else {
+            errorMessage = BridgeError.invalidAccountName.localizedDescription
+            return
+        }
+        run(["account", "import-current", name]) { [weak self] in
             self?.selectedAccount = name
         }
     }
@@ -193,7 +209,7 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), accounts: [])
+    private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
 
     private func run(_ arguments: [String], afterSuccess: (() -> Void)? = nil) {
         Task {

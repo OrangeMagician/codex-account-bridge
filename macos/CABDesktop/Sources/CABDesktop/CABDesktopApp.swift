@@ -17,7 +17,7 @@ struct CABDesktopApp: App {
             }
         }
 
-        MenuBarExtra("CAB", systemImage: "person.2.circle") {
+        MenuBarExtra("app.name", systemImage: "person.2.circle") {
             Button("打开 CAB Desktop") {
                 NSApp.activate(ignoringOtherApps: true)
                 NSApp.windows.first?.makeKeyAndOrderFront(nil)

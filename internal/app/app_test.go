@@ -148,3 +148,40 @@ func TestRunRotationRejectsSymlinkLock(t *testing.T) {
 		t.Fatalf("expected unsafe lock rejection, code=%d err=%v", code, err)
 	}
 }
+
+func TestImportCurrentRegistersExistingHomeWithoutCopying(t *testing.T) {
+	trueBinary, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("true executable is unavailable")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	current := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CAB_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("CAB_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("CAB_REAL_CODEX", trueBinary)
+	_, _ = Run([]string{"cab", "init"}, "test")
+	if code, err := Run([]string{"cab", "account", "import-current", "existing"}, "test"); err != nil || code != 0 {
+		t.Fatalf("import-current: code=%d err=%v", code, err)
+	}
+	paths, _ := config.DefaultPaths()
+	cfg, err := config.Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, ok := cfg.Find("existing")
+	if !ok || filepath.Clean(account.Home) != filepath.Clean(current) {
+		t.Fatalf("imported account = %#v, ok=%t", account, ok)
+	}
+	info, err := os.Stat(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("current home mode = %04o, want 0700", info.Mode().Perm())
+	}
+}
