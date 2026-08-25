@@ -141,7 +141,7 @@ final class CABStore: ObservableObject {
         run(["login", "--device-auth", name], loginBrowser: .systemDefault)
     }
     func loginPrivately(_ name: String, browser: PrivateBrowser) {
-        run(["login", "--device-auth", name], loginBrowser: .privateWindow(browser))
+        run(["login", "--browser-auth", name], loginBrowser: .privateWindow(browser))
     }
 
     func setDefault(_ name: String) { run(["use", name]) }

@@ -31,5 +31,9 @@ struct SSHConfigDiscoveryTests {
         #expect(service.officialLoginURL(in: "Open https://example.com/device") == nil)
         #expect(service.officialLoginURL(in: "Open https://auth.openai.com/codex/device and enter the code")?.absoluteString == "https://auth.openai.com/codex/device")
         #expect(service.officialLoginURL(in: "Open \u{001B}[94mhttps://auth.openai.com/codex/device\u{001B}[0m now")?.absoluteString == "https://auth.openai.com/codex/device")
+        #expect(service.officialLoginURL(in: "plugin warning https://chatgpt.com/backend-api/plugins/featured") == nil)
+        let oauth = "https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
+        #expect(service.officialLoginURL(in: "Open \(oauth)")?.absoluteString == oauth)
+        #expect(service.officialLoginURL(in: "https://auth.openai.com/oauth/authorize?redirect_uri=https%3A%2F%2Fevil.example%2Fcallback") == nil)
     }
 }

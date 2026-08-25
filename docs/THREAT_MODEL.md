@@ -18,7 +18,7 @@
 
 - 不读取、解析、打印、复制或写入 `auth.json` 内容。
 - 登录检测只调用官方 `codex login status`，因此兼容文件与系统钥匙串缓存，不提取账号身份或令牌。
-- 无痕登录只从设备码输出识别 OpenAI/ChatGPT 官方 HTTPS 地址；浏览器以参数数组直接启动，不经过 shell。
+- 无痕登录通过官方 Codex app-server 的普通 ChatGPT OAuth 接口取得地址，只接受 OpenAI/ChatGPT 官方 HTTPS 域名和 localhost 回调；浏览器以参数数组直接启动，不经过 shell，CAB 不处理 OAuth 令牌。
 - SSH 配置导入限制文件数量和大小，忽略通配符 Host，只保存具体别名，不读取 IdentityFile 内容。
 - 配置和账号目录拒绝符号链接，分别限制为 `0600` 和 `0700`。
 - 配置使用同目录临时文件、`fsync` 和原子 rename。

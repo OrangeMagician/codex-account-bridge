@@ -54,7 +54,15 @@ final class CABService {
             let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = ["--", host, "cab"] + arguments
+            var sshArguments: [String] = []
+            if arguments.contains("--browser-auth") {
+                sshArguments += [
+                    "-o", "ExitOnForwardFailure=yes",
+                    "-L", "127.0.0.1:1455:127.0.0.1:1455",
+                    "-L", "127.0.0.1:1457:127.0.0.1:1457",
+                ]
+            }
+            process.arguments = sshArguments + ["--", host, "cab"] + arguments
         }
 
         let stdout = Pipe()
@@ -123,9 +131,16 @@ final class CABService {
         let range = NSRange(sanitized.startIndex..., in: sanitized)
         for match in detector.matches(in: sanitized, options: [], range: range) {
             guard let url = match.url, url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { continue }
-            if host == "openai.com" || host.hasSuffix(".openai.com") || host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") {
-                return url
-            }
+            guard host == "openai.com" || host.hasSuffix(".openai.com") || host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") else { continue }
+            if host == "auth.openai.com", url.path == "/codex/device" { return url }
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let redirectValue = components.queryItems?.first(where: { $0.name == "redirect_uri" })?.value,
+                  let redirect = URL(string: redirectValue),
+                  redirect.scheme?.lowercased() == "http",
+                  redirect.host?.lowercased() == "localhost",
+                  redirect.path == "/auth/callback",
+                  redirect.port != nil else { continue }
+            return url
         }
         return nil
     }

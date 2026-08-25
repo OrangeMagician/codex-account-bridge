@@ -109,7 +109,7 @@ Commands:
   cab account list
   cab account remove NAME
   cab use NAME
-  cab login [--device-auth] NAME
+  cab login [--device-auth|--browser-auth] NAME
   cab run [--account NAME] -- [codex arguments]
   cab app-server [--account NAME] -- [app-server arguments]
   cab status [--json]
@@ -175,7 +175,7 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 			return 1, err
 		}
 		fmt.Printf("added %s at %s\n", name, home)
-		fmt.Printf("next: cab login --device-auth %s\n", name)
+		fmt.Printf("next: cab login %s\n", name)
 		return 0, nil
 	case "import-current":
 		if len(args) != 2 {
@@ -273,11 +273,12 @@ func remoteCommand(paths config.Paths, cfg *config.Config, args []string) (int, 
 func loginCommand(cfg config.Config, args []string) (int, error) {
 	flags := newFlags("login")
 	device := flags.Bool("device-auth", false, "use the official headless device login")
+	browser := flags.Bool("browser-auth", false, "return the official browser OAuth URL without opening the default browser")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
 	}
-	if flags.NArg() != 1 {
-		return 2, errors.New("usage: cab login [--device-auth] NAME")
+	if flags.NArg() != 1 || (*device && *browser) {
+		return 2, errors.New("usage: cab login [--device-auth|--browser-auth] NAME")
 	}
 	account, ok := cfg.Find(flags.Arg(0))
 	if !ok {
@@ -286,6 +287,9 @@ func loginCommand(cfg config.Config, args []string) (int, error) {
 	loginArgs := []string{"login"}
 	if *device {
 		loginArgs = append(loginArgs, "--device-auth")
+	}
+	if *browser {
+		return codex.RunBrowserLogin(account.Home)
 	}
 	return codex.Run(account.Home, loginArgs)
 }

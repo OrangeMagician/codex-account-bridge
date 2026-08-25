@@ -122,9 +122,10 @@ open "dist/CodexAccountBridge.app"
 账号登录提供三种入口：
 
 - 默认浏览器登录：执行官方 `codex login`，由 Codex 打开系统默认浏览器。
-- 设备码登录：先在菜单中明确选择系统默认浏览器，或 Chrome、Edge、Brave、Firefox 的无痕窗口；随后执行官方 `codex login --device-auth`，显示短期有效的网址和一次性代码并打开官方页面。Safari 可手动在私人浏览窗口输入网址。
+- 无痕浏览器登录：通过官方 `codex app-server` 的 `account/login/start` 普通 ChatGPT OAuth 流程取得官方授权地址，再在用户选择的 Chrome、Edge、Brave 或 Firefox 无痕窗口打开；不需要启用设备代码授权。Codex app-server 自己负责 PKCE、本地回调、凭据保存和刷新，CAB 不接触令牌。远程服务器使用 SSH 本地端口转发完成同一官方回调。
+- 设备码登录：执行官方 `codex login --device-auth`，仅作为远程或无浏览器环境的备用方式，需要用户在 ChatGPT 安全设置中启用设备代码授权。
 
-无痕登录不会绕过官方认证，也不会让应用看到浏览器 Cookie、密码或最终令牌。一次性代码只显示在当前操作输出中，不写入 CAB 配置。
+无痕登录不会绕过官方认证，也不会让应用看到浏览器 Cookie、密码或最终令牌。设备登录的一次性代码只显示在当前操作输出中，不写入 CAB 配置。
 
 ## 手机 Remote → Mac → Ubuntu
 
