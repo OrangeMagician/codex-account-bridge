@@ -108,7 +108,7 @@ cab rotation disable
 
 ## macOS 可视化界面
 
-`CodexAccountBridge`（简体中文显示为“Codex账号桥”）是原生 SwiftUI 管理界面，可管理本机或 SSH 主机上的账号、官方登录、默认/Remote 账号和轮换顺序。它会检测默认 `~/.codex` 是否已有官方登录，并允许用户为其填写本地名称后直接登记，不要求重复登录，也不读取 `auth.json` 内容。
+`CodexAccountBridge`（简体中文显示为“Codex账号管理”）是原生 SwiftUI 管理界面，可管理本机或 SSH 主机上的账号、官方登录、默认/Remote 账号和轮换顺序。它会检测默认 `~/.codex` 是否已有官方登录，并允许用户为其填写本地名称后直接登记，不要求重复登录，也不读取 `auth.json` 内容。
 
 ```bash
 make macos-app
