@@ -130,7 +130,7 @@ final class CABService {
         try process.run()
     }
 
-    func restartCodexDesktop(codexHome: String) async throws {
+    func stopCodexDesktop() async throws {
         guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
               Bundle(url: applicationURL)?.executableURL != nil else {
             throw BridgeError.commandFailed("未找到已安装的 Codex 桌面客户端。")
@@ -146,7 +146,13 @@ final class CABService {
         guard running.allSatisfy(\.isTerminated) else {
             throw BridgeError.commandFailed("Codex 桌面客户端仍在运行，请先保存任务并手动退出后重试。")
         }
+    }
 
+    func startCodexDesktop(codexHome: String) async throws {
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
+              Bundle(url: applicationURL)?.executableURL != nil else {
+            throw BridgeError.commandFailed("未找到已安装的 Codex 桌面客户端。")
+        }
         var environment = ProcessInfo.processInfo.environment
         environment["CODEX_HOME"] = codexHome
         environment.removeValue(forKey: "CODEX_THREAD_ID")
@@ -163,6 +169,77 @@ final class CABService {
                 } else {
                     continuation.resume(throwing: BridgeError.commandFailed("Codex 桌面客户端未能重新启动。"))
                 }
+            }
+        }
+    }
+
+    func restartCodexDesktop(codexHome: String) async throws {
+        try await stopCodexDesktop()
+        try await startCodexDesktop(codexHome: codexHome)
+    }
+
+    /// Marks the official Codex thread catalog for a full rebuild from the
+    /// selected CODEX_HOME's active and archived session directories. CAB never
+    /// reads thread rows or rollout contents; it checkpoints, verifies, backs up,
+    /// and resets only the official backfill watermark while Codex is stopped.
+    func prepareCodexThreadIndexRebuild(codexHome: String) async throws -> URL? {
+        let homeURL = URL(fileURLWithPath: codexHome, isDirectory: true).standardizedFileURL
+        let databaseURL = homeURL.appendingPathComponent("state_5.sqlite")
+        guard fileManager.fileExists(atPath: databaseURL.path) else { return nil }
+        let values = try databaseURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw BridgeError.commandFailed("拒绝修改非普通文件或符号链接形式的 Codex 线程索引。")
+        }
+        guard fileManager.isExecutableFile(atPath: "/usr/bin/sqlite3") else {
+            throw BridgeError.commandFailed("系统缺少 /usr/bin/sqlite3，无法安全重建 Codex 对话索引。")
+        }
+
+        let checked = try await runSQLite(
+            databaseURL,
+            sql: "PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA integrity_check;"
+        )
+        guard checked.split(whereSeparator: \.isNewline).contains("ok") else {
+            throw BridgeError.commandFailed("Codex 线程索引完整性检查失败，已停止切换。")
+        }
+
+        let backupURL = homeURL.appendingPathComponent("state_5.sqlite.cab-backup-\(Int(Date().timeIntervalSince1970 * 1_000))")
+        try fileManager.copyItem(at: databaseURL, to: backupURL)
+        do {
+            let reset = try await runSQLite(
+                databaseURL,
+                sql: "PRAGMA busy_timeout=5000; BEGIN IMMEDIATE; DELETE FROM backfill_state; COMMIT; PRAGMA integrity_check;"
+            )
+            guard reset.split(whereSeparator: \.isNewline).contains("ok") else {
+                throw BridgeError.commandFailed("重置 Codex 对话索引水位后完整性检查失败；备份保存在 \(backupURL.path)。")
+            }
+        } catch {
+            throw BridgeError.commandFailed("无法准备 Codex 对话索引重建；原索引备份保存在 \(backupURL.path)。\n\(error.localizedDescription)")
+        }
+        return backupURL
+    }
+
+    private func runSQLite(_ databaseURL: URL, sql: String) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+            process.arguments = [databaseURL.path, sql]
+            process.standardOutput = stdout
+            process.standardError = stderr
+            process.terminationHandler = { finished in
+                let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                if finished.terminationStatus == 0 {
+                    continuation.resume(returning: output)
+                } else {
+                    continuation.resume(throwing: BridgeError.commandFailed(errorOutput.isEmpty ? "sqlite3 执行失败。" : errorOutput))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
     }

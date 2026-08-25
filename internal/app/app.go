@@ -748,10 +748,16 @@ func doctor(paths config.Paths, cfg config.Config) (int, error) {
 	}
 	if cfg.SharedSessionsDir != "" {
 		for _, account := range cfg.Accounts {
-			target := filepath.Join(account.Home, "sessions")
-			actual, err := filepath.EvalSymlinks(target)
-			shared, sharedErr := filepath.EvalSymlinks(cfg.SharedSessionsDir)
-			check(err == nil && sharedErr == nil && filepath.Clean(actual) == filepath.Clean(shared), account.Name+" sessions link targets the shared store")
+			for _, name := range []string{"sessions", "archived_sessions"} {
+				target := filepath.Join(account.Home, name)
+				sharedTarget := cfg.SharedSessionsDir
+				if name != "sessions" {
+					sharedTarget = filepath.Join(filepath.Dir(cfg.SharedSessionsDir), name)
+				}
+				actual, err := filepath.EvalSymlinks(target)
+				shared, sharedErr := filepath.EvalSymlinks(sharedTarget)
+				check(err == nil && sharedErr == nil && filepath.Clean(actual) == filepath.Clean(shared), account.Name+" "+name+" link targets the shared store")
+			}
 		}
 	}
 	check(paths.File != "", "config path resolved")

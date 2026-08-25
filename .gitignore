@@ -12,3 +12,6 @@
 *.private.json
 *.pem
 *.key
+*.sqlite
+*.sqlite-*
+*.cab-backup-*

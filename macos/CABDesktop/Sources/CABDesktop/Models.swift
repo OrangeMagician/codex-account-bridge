@@ -204,6 +204,29 @@ enum BridgeTarget: String, CaseIterable, Identifiable {
     var icon: String { self == .local ? "laptopcomputer" : "server.rack" }
 }
 
+enum UsageRefreshInterval: Int, CaseIterable, Identifiable {
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+    case thirtyMinutes = 1_800
+    case oneHour = 3_600
+    case manual = 0
+
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .fiveMinutes: return "5 分钟"
+        case .fifteenMinutes: return "15 分钟"
+        case .thirtyMinutes: return "30 分钟"
+        case .oneHour: return "1 小时"
+        case .manual: return "仅手动"
+        }
+    }
+
+    var duration: TimeInterval? {
+        self == .manual ? nil : TimeInterval(rawValue)
+    }
+}
+
 enum BrowserChoice: String, CaseIterable, Identifiable {
     case safari
     case chrome

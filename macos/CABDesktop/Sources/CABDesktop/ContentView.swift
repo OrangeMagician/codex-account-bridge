@@ -57,22 +57,28 @@ struct ContentView: View {
                 .environmentObject(store)
         }
         .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitch != nil }, set: { if !$0 { pendingDesktopSwitch = nil } }), titleVisibility: .visible) {
-            Button("关闭桌面端并切换", role: .destructive) {
+            Button(store.preserveSessionsOnDesktopSwitch ? "保留会话并切换" : "使用独立会话并切换", role: .destructive) {
                 if let account = pendingDesktopSwitch { store.switchCodexDesktop(to: account) }
                 pendingDesktopSwitch = nil
             }
             Button("取消", role: .cancel) { pendingDesktopSwitch = nil }
         } message: {
-            Text("这会关闭正在运行的 Codex/ChatGPT 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。请先保存正在进行的工作。")
+            Text(desktopSwitchWarning)
         }
         .confirmationDialog("更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
             Button(pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立") {
-                if let enabled = pendingSessionSharing { store.setSessionSharingEnabled(enabled) }
+                if let enabled = pendingSessionSharing {
+                    if store.target == .local {
+                        store.setPreserveSessionsOnDesktopSwitch(enabled)
+                    } else {
+                        store.setSessionSharingEnabled(enabled)
+                    }
+                }
                 pendingSessionSharing = nil
             }
             Button("取消", role: .cancel) { pendingSessionSharing = nil }
         } message: {
-            Text("操作前必须退出所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。")
+            Text(sessionSharingWarning)
         }
         .confirmationDialog("重新登录账号？", isPresented: Binding(get: { pendingReauthentication != nil }, set: { if !$0 { pendingReauthentication = nil } }), titleVisibility: .visible) {
             Button("继续官方登录", role: .destructive) {
@@ -111,10 +117,10 @@ struct ContentView: View {
                 .padding(.horizontal)
             }
 
-            List(selection: Binding(get: { store.sidebarSelection }, set: { store.sidebarSelection = $0 })) {
+            List(selection: $store.sidebarSelection) {
                 Section("管理") {
                     Label("全局设置", systemImage: "gearshape")
-                        .tag(Optional(CABStore.globalSettingsSelection))
+                        .tag(CABStore.globalSettingsSelection)
                 }
                 Section("账号") {
                     ForEach(store.status.accounts) { account in
@@ -207,6 +213,11 @@ struct ContentView: View {
                     Label("CAB 上次启动：\(name)", systemImage: "clock.arrow.circlepath")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+                HStack {
+                    Label("切换策略", systemImage: "rectangle.2.swap")
+                    Spacer()
+                    statusBadge(store.preserveSessionsOnDesktopSwitch ? "保留会话历史" : "会话保持独立", color: store.preserveSessionsOnDesktopSwitch ? .orange : .green)
+                }
                 if loggedInAccounts.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "person.crop.circle.badge.exclamationmark")
@@ -229,6 +240,7 @@ struct ContentView: View {
                                 }
                                 Spacer()
                                 Button("用此账号启动") { pendingDesktopSwitch = account }
+                                    .disabled(store.isUsageRefreshing || store.isBusy)
                             }
                             .padding(.vertical, 9)
                             if account.id != loggedInAccounts.last?.id { Divider() }
@@ -261,6 +273,14 @@ struct ContentView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 70)
+                } else if store.usageByAccount.isEmpty {
+                    HStack {
+                        Label(store.usageRefreshInterval == .manual ? "尚未获取额度；当前设置为仅手动刷新。" : "尚无额度缓存。", systemImage: "gauge.with.dots.needle.0percent")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("立即获取", action: store.refreshUsage)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 54)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(store.status.accounts) { account in
@@ -281,6 +301,12 @@ struct ContentView: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .help(fetchedAt.formatted(date: .abbreviated, time: .standard))
                     }
+                    Picker("刷新间隔", selection: Binding(get: { store.usageRefreshInterval }, set: store.setUsageRefreshInterval)) {
+                        ForEach(UsageRefreshInterval.allCases) { interval in
+                            Text(interval.title).tag(interval)
+                        }
+                    }
+                    .fixedSize()
                     Button(action: store.refreshUsage) {
                         if store.isUsageRefreshing {
                             ProgressView().controlSize(.small)
@@ -338,19 +364,56 @@ struct ContentView: View {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("跨账号会话历史").font(.headline)
-                    Text(store.status.sharedSessions ? "账号共用任务历史；切换桌面账号后仍可看到共享会话。" : "每个账号保持独立任务历史；切换账号后不会继承其他账号的会话。")
+                    Text(sessionSharingDescription)
                         .font(.callout).foregroundStyle(.secondary)
-                    Text("这是全局隐私策略，修改前必须退出所有 Codex 进程。")
+                    Text(store.target == .local ? "设置会在下次切换 Codex 桌面账号时应用；不会共享登录凭据。" : "这是服务器级隐私策略，修改前必须退出该服务器上的所有 Codex 进程。")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Spacer()
-                Toggle("共享", isOn: Binding(get: { store.status.sharedSessions }, set: { pendingSessionSharing = $0 }))
+                VStack(alignment: .trailing, spacing: 8) {
+                    if store.target == .local && store.preserveSessionsOnDesktopSwitch != store.status.sharedSessions {
+                        statusBadge(store.preserveSessionsOnDesktopSwitch ? "下次切换时开启" : "下次切换时关闭", color: .blue)
+                    } else {
+                        statusBadge(store.status.sharedSessions ? "当前已共享" : "当前独立", color: store.status.sharedSessions ? .orange : .green)
+                    }
+                    Toggle(store.target == .local ? "切换时保留" : "共享", isOn: Binding(
+                        get: { store.target == .local ? store.preserveSessionsOnDesktopSwitch : store.status.sharedSessions },
+                        set: { pendingSessionSharing = $0 }
+                    ))
                     .toggleStyle(.switch)
+                }
             }
             .padding(8)
         } label: {
             Label("会话共享", systemImage: "rectangle.2.swap")
         }
+    }
+
+    private var sessionSharingDescription: String {
+        if store.target == .local {
+            return store.preserveSessionsOnDesktopSwitch
+                ? "切换桌面账号时共用任务历史，新账号仍可看到之前的对话。"
+                : "切换桌面账号时恢复各账号的独立任务历史。"
+        }
+        return store.status.sharedSessions
+            ? "服务器上的账号共用任务历史，其中可能包含其他账号的上下文。"
+            : "服务器上的每个账号保持独立任务历史。"
+    }
+
+    private var sessionSharingWarning: String {
+        if store.target == .local {
+            return pendingSessionSharing == true
+                ? "开启后，下次切换桌面账号时 CAB 会先关闭桌面端，再合并并共享各账号的任务历史。其他账号可能看到已有对话，但登录凭据始终独立。"
+                : "关闭后，下次切换桌面账号时 CAB 会为每个账号恢复独立的任务历史副本。登录凭据不会改变。"
+        }
+        return "操作前必须退出服务器上的所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。"
+    }
+
+    private var desktopSwitchWarning: String {
+        let sessionEffect = store.preserveSessionsOnDesktopSwitch
+            ? "如果尚未共享，会先安全合并会话历史，切换后仍能看到原有对话。"
+            : "如果当前正在共享，会先恢复各账号独立的会话副本。"
+        return "这会关闭正在运行的 Codex 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。\(sessionEffect)请先保存正在进行的工作。"
     }
 
     private func summaryValue(_ title: String, value: String) -> some View {
@@ -386,6 +449,7 @@ struct ContentView: View {
                             if store.target == .local {
                                 Button("切换 Codex 桌面端") { pendingDesktopSwitch = account }
                                     .buttonStyle(.borderedProminent)
+                                    .disabled(store.isUsageRefreshing || store.isBusy)
                             }
                         }
                         if store.usesDefaultCodexHome(account) {
@@ -503,12 +567,19 @@ struct ContentView: View {
                 } else if !account.isLoggedIn {
                     Label("账号登录后才能读取官方 Codex 额度。", systemImage: "person.crop.circle.badge.exclamationmark")
                         .foregroundStyle(.secondary)
-                } else {
+                } else if store.isUsageRefreshing {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("正在读取官方 Codex 额度…").foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 70)
+                } else {
+                    HStack {
+                        Text("当前没有额度缓存。")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("立即获取", action: store.refreshUsage)
+                    }
                 }
             }
             .padding(8)

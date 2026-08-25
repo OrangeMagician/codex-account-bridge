@@ -6,11 +6,18 @@ private enum LoginBrowser {
     case selected(BrowserChoice, privateWindow: Bool)
 }
 
+private struct UsageCacheEntry {
+    let reports: [String: AccountUsageReport]
+    let fetchedAt: Date?
+    let checkedAt: Date
+    let error: String?
+}
+
 @MainActor
 final class CABStore: ObservableObject {
     @Published var target: BridgeTarget = .local
     @Published var status = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
-    @Published var selectedAccount: String?
+    @Published var sidebarSelection = CABStore.globalSettingsSelection
     @Published var newAccountName = ""
     @Published var existingAccountName = "current"
     @Published var rotationOrder: [String] = []
@@ -21,8 +28,9 @@ final class CABStore: ObservableObject {
     @Published var remoteServers: [RemoteServer] = []
     @Published var selectedRemoteID: UUID?
     @Published var showServerManager = false
-    @Published var showingGlobalSettings = true
     @Published var lastDesktopAccount: String?
+    @Published var preserveSessionsOnDesktopSwitch = false
+    @Published var usageRefreshInterval: UsageRefreshInterval = .fifteenMinutes
     @Published var usageByAccount: [String: AccountUsageReport] = [:]
     @Published var usageFetchedAt: Date?
     @Published var usageLoadError: String?
@@ -33,14 +41,22 @@ final class CABStore: ObservableObject {
     private let remoteServersKey = "remoteServers.v1"
     private let selectedRemoteKey = "selectedRemoteServer.v1"
     private let lastDesktopAccountKey = "lastDesktopAccount.v1"
+    private let preserveSessionsKey = "preserveSessionsOnDesktopSwitch.v1"
+    private let usageRefreshIntervalKey = "usageRefreshInterval.v1"
+    private var hasSavedDesktopSessionPreference = false
     private var loginOutputBuffer = ""
     private var loginBrowserOpened = false
-    private var usageCacheKey: String?
+    private var usageCacheByKey: [String: UsageCacheEntry] = [:]
     private var usageRefreshingKeys: Set<String> = []
-    private let usageCacheLifetime: TimeInterval = 120
 
     init() {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
+        hasSavedDesktopSessionPreference = defaults.object(forKey: preserveSessionsKey) != nil
+        preserveSessionsOnDesktopSwitch = defaults.bool(forKey: preserveSessionsKey)
+        if let savedInterval = UsageRefreshInterval(rawValue: defaults.integer(forKey: usageRefreshIntervalKey)),
+           defaults.object(forKey: usageRefreshIntervalKey) != nil {
+            usageRefreshInterval = savedInterval
+        }
         if let data = defaults.data(forKey: remoteServersKey),
            let decoded = try? JSONDecoder().decode([RemoteServer].self, from: data) {
             remoteServers = decoded
@@ -66,20 +82,17 @@ final class CABStore: ObservableObject {
         status.accounts.first { $0.name == selectedAccount }
     }
 
-    var canImportCurrentLogin: Bool {
-        status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
+    var selectedAccount: String? {
+        get { showingGlobalSettings ? nil : sidebarSelection }
+        set { sidebarSelection = newValue ?? Self.globalSettingsSelection }
     }
 
-    var sidebarSelection: String? {
-        get { showingGlobalSettings ? Self.globalSettingsSelection : selectedAccount }
-        set {
-            if newValue == Self.globalSettingsSelection {
-                showingGlobalSettings = true
-            } else {
-                showingGlobalSettings = false
-                selectedAccount = newValue
-            }
-        }
+    var showingGlobalSettings: Bool {
+        sidebarSelection == Self.globalSettingsSelection
+    }
+
+    var canImportCurrentLogin: Bool {
+        status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
     }
 
     var defaultDesktopAccount: String? { status.currentLogin?.registeredAs }
@@ -105,17 +118,29 @@ final class CABStore: ObservableObject {
     }
 
     func refresh() {
-        Task { await reload(forceUsage: true) }
+        Task { await reload() }
     }
 
     func refreshUsage() {
         Task { await reloadUsage(force: true) }
     }
 
+    func setUsageRefreshInterval(_ interval: UsageRefreshInterval) {
+        usageRefreshInterval = interval
+        defaults.set(interval.rawValue, forKey: usageRefreshIntervalKey)
+        Task { await reloadUsage(force: false) }
+    }
+
+    func setPreserveSessionsOnDesktopSwitch(_ enabled: Bool) {
+        preserveSessionsOnDesktopSwitch = enabled
+        hasSavedDesktopSessionPreference = true
+        defaults.set(enabled, forKey: preserveSessionsKey)
+    }
+
     func changeTarget(_ next: BridgeTarget) {
         target = next
         selectedAccount = nil
-        clearUsage()
+        restoreUsageForCurrentTarget()
         if next == .remote && remoteServers.isEmpty {
             status = Self.emptyStatus
             showServerManager = true
@@ -128,7 +153,7 @@ final class CABStore: ObservableObject {
         selectedRemoteID = id
         if let id { defaults.set(id.uuidString, forKey: selectedRemoteKey) }
         selectedAccount = nil
-        clearUsage()
+        restoreUsageForCurrentTarget()
         refresh()
     }
 
@@ -162,10 +187,9 @@ final class CABStore: ObservableObject {
             errorMessage = BridgeError.invalidAccountName.localizedDescription
             return
         }
-        run(["account", "add", name]) { [weak self] in
+        run(["account", "add", name], refreshUsageAfterSuccess: true) { [weak self] in
             self?.newAccountName = ""
             self?.selectedAccount = name
-            self?.showingGlobalSettings = false
         }
     }
 
@@ -175,21 +199,20 @@ final class CABStore: ObservableObject {
             errorMessage = BridgeError.invalidAccountName.localizedDescription
             return
         }
-        run(["account", "import-current", name]) { [weak self] in
+        run(["account", "import-current", name], refreshUsageAfterSuccess: true) { [weak self] in
             self?.selectedAccount = name
-            self?.showingGlobalSettings = false
         }
     }
 
-    func loginInDefaultBrowser(_ name: String) { run(["login", name]) }
+    func loginInDefaultBrowser(_ name: String) { run(["login", name], refreshUsageAfterSuccess: true) }
     func loginWithDeviceCode(_ name: String) {
-        run(["login", "--device-auth", name], loginBrowser: .systemDefault)
+        run(["login", "--device-auth", name], loginBrowser: .systemDefault, refreshUsageAfterSuccess: true)
     }
     func loginInBrowser(_ name: String, browser: BrowserChoice) {
-        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: false))
+        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: false), refreshUsageAfterSuccess: true)
     }
     func loginPrivately(_ name: String, browser: BrowserChoice) {
-        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: true))
+        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: true), refreshUsageAfterSuccess: true)
     }
 
     func setDefault(_ name: String) { run(["use", name]) }
@@ -200,15 +223,26 @@ final class CABStore: ObservableObject {
             errorMessage = "只能用这台 Mac 上已登录的账号启动 Codex 桌面客户端。"
             return
         }
+        guard !isUsageRefreshing else {
+            errorMessage = "正在读取额度，请等待当前官方 Codex 查询结束后再切换桌面账号。"
+            return
+        }
         guard !isBusy else { return }
         Task {
             isBusy = true
-            output = "正在关闭 Codex 桌面客户端，并使用 \(account.name) 的独立 CODEX_HOME 重新启动…\n"
+            let sessionMode = preserveSessionsOnDesktopSwitch ? "保留共享会话" : "保持会话独立"
+            output = "正在关闭 Codex 桌面客户端，应用“\(sessionMode)”设置，并使用 \(account.name) 重新启动…\n"
             do {
-                try await service.restartCodexDesktop(codexHome: account.home)
+                try await service.stopCodexDesktop()
+                let sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded()
+                if preserveSessionsOnDesktopSwitch || sessionModeChanged,
+                   let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
+                    output += "已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n"
+                }
+                try await service.startCodexDesktop(codexHome: account.home)
                 lastDesktopAccount = account.name
                 defaults.set(account.name, forKey: lastDesktopAccountKey)
-                output += "已使用账号 \(account.name) 启动 Codex 桌面客户端。\n"
+                output += "已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "会话历史已共享" : "会话历史保持独立")。\n"
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -235,7 +269,10 @@ final class CABStore: ObservableObject {
                 if result.exitCode != 0 {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                 }
-                await reload(forceUsage: true)
+                if target == .local {
+                    setPreserveSessionsOnDesktopSwitch(enabled)
+                }
+                await reload()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -243,7 +280,7 @@ final class CABStore: ObservableObject {
     }
 
     func remove(_ name: String) {
-        run(["account", "remove", name]) { [weak self] in
+        run(["account", "remove", name], refreshUsageAfterSuccess: true) { [weak self] in
             if self?.selectedAccount == name { self?.selectedAccount = nil }
         }
     }
@@ -294,6 +331,26 @@ final class CABStore: ObservableObject {
         }
     }
 
+    private func applyDesktopSessionPreferenceIfNeeded() async throws -> Bool {
+        let modeChanged = preserveSessionsOnDesktopSwitch != status.sharedSessions
+        guard modeChanged || preserveSessionsOnDesktopSwitch else { return false }
+        if try await service.hasRunningCodexProcesses(target: .local, remoteHost: "") {
+            throw BridgeError.commandFailed("检测到仍在运行的 Codex CLI 或编辑器任务。桌面端已关闭，请结束这些任务后重试，以免迁移中的会话文件被同时写入。")
+        }
+        let arguments = preserveSessionsOnDesktopSwitch
+            ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
+            : ["sessions", "disable", "--confirm-codex-stopped"]
+        output += "$ cab \(arguments.joined(separator: " "))\n"
+        let result = try await service.execute(arguments, target: .local, remoteHost: "") { [weak self] chunk in
+            Task { @MainActor in self?.output += chunk }
+        }
+        if result.exitCode != 0 {
+            throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+        }
+        status = try await service.loadStatus(target: .local, remoteHost: "")
+        return modeChanged
+    }
+
     private func reload(forceUsage: Bool = false) async {
         isBusy = true
         let key = currentUsageCacheKey
@@ -306,7 +363,10 @@ final class CABStore: ObservableObject {
                 return
             }
             status = loaded
-            if selectedAccount == nil || !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
+            if !hasSavedDesktopSessionPreference && capturedTarget == .local {
+                preserveSessionsOnDesktopSwitch = loaded.sharedSessions
+            }
+            if !showingGlobalSettings && !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
                 selectedAccount = loaded.defaultAccount ?? loaded.accounts.first?.name
             }
             let configured = loaded.rotation.orderedAccounts
@@ -323,10 +383,14 @@ final class CABStore: ObservableObject {
 
     private func reloadUsage(force: Bool) async {
         let key = currentUsageCacheKey
-        if !force,
-           usageCacheKey == key,
-           let usageFetchedAt,
-           Date().timeIntervalSince(usageFetchedAt) < usageCacheLifetime {
+        if let cached = usageCacheByKey[key] {
+            applyUsageCache(cached)
+            if !force {
+                guard let duration = usageRefreshInterval.duration else { return }
+                if Date().timeIntervalSince(cached.checkedAt) < duration { return }
+            }
+        } else if !force && usageRefreshInterval == .manual {
+            applyUsageCache(nil)
             return
         }
         guard !usageRefreshingKeys.contains(key) else { return }
@@ -340,14 +404,24 @@ final class CABStore: ObservableObject {
         let capturedHost = remoteHost
         do {
             let report = try await service.loadUsage(target: capturedTarget, remoteHost: capturedHost)
-            guard key == currentUsageCacheKey else { return }
-            usageByAccount = Dictionary(uniqueKeysWithValues: report.accounts.map { ($0.name, $0) })
-            usageFetchedAt = report.fetchedAt
-            usageCacheKey = key
-            usageLoadError = nil
+            let entry = UsageCacheEntry(
+                reports: Dictionary(uniqueKeysWithValues: report.accounts.map { ($0.name, $0) }),
+                fetchedAt: report.fetchedAt,
+                checkedAt: Date(),
+                error: nil
+            )
+            usageCacheByKey[key] = entry
+            if key == currentUsageCacheKey { applyUsageCache(entry) }
         } catch {
-            guard key == currentUsageCacheKey else { return }
-            usageLoadError = error.localizedDescription
+            let previous = usageCacheByKey[key]
+            let entry = UsageCacheEntry(
+                reports: previous?.reports ?? [:],
+                fetchedAt: previous?.fetchedAt,
+                checkedAt: Date(),
+                error: error.localizedDescription
+            )
+            usageCacheByKey[key] = entry
+            if key == currentUsageCacheKey { applyUsageCache(entry) }
         }
     }
 
@@ -360,11 +434,14 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func clearUsage() {
-        usageByAccount = [:]
-        usageFetchedAt = nil
-        usageLoadError = nil
-        usageCacheKey = nil
+    private func restoreUsageForCurrentTarget() {
+        applyUsageCache(usageCacheByKey[currentUsageCacheKey])
+    }
+
+    private func applyUsageCache(_ entry: UsageCacheEntry?) {
+        usageByAccount = entry?.reports ?? [:]
+        usageFetchedAt = entry?.fetchedAt
+        usageLoadError = entry?.error
     }
 
     private func persistRemoteServers() {
@@ -381,7 +458,12 @@ final class CABStore: ObservableObject {
     private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
     static let globalSettingsSelection = "__cab_global_settings__"
 
-    private func run(_ arguments: [String], loginBrowser: LoginBrowser? = nil, afterSuccess: (() -> Void)? = nil) {
+    private func run(
+        _ arguments: [String],
+        loginBrowser: LoginBrowser? = nil,
+        refreshUsageAfterSuccess: Bool = false,
+        afterSuccess: (() -> Void)? = nil
+    ) {
         guard !isBusy else { return }
         Task {
             isBusy = true
@@ -396,7 +478,7 @@ final class CABStore: ObservableObject {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                 }
                 afterSuccess?()
-                await reload(forceUsage: true)
+                await reload(forceUsage: refreshUsageAfterSuccess)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -443,7 +525,7 @@ final class CABStore: ObservableObject {
                         throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                     }
                 }
-                await reload(forceUsage: true)
+                await reload()
             } catch {
                 errorMessage = error.localizedDescription
             }

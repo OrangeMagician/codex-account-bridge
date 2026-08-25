@@ -18,66 +18,80 @@ type changedLink struct {
 	backup string
 }
 
+type stagedHistory struct {
+	target string
+	stage  string
+	shared string
+}
+
+var historyDirectoryNames = []string{"sessions", "archived_sessions"}
+
 func Enable(paths config.Paths, cfg *config.Config) error {
-	if cfg.SharedSessionsDir != "" {
-		return fmt.Errorf("session sharing is already enabled at %s", cfg.SharedSessionsDir)
-	}
 	unlock, err := lock(paths.DataDir)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	shared := filepath.Join(paths.DataDir, "shared", "sessions")
-	if err := secureDir(shared); err != nil {
-		return err
+	sharedSessions := cfg.SharedSessionsDir
+	if sharedSessions == "" {
+		sharedSessions = filepath.Join(paths.DataDir, "shared", "sessions")
 	}
-	for _, account := range cfg.Accounts {
-		source := filepath.Join(account.Home, "sessions")
-		if err := mergeTree(source, shared); err != nil {
-			return fmt.Errorf("merge %s: %w", source, err)
+	for _, name := range historyDirectoryNames {
+		shared := sharedHistoryDir(sharedSessions, name)
+		if err := secureDir(shared); err != nil {
+			return err
+		}
+		for _, account := range cfg.Accounts {
+			source := filepath.Join(account.Home, name)
+			if err := mergeTree(source, shared); err != nil {
+				return fmt.Errorf("merge %s: %w", source, err)
+			}
 		}
 	}
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	changed := []changedLink{}
-	for _, account := range cfg.Accounts {
-		target := filepath.Join(account.Home, "sessions")
-		if err := os.MkdirAll(account.Home, 0o700); err != nil {
-			rollback(changed)
-			return err
-		}
-		info, err := os.Lstat(target)
-		backup := ""
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				if sameResolvedPath(target, shared) {
-					continue
-				}
-				rollback(changed)
-				return fmt.Errorf("refusing existing sessions symlink: %s", target)
-			}
-			if !info.IsDir() {
-				rollback(changed)
-				return fmt.Errorf("sessions path is not a directory: %s", target)
-			}
-			backup = target + ".cab-backup-" + stamp
-			if err := os.Rename(target, backup); err != nil {
+	for _, name := range historyDirectoryNames {
+		shared := sharedHistoryDir(sharedSessions, name)
+		for _, account := range cfg.Accounts {
+			target := filepath.Join(account.Home, name)
+			if err := os.MkdirAll(account.Home, 0o700); err != nil {
 				rollback(changed)
 				return err
 			}
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			rollback(changed)
-			return err
-		}
-		if err := os.Symlink(shared, target); err != nil {
-			if backup != "" {
-				_ = os.Rename(backup, target)
+			info, err := os.Lstat(target)
+			backup := ""
+			if err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					if sameResolvedPath(target, shared) {
+						continue
+					}
+					rollback(changed)
+					return fmt.Errorf("refusing existing %s symlink: %s", name, target)
+				}
+				if !info.IsDir() {
+					rollback(changed)
+					return fmt.Errorf("%s path is not a directory: %s", name, target)
+				}
+				backup = target + ".cab-backup-" + stamp
+				if err := os.Rename(target, backup); err != nil {
+					rollback(changed)
+					return err
+				}
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				rollback(changed)
+				return err
 			}
-			rollback(changed)
-			return err
+			if err := os.Symlink(shared, target); err != nil {
+				if backup != "" {
+					_ = os.Rename(backup, target)
+				}
+				rollback(changed)
+				return err
+			}
+			changed = append(changed, changedLink{target: target, backup: backup})
 		}
-		changed = append(changed, changedLink{target: target, backup: backup})
 	}
-	cfg.SharedSessionsDir = shared
+	cfg.SharedSessionsDir = sharedSessions
 	return nil
 }
 
@@ -90,73 +104,87 @@ func Disable(paths config.Paths, cfg *config.Config) error {
 		return err
 	}
 	defer unlock()
-	shared := cfg.SharedSessionsDir
-	for _, account := range cfg.Accounts {
-		target := filepath.Join(account.Home, "sessions")
-		info, err := os.Lstat(target)
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("refusing unexpected non-symlink: %s", target)
-		}
-		if !sameResolvedPath(target, shared) {
-			return fmt.Errorf("refusing unexpected sessions target: %s", target)
-		}
-	}
 	stamp := time.Now().UTC().Format("20060102T150405Z")
-	staging := make(map[string]string, len(cfg.Accounts))
-	for _, account := range cfg.Accounts {
-		stage := filepath.Join(account.Home, ".cab-sessions-disable-"+stamp)
-		if _, err := os.Lstat(stage); err == nil {
-			cleanupStaging(staging)
-			return fmt.Errorf("staging path already exists: %s", stage)
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			cleanupStaging(staging)
-			return err
-		}
-		if err := secureDir(stage); err != nil {
-			cleanupStaging(staging)
-			return err
-		}
-		staging[account.Home] = stage
-		if err := mergeTree(shared, stage); err != nil {
-			cleanupStaging(staging)
-			return err
+	staging := []stagedHistory{}
+	for _, name := range historyDirectoryNames {
+		shared := sharedHistoryDir(cfg.SharedSessionsDir, name)
+		for _, account := range cfg.Accounts {
+			target := filepath.Join(account.Home, name)
+			info, err := os.Lstat(target)
+			if errors.Is(err, fs.ErrNotExist) && name == "archived_sessions" {
+				continue
+			}
+			if err != nil {
+				cleanupStaging(staging)
+				return err
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				if name == "archived_sessions" && info.IsDir() {
+					continue // Compatibility with sharing enabled before archived history support.
+				}
+				cleanupStaging(staging)
+				return fmt.Errorf("refusing unexpected non-symlink: %s", target)
+			}
+			if !sameResolvedPath(target, shared) {
+				cleanupStaging(staging)
+				return fmt.Errorf("refusing unexpected %s target: %s", name, target)
+			}
+			stage := filepath.Join(account.Home, ".cab-"+name+"-disable-"+stamp)
+			if _, err := os.Lstat(stage); err == nil {
+				cleanupStaging(staging)
+				return fmt.Errorf("staging path already exists: %s", stage)
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				cleanupStaging(staging)
+				return err
+			}
+			if err := secureDir(stage); err != nil {
+				cleanupStaging(staging)
+				return err
+			}
+			if err := mergeTree(shared, stage); err != nil {
+				cleanupStaging(staging)
+				return err
+			}
+			staging = append(staging, stagedHistory{target: target, stage: stage, shared: shared})
 		}
 	}
-	changed := []string{}
-	for _, account := range cfg.Accounts {
-		target := filepath.Join(account.Home, "sessions")
-		if err := os.Remove(target); err != nil {
-			rollbackDisable(changed, shared)
+	changed := []stagedHistory{}
+	for _, item := range staging {
+		if err := os.Remove(item.target); err != nil {
+			rollbackDisable(changed)
 			cleanupStaging(staging)
 			return err
 		}
-		if err := os.Rename(staging[account.Home], target); err != nil {
-			_ = os.Symlink(shared, target)
-			rollbackDisable(changed, shared)
+		if err := os.Rename(item.stage, item.target); err != nil {
+			_ = os.Symlink(item.shared, item.target)
+			rollbackDisable(changed)
 			cleanupStaging(staging)
 			return err
 		}
-		delete(staging, account.Home)
-		changed = append(changed, target)
+		changed = append(changed, item)
 	}
 	cfg.SharedSessionsDir = ""
 	return nil
 }
 
-func cleanupStaging(staging map[string]string) {
-	for _, path := range staging {
-		_ = os.RemoveAll(path)
+func cleanupStaging(staging []stagedHistory) {
+	for _, item := range staging {
+		_ = os.RemoveAll(item.stage)
 	}
 }
 
-func rollbackDisable(targets []string, shared string) {
-	for index := len(targets) - 1; index >= 0; index-- {
-		_ = os.RemoveAll(targets[index])
-		_ = os.Symlink(shared, targets[index])
+func rollbackDisable(items []stagedHistory) {
+	for index := len(items) - 1; index >= 0; index-- {
+		_ = os.RemoveAll(items[index].target)
+		_ = os.Symlink(items[index].shared, items[index].target)
 	}
+}
+
+func sharedHistoryDir(sharedSessions, name string) string {
+	if name == "sessions" {
+		return sharedSessions
+	}
+	return filepath.Join(filepath.Dir(sharedSessions), name)
 }
 
 func mergeTree(source, destination string) error {

@@ -4,6 +4,38 @@ import Testing
 
 @Suite("SSH config and login URL discovery")
 struct SSHConfigDiscoveryTests {
+    @MainActor
+    @Test func globalSettingsAndAccountNavigationUseOneSelectionState() {
+        let store = CABStore()
+        store.sidebarSelection = "work"
+        #expect(store.selectedAccount == "work")
+        #expect(!store.showingGlobalSettings)
+
+        store.sidebarSelection = CABStore.globalSettingsSelection
+        #expect(store.selectedAccount == nil)
+        #expect(store.showingGlobalSettings)
+    }
+
+    @Test func usageRefreshIntervalsExposeManualAndTimedModes() {
+        #expect(UsageRefreshInterval.fifteenMinutes.duration == 900)
+        #expect(UsageRefreshInterval.oneHour.duration == 3_600)
+        #expect(UsageRefreshInterval.manual.duration == nil)
+    }
+
+    @Test func preparesOfficialThreadCatalogRebuildWithBackup() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let database = root.appendingPathComponent("state_5.sqlite")
+        try runSQLiteForTest(database, sql: "CREATE TABLE backfill_state (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT INTO backfill_state VALUES (1, 'complete');")
+
+        let backup = try await CABService().prepareCodexThreadIndexRebuild(codexHome: root.path)
+
+        #expect(backup != nil)
+        #expect(FileManager.default.fileExists(atPath: backup?.path ?? ""))
+        #expect(try sqliteScalarForTest(database, sql: "SELECT count(*) FROM backfill_state;") == "0")
+        #expect(try sqliteScalarForTest(database, sql: "PRAGMA integrity_check;") == "ok")
+    }
+
     @Test func decodesStableUsageReportWithoutAccountIdentityData() throws {
         let json = #"{"fetched_at":"2026-08-25T08:11:44Z","accounts":[{"name":"work","usage":{"plan_type":"plus","rate_limits":{"limit_id":"codex","primary":{"used_percent":42.5,"window_duration_mins":10080,"resets_at":1788139274},"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"plan_type":"plus"},"reset_credits":{"available_count":1,"credits":[{"reset_type":"codexRateLimits","status":"available","granted_at":1788000000,"expires_at":1789000000}]}}}]}"#
         let decoder = JSONDecoder()
@@ -52,4 +84,33 @@ struct SSHConfigDiscoveryTests {
         #expect(BrowserChoice.chrome.privateArgument == "--incognito")
         #expect(BrowserChoice.edge.privateArgument == "--inprivate")
     }
+}
+
+private func runSQLiteForTest(_ database: URL, sql: String) throws {
+    let process = Process()
+    let stderr = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [database.path, sql]
+    process.standardError = stderr
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        let message = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "sqlite3 failed"
+        throw NSError(domain: "CABDesktopTests", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
+private func sqliteScalarForTest(_ database: URL, sql: String) throws -> String {
+    let process = Process()
+    let stdout = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [database.path, sql]
+    process.standardOutput = stdout
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw NSError(domain: "CABDesktopTests", code: Int(process.terminationStatus))
+    }
+    return (String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
