@@ -139,14 +139,33 @@ struct ContentView: View {
                     statusBadge(account.isLoggedIn ? "已登录" : "未登录", color: account.isLoggedIn ? .green : .orange)
                 }
                 Divider()
-                HStack {
-                    Button("浏览器登录") { store.login(account.name, device: false) }
-                        .buttonStyle(.borderedProminent)
-                    Button("设备码登录") { store.login(account.name, device: true) }
-                    Spacer()
-                    Button("设为默认") { store.setDefault(account.name) }.disabled(account.default)
-                    Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
-                    Button("移除登记", role: .destructive) { store.remove(account.name) }
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Button("默认浏览器登录") { store.loginInDefaultBrowser(account.name) }
+                            .buttonStyle(.borderedProminent)
+                        Button("设备码登录") { store.loginWithDeviceCode(account.name) }
+                            .help("显示一次性网址和代码，可在任意浏览器中完成登录")
+                        Menu {
+                            if store.availablePrivateBrowsers.isEmpty {
+                                Text("未检测到 Chrome、Edge、Brave 或 Firefox")
+                            } else {
+                                ForEach(store.availablePrivateBrowsers) { browser in
+                                    Button(browser.title) { store.loginPrivately(account.name, browser: browser) }
+                                }
+                            }
+                        } label: {
+                            Label("无痕登录", systemImage: "eye.slash")
+                        }
+                        .disabled(store.availablePrivateBrowsers.isEmpty)
+                        .help("使用设备码流程，并在所选浏览器的无痕窗口打开官方登录页面")
+                        Spacer()
+                        Button("设为默认") { store.setDefault(account.name) }.disabled(account.default)
+                        Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
+                        Button("移除登记", role: .destructive) { store.remove(account.name) }
+                    }
+                    Text("设备码登录会显示一个短期有效的网址和一次性代码，适合远程服务器或浏览器已登录其他账号的情况。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(8)
@@ -282,6 +301,7 @@ private struct ServerManagerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pendingRemoval: RemoteServer?
     @State private var draftServers: [RemoteServer] = []
+    @State private var importResult: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -289,6 +309,9 @@ private struct ServerManagerView: View {
                 Text("远程服务器").font(.title2.bold())
                 Text("连接信息只保存在这台 Mac 的 UserDefaults 中，不会写入项目或上传 Git。")
                     .foregroundStyle(.secondary)
+                if let importResult {
+                    Text(importResult).font(.callout).foregroundStyle(.green)
+                }
             }
 
             if draftServers.isEmpty {
@@ -328,6 +351,18 @@ private struct ServerManagerView: View {
                 Button {
                     draftServers.append(RemoteServer(name: "新服务器", host: ""))
                 } label: { Label("添加服务器", systemImage: "plus") }
+                Button {
+                    do {
+                        let aliases = try store.discoverSSHHosts()
+                        let existing = Set(draftServers.map(\.host))
+                        let additions = aliases.filter { !existing.contains($0) }
+                        draftServers.append(contentsOf: additions.map { RemoteServer(name: $0, host: $0) })
+                        importResult = additions.isEmpty ? "没有发现新的具体 Host 别名。" : "已从 ~/.ssh/config 导入 \(additions.count) 个 Host 别名。"
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                } label: { Label("从 SSH 配置导入", systemImage: "square.and.arrow.down") }
+                .help("只导入具体 Host 别名，不打开 IdentityFile 指向的私钥")
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }
                 Button("保存") {

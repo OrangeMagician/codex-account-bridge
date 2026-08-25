@@ -117,6 +117,16 @@ open "dist/CodexAccountBridge.app"
 
 可以保存多个远程服务器并在侧边栏切换管理。服务器显示名称和 SSH 主机只存入当前 Mac 的 UserDefaults，不进入项目配置；远程主机需要能在登录 PATH 中直接执行 `cab`。隐私边界见 [docs/PRIVACY.md](docs/PRIVACY.md)。
 
+服务器管理窗口支持“从 SSH 配置导入”：本地解析 `~/.ssh/config` 及其 `Include` 文件，只提取没有通配符的 `Host` 别名。`HostName`、`User`、`IdentityFile` 和私钥内容不会保存进应用；实际连接仍交给系统 `/usr/bin/ssh` 解析完整配置。
+
+账号登录提供三种入口：
+
+- 默认浏览器登录：执行官方 `codex login`，由 Codex 打开系统默认浏览器。
+- 设备码登录：执行官方 `codex login --device-auth`，显示短期有效的网址和一次性代码；可在任意设备或任意浏览器中打开网址、输入代码并选择账号。
+- 无痕登录：使用同一官方设备码流程，检测输出中的 OpenAI/ChatGPT 官方 HTTPS 地址，并让用户选择 Chrome、Edge、Brave 或 Firefox 的无痕窗口打开。Safari 可手动使用“设备码登录”并在私人浏览窗口输入网址。
+
+无痕登录不会绕过官方认证，也不会让应用看到浏览器 Cookie、密码或最终令牌。一次性代码只显示在当前操作输出中，不写入 CAB 配置。
+
 ## 手机 Remote → Mac → Ubuntu
 
 官方支持手机连接 Mac/Windows 桌面版，再由桌面版通过 SSH 启动 Ubuntu 上的 Codex app-server。详细步骤见 [docs/REMOTE.md](docs/REMOTE.md)。Ubuntu 侧的核心步骤是：

@@ -21,6 +21,8 @@ final class CABStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private let remoteServersKey = "remoteServers.v1"
     private let selectedRemoteKey = "selectedRemoteServer.v1"
+    private var privateLoginBuffer = ""
+    private var privateBrowserOpened = false
 
     init() {
         if let data = defaults.data(forKey: remoteServersKey),
@@ -50,6 +52,14 @@ final class CABStore: ObservableObject {
 
     var canImportCurrentLogin: Bool {
         status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
+    }
+
+    var availablePrivateBrowsers: [PrivateBrowser] {
+        service.installedPrivateBrowsers()
+    }
+
+    func discoverSSHHosts() throws -> [String] {
+        try service.discoverSSHHosts()
     }
 
     func refresh() {
@@ -121,8 +131,10 @@ final class CABStore: ObservableObject {
         }
     }
 
-    func login(_ name: String, device: Bool) {
-        run(["login"] + (device ? ["--device-auth"] : []) + [name])
+    func loginInDefaultBrowser(_ name: String) { run(["login", name]) }
+    func loginWithDeviceCode(_ name: String) { run(["login", "--device-auth", name]) }
+    func loginPrivately(_ name: String, browser: PrivateBrowser) {
+        run(["login", "--device-auth", name], privateBrowser: browser)
     }
 
     func setDefault(_ name: String) { run(["use", name]) }
@@ -211,13 +223,16 @@ final class CABStore: ObservableObject {
 
     private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
 
-    private func run(_ arguments: [String], afterSuccess: (() -> Void)? = nil) {
+    private func run(_ arguments: [String], privateBrowser: PrivateBrowser? = nil, afterSuccess: (() -> Void)? = nil) {
+        guard !isBusy else { return }
         Task {
             isBusy = true
             output = "$ cab \(arguments.joined(separator: " "))\n"
+            privateLoginBuffer = ""
+            privateBrowserOpened = false
             do {
                 let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
-                    Task { @MainActor in self?.output += chunk }
+                    Task { @MainActor in self?.receiveOutput(chunk, privateBrowser: privateBrowser) }
                 }
                 if result.exitCode != 0 {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
@@ -228,6 +243,21 @@ final class CABStore: ObservableObject {
                 errorMessage = error.localizedDescription
             }
             isBusy = false
+        }
+    }
+
+    private func receiveOutput(_ chunk: String, privateBrowser: PrivateBrowser?) {
+        output += chunk
+        guard let privateBrowser, !privateBrowserOpened else { return }
+        privateLoginBuffer += chunk
+        guard let url = service.officialLoginURL(in: privateLoginBuffer) else { return }
+        do {
+            try service.openPrivateBrowser(privateBrowser, url: url)
+            privateBrowserOpened = true
+            output += "\n已在 \(privateBrowser.title) 无痕窗口打开官方设备登录页面。\n"
+        } catch {
+            privateBrowserOpened = true
+            errorMessage = error.localizedDescription
         }
     }
 

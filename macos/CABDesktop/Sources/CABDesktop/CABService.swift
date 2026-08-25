@@ -104,6 +104,36 @@ final class CABService {
         try process.run()
     }
 
+    func discoverSSHHosts() throws -> [String] {
+        try SSHConfigDiscovery().discover()
+    }
+
+    func installedPrivateBrowsers() -> [PrivateBrowser] {
+        PrivateBrowser.allCases.filter { browserApplicationURL($0) != nil }
+    }
+
+    func officialLoginURL(in text: String) -> URL? {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        for match in detector.matches(in: text, options: [], range: range) {
+            guard let url = match.url, url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { continue }
+            if host == "openai.com" || host.hasSuffix(".openai.com") || host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") {
+                return url
+            }
+        }
+        return nil
+    }
+
+    func openPrivateBrowser(_ browser: PrivateBrowser, url: URL) throws {
+        guard let application = browserApplicationURL(browser) else {
+            throw BridgeError.commandFailed("未找到 \(browser.title)。")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-na", application.path, "--args", browser.privateArgument, url.absoluteString]
+        try process.run()
+    }
+
     private func cabExecutable() -> URL? {
         var candidates: [String] = []
         if let configured = ProcessInfo.processInfo.environment["CAB_EXECUTABLE"], !configured.isEmpty {
@@ -115,6 +145,17 @@ final class CABService {
             "/usr/local/bin/cab",
         ]
         return candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
+    }
+
+    private func browserApplicationURL(_ browser: PrivateBrowser) -> URL? {
+        let roots = [URL(fileURLWithPath: "/Applications"), fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
+        for root in roots {
+            for name in browser.applicationNames {
+                let candidate = root.appendingPathComponent(name)
+                if fileManager.fileExists(atPath: candidate.path) { return candidate }
+            }
+        }
+        return nil
     }
 
     private func preferredMessage(_ result: CommandResult) -> String {

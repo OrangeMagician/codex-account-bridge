@@ -83,6 +83,40 @@ enum BridgeTarget: String, CaseIterable, Identifiable {
     var icon: String { self == .local ? "laptopcomputer" : "server.rack" }
 }
 
+enum PrivateBrowser: String, CaseIterable, Identifiable {
+    case chrome
+    case edge
+    case brave
+    case firefox
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .chrome: return "Google Chrome"
+        case .edge: return "Microsoft Edge"
+        case .brave: return "Brave Browser"
+        case .firefox: return "Firefox"
+        }
+    }
+
+    var applicationNames: [String] {
+        switch self {
+        case .chrome: return ["Google Chrome.app"]
+        case .edge: return ["Microsoft Edge.app"]
+        case .brave: return ["Brave Browser.app"]
+        case .firefox: return ["Firefox.app"]
+        }
+    }
+
+    var privateArgument: String {
+        switch self {
+        case .edge: return "--inprivate"
+        case .firefox: return "-private-window"
+        case .chrome, .brave: return "--incognito"
+        }
+    }
+}
+
 struct CommandResult {
     let output: String
     let errorOutput: String
