@@ -2,6 +2,9 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: CABStore
+    @State private var pendingDesktopSwitch: AccountStatus?
+    @State private var pendingSessionSharing: Bool?
+    @State private var pendingReauthentication: ReauthenticationRequest?
 
     var body: some View {
         NavigationSplitView {
@@ -10,13 +13,16 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     targetHeader
-                    if store.canImportCurrentLogin { existingLoginCard }
-                    if let account = store.selectedAccountStatus {
-                        accountCard(account)
+                    if store.showingGlobalSettings {
+                        globalSettingsPage
                     } else {
-                        emptyAccountCard
+                        if store.canImportCurrentLogin { existingLoginCard }
+                        if let account = store.selectedAccountStatus {
+                            accountCard(account)
+                        } else {
+                            emptyAccountCard
+                        }
                     }
-                    rotationCard
                     if !store.output.isEmpty { outputCard }
                 }
                 .padding(24)
@@ -30,7 +36,7 @@ struct ContentView: View {
             ToolbarItemGroup {
                 Button(action: store.refresh) { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(store.isBusy)
-                Button(action: store.launchCodex) { Label("启动 Codex", systemImage: "terminal") }
+                Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
                     .keyboardShortcut("r", modifiers: [.command])
             }
         }
@@ -48,6 +54,33 @@ struct ContentView: View {
         .sheet(isPresented: $store.showServerManager) {
             ServerManagerView()
                 .environmentObject(store)
+        }
+        .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitch != nil }, set: { if !$0 { pendingDesktopSwitch = nil } }), titleVisibility: .visible) {
+            Button("关闭桌面端并切换", role: .destructive) {
+                if let account = pendingDesktopSwitch { store.switchCodexDesktop(to: account) }
+                pendingDesktopSwitch = nil
+            }
+            Button("取消", role: .cancel) { pendingDesktopSwitch = nil }
+        } message: {
+            Text("这会关闭正在运行的 Codex/ChatGPT 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。请先保存正在进行的工作。")
+        }
+        .confirmationDialog("更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
+            Button(pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立") {
+                if let enabled = pendingSessionSharing { store.setSessionSharingEnabled(enabled) }
+                pendingSessionSharing = nil
+            }
+            Button("取消", role: .cancel) { pendingSessionSharing = nil }
+        } message: {
+            Text("操作前必须退出所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。")
+        }
+        .confirmationDialog("重新登录账号？", isPresented: Binding(get: { pendingReauthentication != nil }, set: { if !$0 { pendingReauthentication = nil } }), titleVisibility: .visible) {
+            Button("继续官方登录", role: .destructive) {
+                if let request = pendingReauthentication { startReauthentication(request) }
+                pendingReauthentication = nil
+            }
+            Button("取消", role: .cancel) { pendingReauthentication = nil }
+        } message: {
+            Text(reauthenticationWarning)
         }
         .task { await MainActor.run { store.refresh() } }
     }
@@ -77,7 +110,11 @@ struct ContentView: View {
                 .padding(.horizontal)
             }
 
-            List(selection: $store.selectedAccount) {
+            List(selection: Binding(get: { store.sidebarSelection }, set: { store.sidebarSelection = $0 })) {
+                Section("管理") {
+                    Label("全局设置", systemImage: "gearshape")
+                        .tag(Optional(CABStore.globalSettingsSelection))
+                }
                 Section("账号") {
                     ForEach(store.status.accounts) { account in
                         HStack(spacing: 9) {
@@ -127,6 +164,114 @@ struct ContentView: View {
         }
     }
 
+    private var globalSettingsPage: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            globalOverviewCard
+            if store.target == .local { desktopSwitcherCard }
+            sessionSharingCard
+            rotationCard
+        }
+    }
+
+    private var globalOverviewCard: some View {
+        GroupBox {
+            HStack(spacing: 28) {
+                summaryValue("账号", value: "\(store.status.accounts.count)")
+                summaryValue("默认 CLI", value: store.status.defaultAccount ?? "未设置")
+                summaryValue("远程默认", value: store.status.remoteAccount ?? "未设置")
+                summaryValue("会话", value: store.status.sharedSessions ? "共享" : "独立")
+                Spacer()
+            }
+            .padding(8)
+        } label: {
+            Label("全局概览", systemImage: "square.grid.2x2")
+        }
+    }
+
+    private var desktopSwitcherCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("切换 Codex 桌面端账号").font(.headline)
+                    Text("“设为默认”只影响 cab run 和终端，不会切换已运行的桌面端。这里会以所选账号的 CODEX_HOME 重启官方桌面客户端。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                if let name = store.defaultDesktopAccount {
+                    Label("系统默认 ~/.codex 当前登记为 \(name)", systemImage: "house")
+                        .font(.callout)
+                }
+                if let name = store.lastDesktopAccount {
+                    Label("CAB 上次启动：\(name)", systemImage: "clock.arrow.circlepath")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                if loggedInAccounts.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "person.crop.circle.badge.exclamationmark")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.secondary)
+                        Text("没有已登录账号").font(.headline)
+                        Text("请先打开一个账号，在账号详情中完成官方登录。")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(loggedInAccounts) { account in
+                            HStack {
+                                Image(systemName: "person.crop.circle.fill").foregroundStyle(.green)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(account.name).fontWeight(.medium)
+                                    Text(store.usesDefaultCodexHome(account) ? "Codex 默认目录" : "独立账号目录")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("用此账号启动") { pendingDesktopSwitch = account }
+                            }
+                            .padding(.vertical, 9)
+                            if account.id != loggedInAccounts.last?.id { Divider() }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("Codex 桌面端", systemImage: "macwindow")
+        }
+    }
+
+    private var sessionSharingCard: some View {
+        GroupBox {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("跨账号会话历史").font(.headline)
+                    Text(store.status.sharedSessions ? "账号共用任务历史；切换桌面账号后仍可看到共享会话。" : "每个账号保持独立任务历史；切换账号后不会继承其他账号的会话。")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Text("这是全局隐私策略，修改前必须退出所有 Codex 进程。")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Spacer()
+                Toggle("共享", isOn: Binding(get: { store.status.sharedSessions }, set: { pendingSessionSharing = $0 }))
+                    .toggleStyle(.switch)
+            }
+            .padding(8)
+        } label: {
+            Label("会话共享", systemImage: "rectangle.2.swap")
+        }
+    }
+
+    private func summaryValue(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline)
+        }
+    }
+
+    private var loggedInAccounts: [AccountStatus] {
+        store.status.accounts.filter(\.isLoggedIn)
+    }
+
     private func accountCard(_ account: AccountStatus) -> some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
@@ -140,34 +285,23 @@ struct ContentView: View {
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 9) {
-                    HStack {
-                        Button("默认浏览器登录") { store.loginInDefaultBrowser(account.name) }
-                            .buttonStyle(.borderedProminent)
-                        Menu {
-                            ForEach(store.availableBrowsers) { browser in
-                                Button(browser.title) { store.loginInBrowser(account.name, browser: browser) }
+                    if account.isLoggedIn {
+                        HStack {
+                            Label("账号已登录，正常切换无需重新认证", systemImage: "checkmark.shield")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            reauthenticationMenu(account)
+                            if store.target == .local {
+                                Button("切换 Codex 桌面端") { pendingDesktopSwitch = account }
+                                    .buttonStyle(.borderedProminent)
                             }
-                        } label: {
-                            Label("指定浏览器登录", systemImage: "globe")
                         }
-                        .disabled(store.availableBrowsers.isEmpty)
-                        .help("使用普通 ChatGPT OAuth，在所选浏览器的普通窗口登录")
-                        Menu {
-                            if store.availablePrivateBrowsers.isEmpty {
-                                Text("未检测到 Chrome、Edge、Brave 或 Firefox")
-                            } else {
-                                ForEach(store.availablePrivateBrowsers) { browser in
-                                    Button(browser.title) { store.loginPrivately(account.name, browser: browser) }
-                                }
-                            }
-                        } label: {
-                            Label("无痕浏览器登录", systemImage: "eye.slash")
+                        if store.usesDefaultCodexHome(account) {
+                            Text("此账号直接使用 ~/.codex。完成重新登录会替换 Codex 桌面端使用的认证，请仅在确实需要更换该账号身份时操作。")
+                                .font(.caption).foregroundStyle(.orange)
                         }
-                        .disabled(store.availablePrivateBrowsers.isEmpty)
-                        .help("使用普通 ChatGPT OAuth，在所选浏览器的无痕窗口登录，不需要设备码授权")
-                        Button("设备码登录") { store.loginWithDeviceCode(account.name) }
-                            .help("仅用于远程或无浏览器环境，需要在 ChatGPT 安全设置中启用设备代码授权")
-                        Spacer()
+                    } else {
+                        loginActions(account)
                     }
                     HStack {
                         Spacer()
@@ -175,14 +309,84 @@ struct ContentView: View {
                         Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
                         Button("移除登记", role: .destructive) { store.remove(account.name) }
                     }
-                    Text("指定浏览器和无痕浏览器登录都使用普通 ChatGPT OAuth；设备码仅作为无浏览器环境的备用方式。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             .padding(8)
         } label: {
             Label("账号详情", systemImage: "person.crop.circle")
+        }
+    }
+
+    @ViewBuilder
+    private func loginActions(_ account: AccountStatus) -> some View {
+        HStack {
+            Button("默认浏览器登录") { store.loginInDefaultBrowser(account.name) }
+                .buttonStyle(.borderedProminent)
+            Menu("指定浏览器登录") {
+                ForEach(store.availableBrowsers) { browser in
+                    Button(browser.title) { store.loginInBrowser(account.name, browser: browser) }
+                }
+            }
+            .disabled(store.availableBrowsers.isEmpty)
+            Menu("无痕浏览器登录") {
+                ForEach(store.availablePrivateBrowsers) { browser in
+                    Button(browser.title) { store.loginPrivately(account.name, browser: browser) }
+                }
+            }
+            .disabled(store.availablePrivateBrowsers.isEmpty)
+            Button("设备码登录") { store.loginWithDeviceCode(account.name) }
+            Spacer()
+        }
+        Text("前三种方式均使用普通 ChatGPT OAuth；设备码仅用于无浏览器环境。")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private func reauthenticationMenu(_ account: AccountStatus) -> some View {
+        Menu("重新登录…") {
+            Button("默认浏览器") {
+                pendingReauthentication = ReauthenticationRequest(account: account, method: .defaultBrowser)
+            }
+            Section("指定浏览器") {
+                ForEach(store.availableBrowsers) { browser in
+                    Button(browser.title) {
+                        pendingReauthentication = ReauthenticationRequest(account: account, method: .selectedBrowser(browser, privateWindow: false))
+                    }
+                }
+            }
+            Section("无痕浏览器") {
+                ForEach(store.availablePrivateBrowsers) { browser in
+                    Button(browser.title) {
+                        pendingReauthentication = ReauthenticationRequest(account: account, method: .selectedBrowser(browser, privateWindow: true))
+                    }
+                }
+            }
+            Divider()
+            Button("设备码") {
+                pendingReauthentication = ReauthenticationRequest(account: account, method: .deviceCode)
+            }
+        }
+    }
+
+    private var reauthenticationWarning: String {
+        guard let request = pendingReauthentication else { return "" }
+        let desktopImpact = store.usesDefaultCodexHome(request.account)
+            ? "该账号使用系统默认 ~/.codex，完成登录会替换官方 Codex 桌面端使用的认证。"
+            : "完成登录会替换此独立账号目录中现有的认证。"
+        return "账号 \(request.account.name) 当前已经登录，正常切换不需要重新认证。\(desktopImpact)仅在确实要更换登录身份时继续。"
+    }
+
+    private func startReauthentication(_ request: ReauthenticationRequest) {
+        switch request.method {
+        case .defaultBrowser:
+            store.loginInDefaultBrowser(request.account.name)
+        case let .selectedBrowser(browser, privateWindow):
+            if privateWindow {
+                store.loginPrivately(request.account.name, browser: browser)
+            } else {
+                store.loginInBrowser(request.account.name, browser: browser)
+            }
+        case .deviceCode:
+            store.loginWithDeviceCode(request.account.name)
         }
     }
 
@@ -306,6 +510,17 @@ struct ContentView: View {
             .padding(.horizontal, 9).padding(.vertical, 5)
             .background(color.opacity(0.12), in: Capsule())
     }
+}
+
+private struct ReauthenticationRequest {
+    let account: AccountStatus
+    let method: ReauthenticationMethod
+}
+
+private enum ReauthenticationMethod {
+    case defaultBrowser
+    case selectedBrowser(BrowserChoice, privateWindow: Bool)
+    case deviceCode
 }
 
 private struct ServerManagerView: View {

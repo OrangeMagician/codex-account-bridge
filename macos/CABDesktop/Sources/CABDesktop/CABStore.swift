@@ -21,15 +21,19 @@ final class CABStore: ObservableObject {
     @Published var remoteServers: [RemoteServer] = []
     @Published var selectedRemoteID: UUID?
     @Published var showServerManager = false
+    @Published var showingGlobalSettings = true
+    @Published var lastDesktopAccount: String?
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
     private let remoteServersKey = "remoteServers.v1"
     private let selectedRemoteKey = "selectedRemoteServer.v1"
+    private let lastDesktopAccountKey = "lastDesktopAccount.v1"
     private var loginOutputBuffer = ""
     private var loginBrowserOpened = false
 
     init() {
+        lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
         if let data = defaults.data(forKey: remoteServersKey),
            let decoded = try? JSONDecoder().decode([RemoteServer].self, from: data) {
             remoteServers = decoded
@@ -57,6 +61,24 @@ final class CABStore: ObservableObject {
 
     var canImportCurrentLogin: Bool {
         status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
+    }
+
+    var sidebarSelection: String? {
+        get { showingGlobalSettings ? Self.globalSettingsSelection : selectedAccount }
+        set {
+            if newValue == Self.globalSettingsSelection {
+                showingGlobalSettings = true
+            } else {
+                showingGlobalSettings = false
+                selectedAccount = newValue
+            }
+        }
+    }
+
+    var defaultDesktopAccount: String? { status.currentLogin?.registeredAs }
+
+    func usesDefaultCodexHome(_ account: AccountStatus) -> Bool {
+        account.home == status.currentLogin?.home
     }
 
     var availableBrowsers: [BrowserChoice] {
@@ -126,6 +148,7 @@ final class CABStore: ObservableObject {
         run(["account", "add", name]) { [weak self] in
             self?.newAccountName = ""
             self?.selectedAccount = name
+            self?.showingGlobalSettings = false
         }
     }
 
@@ -137,6 +160,7 @@ final class CABStore: ObservableObject {
         }
         run(["account", "import-current", name]) { [weak self] in
             self?.selectedAccount = name
+            self?.showingGlobalSettings = false
         }
     }
 
@@ -153,6 +177,53 @@ final class CABStore: ObservableObject {
 
     func setDefault(_ name: String) { run(["use", name]) }
     func setRemote(_ name: String) { run(["remote", "use", name]) }
+
+    func switchCodexDesktop(to account: AccountStatus) {
+        guard target == .local, account.isLoggedIn else {
+            errorMessage = "只能用这台 Mac 上已登录的账号启动 Codex 桌面客户端。"
+            return
+        }
+        guard !isBusy else { return }
+        Task {
+            isBusy = true
+            output = "正在关闭 Codex 桌面客户端，并使用 \(account.name) 的独立 CODEX_HOME 重新启动…\n"
+            do {
+                try await service.restartCodexDesktop(codexHome: account.home)
+                lastDesktopAccount = account.name
+                defaults.set(account.name, forKey: lastDesktopAccountKey)
+                output += "已使用账号 \(account.name) 启动 Codex 桌面客户端。\n"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isBusy = false
+        }
+    }
+
+    func setSessionSharingEnabled(_ enabled: Bool) {
+        guard !isBusy else { return }
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            do {
+                if try await service.hasRunningCodexProcesses(target: target, remoteHost: remoteHost) {
+                    throw BridgeError.commandFailed("检测到目标机器仍有 Codex 在运行。请退出桌面端、CLI 和编辑器插件后，再修改会话共享。")
+                }
+                let arguments = enabled
+                    ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
+                    : ["sessions", "disable", "--confirm-codex-stopped"]
+                output = "$ cab \(arguments.joined(separator: " "))\n"
+                let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
+                    Task { @MainActor in self?.output += chunk }
+                }
+                if result.exitCode != 0 {
+                    throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+                }
+                await reload()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
 
     func remove(_ name: String) {
         run(["account", "remove", name]) { [weak self] in
@@ -236,6 +307,7 @@ final class CABStore: ObservableObject {
     }
 
     private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
+    static let globalSettingsSelection = "__cab_global_settings__"
 
     private func run(_ arguments: [String], loginBrowser: LoginBrowser? = nil, afterSuccess: (() -> Void)? = nil) {
         guard !isBusy else { return }
@@ -271,12 +343,14 @@ final class CABStore: ObservableObject {
             case .systemDefault:
                 try service.openDefaultBrowser(url: url)
                 destination = "系统默认浏览器"
+                loginBrowserOpened = true
+                output += "\n已在\(destination)打开官方设备登录页面，请输入上方的一次性代码。\n"
             case let .selected(browser, privateWindow):
                 try service.openBrowser(browser, url: url, privateWindow: privateWindow)
                 destination = privateWindow ? "\(browser.title) 无痕窗口" : browser.title
+                loginBrowserOpened = true
+                output += "\n已在\(destination)打开官方 ChatGPT 登录页面。\n"
             }
-            loginBrowserOpened = true
-            output += "\n已在\(destination)打开官方设备登录页面，请输入上方的一次性代码。\n"
         } catch {
             loginBrowserOpened = true
             errorMessage = error.localizedDescription
