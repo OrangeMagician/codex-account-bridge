@@ -86,6 +86,8 @@ func Run(argv []string, version string) (int, error) {
 		return rotationCommand(paths, &cfg, args)
 	case "status":
 		return statusCommand(cfg, args)
+	case "usage":
+		return usageCommand(cfg, args)
 	case "sessions":
 		return sessionsCommand(paths, &cfg, args)
 	case "shim":
@@ -113,6 +115,7 @@ Commands:
   cab run [--account NAME] -- [codex arguments]
   cab app-server [--account NAME] -- [app-server arguments]
   cab status [--json]
+  cab usage [--account NAME] [--json]
   cab rotation status [--json]
   cab rotation configure --accounts NAME,NAME
   cab rotation enable|disable|reset
@@ -127,6 +130,77 @@ Commands:
 Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
 no proxy, auth copying, automatic project trust, or approval/sandbox bypass.
 `)
+}
+
+type accountUsageOutput struct {
+	Name  string               `json:"name"`
+	Usage *codex.UsageSnapshot `json:"usage,omitempty"`
+	Error string               `json:"error,omitempty"`
+}
+
+type usageOutput struct {
+	FetchedAt string               `json:"fetched_at"`
+	Accounts  []accountUsageOutput `json:"accounts"`
+}
+
+func usageCommand(cfg config.Config, args []string) (int, error) {
+	flags := newFlags("usage")
+	accountName := flags.String("account", "", "configured account name")
+	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+	if err := flags.Parse(args); err != nil {
+		return 2, err
+	}
+	if flags.NArg() != 0 {
+		return 2, errors.New("usage: cab usage [--account NAME] [--json]")
+	}
+	accounts := cfg.Accounts
+	if *accountName != "" {
+		account, ok := cfg.Find(*accountName)
+		if !ok {
+			return 2, fmt.Errorf("unknown account %q", *accountName)
+		}
+		accounts = []config.Account{account}
+	}
+	if len(accounts) == 0 {
+		return 2, errors.New("no accounts configured")
+	}
+
+	report := usageOutput{FetchedAt: time.Now().UTC().Format(time.RFC3339), Accounts: make([]accountUsageOutput, 0, len(accounts))}
+	for _, account := range accounts {
+		item := accountUsageOutput{Name: account.Name}
+		loggedIn, err := codex.LoggedIn(account.Home)
+		if err != nil {
+			item.Error = fmt.Sprintf("check login: %v", err)
+		} else if !loggedIn {
+			item.Error = "account is not logged in"
+		} else if usage, err := codex.ReadUsage(account.Home); err != nil {
+			item.Error = err.Error()
+		} else {
+			item.Usage = &usage
+		}
+		report.Accounts = append(report.Accounts, item)
+	}
+	if *jsonOutput {
+		return printJSON(report)
+	}
+	for _, item := range report.Accounts {
+		if item.Error != "" {
+			fmt.Printf("%s\terror\t%s\n", item.Name, item.Error)
+			continue
+		}
+		primary := item.Usage.RateLimits.Primary
+		if primary == nil {
+			fmt.Printf("%s\t%s\tusage unavailable\n", item.Name, item.Usage.PlanType)
+			continue
+		}
+		remaining := 100 - primary.UsedPercent
+		reset := "unknown"
+		if primary.ResetsAt != nil {
+			reset = time.Unix(*primary.ResetsAt, 0).Local().Format(time.RFC3339)
+		}
+		fmt.Printf("%s\t%s\t%.1f%% remaining\tresets %s\n", item.Name, item.Usage.PlanType, remaining, reset)
+	}
+	return 0, nil
 }
 
 func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {

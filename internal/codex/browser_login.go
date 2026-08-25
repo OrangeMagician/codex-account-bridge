@@ -61,13 +61,13 @@ func RunBrowserLogin(home string) (int, error) {
 		return 127, err
 	}
 
-	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
 	stop := func() {
 		_ = stdin.Close()
 		if cmd.Process != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 		}
+		wait := make(chan error, 1)
+		go func() { wait <- cmd.Wait() }()
 		select {
 		case <-wait:
 		case <-time.After(2 * time.Second):

@@ -39,6 +39,23 @@ final class CABService {
         }
     }
 
+    func loadUsage(target: BridgeTarget, remoteHost: String) async throws -> UsageReport {
+        let result = try await execute(["usage", "--json"], target: target, remoteHost: remoteHost)
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed(preferredMessage(result))
+        }
+        guard let data = result.output.data(using: .utf8) else {
+            throw BridgeError.invalidUsage("cab 返回了无法读取的额度信息。")
+        }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(UsageReport.self, from: data)
+        } catch {
+            throw BridgeError.invalidUsage("无法解析 cab 额度信息：\(error.localizedDescription)")
+        }
+    }
+
     func execute(
         _ arguments: [String],
         target: BridgeTarget,

@@ -19,6 +19,7 @@ struct ContentView: View {
                         if store.canImportCurrentLogin { existingLoginCard }
                         if let account = store.selectedAccountStatus {
                             accountCard(account)
+                            accountUsageCard(account)
                         } else {
                             emptyAccountCard
                         }
@@ -128,6 +129,7 @@ struct ContentView: View {
                                 }
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                sidebarUsage(account)
                             }
                         }
                         .tag(account.name)
@@ -167,6 +169,7 @@ struct ContentView: View {
     private var globalSettingsPage: some View {
         VStack(alignment: .leading, spacing: 20) {
             globalOverviewCard
+            usageOverviewCard
             if store.target == .local { desktopSwitcherCard }
             sessionSharingCard
             rotationCard
@@ -238,6 +241,95 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label("Codex 桌面端", systemImage: "macwindow")
+        }
+    }
+
+    private var usageOverviewCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                if let error = store.usageLoadError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                } else if store.status.accounts.isEmpty {
+                    Text("添加并登录账号后，这里会显示官方 Codex 额度。")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else if store.usageByAccount.isEmpty && store.isUsageRefreshing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在通过官方 Codex 查询各账号额度…")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 70)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(store.status.accounts) { account in
+                            usageOverviewRow(account)
+                                .padding(.vertical, 9)
+                            if account.id != store.status.accounts.last?.id { Divider() }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                }
+                HStack {
+                    Text("额度来自当前账号的官方 Codex app-server；订阅续费或会员到期日不在该接口中。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if let fetchedAt = store.usageFetchedAt {
+                        Text("更新于 \(fetchedAt, style: .relative)")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .help(fetchedAt.formatted(date: .abbreviated, time: .standard))
+                    }
+                    Button(action: store.refreshUsage) {
+                        if store.isUsageRefreshing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("刷新额度", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(store.isUsageRefreshing)
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("额度概览", systemImage: "gauge.with.dots.needle.50percent")
+        }
+    }
+
+    @ViewBuilder
+    private func usageOverviewRow(_ account: AccountStatus) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(account.name).fontWeight(.medium)
+                if let plan = store.usage(for: account.name)?.usage?.planType {
+                    Text(plan.uppercased()).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 110, alignment: .leading)
+
+            if let report = store.usage(for: account.name), let usage = report.usage {
+                if let window = usage.rateLimits.primary {
+                    ProgressView(value: window.remainingPercent, total: 100)
+                        .tint(usageColor(window.remainingPercent))
+                        .frame(maxWidth: 220)
+                    Text("剩余 \(percentText(window.remainingPercent))")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(usageColor(window.remainingPercent))
+                        .frame(width: 82, alignment: .trailing)
+                    resetSummary(window)
+                } else {
+                    Text("官方接口未返回额度周期").font(.callout).foregroundStyle(.secondary)
+                }
+            } else if let message = store.usage(for: account.name)?.error {
+                Label(shortUsageError(message), systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(.orange)
+            } else if !account.isLoggedIn {
+                Text("未登录").font(.callout).foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Spacer()
         }
     }
 
@@ -315,6 +407,203 @@ struct ContentView: View {
         } label: {
             Label("账号详情", systemImage: "person.crop.circle")
         }
+    }
+
+    private func accountUsageCard(_ account: AccountStatus) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                if let report = store.usage(for: account.name), let usage = report.usage {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Codex 使用额度").font(.headline)
+                            Text("官方账号接口返回的额度周期，与 API 的 RPM/TPM 限额不同。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if let plan = usage.planType ?? usage.rateLimits.planType {
+                            statusBadge(plan.uppercased(), color: .blue)
+                        }
+                    }
+                    if let primary = usage.rateLimits.primary {
+                        usageWindowRow("主要周期", window: primary)
+                    }
+                    if let secondary = usage.rateLimits.secondary {
+                        usageWindowRow("次要周期", window: secondary)
+                    }
+                    if usage.rateLimits.primary == nil && usage.rateLimits.secondary == nil {
+                        Label("官方接口当前未返回额度周期。", systemImage: "info.circle")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    if let credits = usage.rateLimits.credits, credits.unlimited || credits.hasCredits {
+                        Divider()
+                        HStack {
+                            Label("额外 Credits", systemImage: "creditcard")
+                            Spacer()
+                            Text(credits.unlimited ? "不限" : (credits.balance ?? "可用"))
+                                .fontWeight(.medium)
+                        }
+                    }
+                    if let individual = usage.rateLimits.individualLimit {
+                        Divider()
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("个人消费上限").fontWeight(.medium)
+                                Text("已用 \(individual.used) / \(individual.limit)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("剩余 \(percentText(individual.remainingPercent))")
+                                .foregroundStyle(usageColor(individual.remainingPercent))
+                            resetDateLabel(individual.resetDate)
+                        }
+                    }
+                    if let resetCredits = usage.resetCredits, resetCredits.availableCount > 0 {
+                        Divider()
+                        HStack {
+                            Label("可用额度重置次数", systemImage: "arrow.counterclockwise.circle")
+                            Spacer()
+                            Text("\(resetCredits.availableCount)").fontWeight(.semibold)
+                            if let expiry = resetCredits.credits?.compactMap(\.expiresAt).min() {
+                                Text("最早到期")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                resetDateLabel(Date(timeIntervalSince1970: TimeInterval(expiry)))
+                            }
+                        }
+                    }
+                    Divider()
+                    HStack {
+                        Label("只读查询；CAB 不直接读取 auth.json、钥匙串令牌或浏览器 Cookie。", systemImage: "lock.shield")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        if let fetchedAt = store.usageFetchedAt {
+                            Text(fetchedAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("刷新额度", action: store.refreshUsage)
+                            .disabled(store.isUsageRefreshing)
+                    }
+                    Text("“重置时间”是额度周期刷新时间，不是 ChatGPT Plus/Pro 的订阅续费或会员到期日。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let message = store.usage(for: account.name)?.error {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("无法读取此账号额度", systemImage: "exclamationmark.triangle")
+                            .font(.headline).foregroundStyle(.orange)
+                        Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        Button("重新读取", action: store.refreshUsage)
+                            .disabled(store.isUsageRefreshing)
+                    }
+                } else if let message = store.usageLoadError {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("额度服务暂不可用", systemImage: "exclamationmark.triangle")
+                            .font(.headline).foregroundStyle(.orange)
+                        Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        Button("重新读取", action: store.refreshUsage)
+                            .disabled(store.isUsageRefreshing)
+                    }
+                } else if !account.isLoggedIn {
+                    Label("账号登录后才能读取官方 Codex 额度。", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取官方 Codex 额度…").foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 70)
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("额度与周期", systemImage: "chart.bar.xaxis")
+        }
+    }
+
+    private func usageWindowRow(_ title: String, window: UsageWindow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).fontWeight(.medium)
+                    if let duration = window.windowDurationMins {
+                        Text("\(durationText(duration))周期")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Text("已用 \(percentText(window.usedPercent))")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("剩余 \(percentText(window.remainingPercent))")
+                    .font(.headline).foregroundStyle(usageColor(window.remainingPercent))
+            }
+            ProgressView(value: window.remainingPercent, total: 100)
+                .tint(usageColor(window.remainingPercent))
+            HStack {
+                Spacer()
+                resetSummary(window)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func sidebarUsage(_ account: AccountStatus) -> some View {
+        if let report = store.usage(for: account.name), let window = report.usage?.rateLimits.primary {
+            HStack(spacing: 5) {
+                ProgressView(value: window.remainingPercent, total: 100)
+                    .tint(usageColor(window.remainingPercent))
+                    .frame(width: 52)
+                Text("剩余 \(percentText(window.remainingPercent))")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        } else if store.usage(for: account.name)?.error != nil {
+            Text("额度不可用").font(.caption2).foregroundStyle(.orange)
+        }
+    }
+
+    private func resetSummary(_ window: UsageWindow) -> some View {
+        Group {
+            if let date = window.resetDate {
+                HStack(spacing: 4) {
+                    Text("重置")
+                    Text(date, style: .relative)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help(date.formatted(date: .complete, time: .standard))
+            } else {
+                Text("重置时间未知").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func resetDateLabel(_ date: Date) -> some View {
+        Text(date, style: .relative)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .help(date.formatted(date: .complete, time: .standard))
+    }
+
+    private func percentText(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1))) + "%"
+    }
+
+    private func durationText(_ minutes: Int64) -> String {
+        if minutes % 10_080 == 0 { return "\(minutes / 10_080)周" }
+        if minutes % 1_440 == 0 { return "\(minutes / 1_440)天" }
+        if minutes % 60 == 0 { return "\(minutes / 60)小时" }
+        return "\(minutes)分钟"
+    }
+
+    private func usageColor(_ remaining: Double) -> Color {
+        if remaining <= 10 { return .red }
+        if remaining <= 25 { return .orange }
+        return .green
+    }
+
+    private func shortUsageError(_ message: String) -> String {
+        if message.localizedCaseInsensitiveContains("not logged in") { return "未登录" }
+        if message.localizedCaseInsensitiveContains("unsupported") || message.localizedCaseInsensitiveContains("unknown command") { return "需要更新 cab" }
+        return "读取失败"
     }
 
     @ViewBuilder

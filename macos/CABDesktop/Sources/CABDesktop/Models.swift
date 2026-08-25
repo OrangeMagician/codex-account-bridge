@@ -62,6 +62,127 @@ struct AccountStatus: Codable, Equatable, Identifiable {
     var isLoggedIn: Bool { login == "present" }
 }
 
+struct UsageReport: Codable, Equatable {
+    let fetchedAt: Date
+    let accounts: [AccountUsageReport]
+
+    enum CodingKeys: String, CodingKey {
+        case fetchedAt = "fetched_at"
+        case accounts
+    }
+}
+
+struct AccountUsageReport: Codable, Equatable, Identifiable {
+    var id: String { name }
+    let name: String
+    let usage: CodexUsageSnapshot?
+    let error: String?
+}
+
+struct CodexUsageSnapshot: Codable, Equatable {
+    let planType: String?
+    let rateLimits: UsageRateLimitSnapshot
+    let rateLimitsByLimitID: [String: UsageRateLimitSnapshot]?
+    let resetCredits: UsageResetCredits?
+
+    enum CodingKeys: String, CodingKey {
+        case planType = "plan_type"
+        case rateLimits = "rate_limits"
+        case rateLimitsByLimitID = "rate_limits_by_limit_id"
+        case resetCredits = "reset_credits"
+    }
+}
+
+struct UsageRateLimitSnapshot: Codable, Equatable {
+    let limitID: String?
+    let limitName: String?
+    let primary: UsageWindow?
+    let secondary: UsageWindow?
+    let credits: UsageCredits?
+    let individualLimit: UsageSpendLimit?
+    let spendControlReached: Bool?
+    let planType: String?
+    let rateLimitReachedType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case limitID = "limit_id"
+        case limitName = "limit_name"
+        case primary, secondary, credits
+        case individualLimit = "individual_limit"
+        case spendControlReached = "spend_control_reached"
+        case planType = "plan_type"
+        case rateLimitReachedType = "rate_limit_reached_type"
+    }
+}
+
+struct UsageWindow: Codable, Equatable {
+    let usedPercent: Double
+    let windowDurationMins: Int64?
+    let resetsAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercent = "used_percent"
+        case windowDurationMins = "window_duration_mins"
+        case resetsAt = "resets_at"
+    }
+
+    var remainingPercent: Double { min(100, max(0, 100 - usedPercent)) }
+    var resetDate: Date? { resetsAt.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
+}
+
+struct UsageCredits: Codable, Equatable {
+    let hasCredits: Bool
+    let unlimited: Bool
+    let balance: String?
+
+    enum CodingKeys: String, CodingKey {
+        case hasCredits = "has_credits"
+        case unlimited, balance
+    }
+}
+
+struct UsageSpendLimit: Codable, Equatable {
+    let limit: String
+    let used: String
+    let remainingPercent: Double
+    let resetsAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case limit, used
+        case remainingPercent = "remaining_percent"
+        case resetsAt = "resets_at"
+    }
+
+    var resetDate: Date { Date(timeIntervalSince1970: TimeInterval(resetsAt)) }
+}
+
+struct UsageResetCredits: Codable, Equatable {
+    let availableCount: Int64
+    let credits: [UsageResetCredit]?
+
+    enum CodingKeys: String, CodingKey {
+        case availableCount = "available_count"
+        case credits
+    }
+}
+
+struct UsageResetCredit: Codable, Equatable {
+    let resetType: String?
+    let status: String?
+    let grantedAt: Int64
+    let expiresAt: Int64?
+    let title: String?
+    let description: String?
+
+    enum CodingKeys: String, CodingKey {
+        case resetType = "reset_type"
+        case status
+        case grantedAt = "granted_at"
+        case expiresAt = "expires_at"
+        case title, description
+    }
+}
+
 struct RemoteServer: Codable, Equatable, Identifiable {
     var id: UUID
     var name: String
@@ -132,6 +253,7 @@ enum BridgeError: LocalizedError {
     case invalidAccountName
     case commandFailed(String)
     case invalidStatus(String)
+    case invalidUsage(String)
 
     var errorDescription: String? {
         switch self {
@@ -139,7 +261,7 @@ enum BridgeError: LocalizedError {
             return "找不到 cab。请先安装到 ~/.local/bin 或 /opt/homebrew/bin。"
         case .invalidAccountName:
             return "账号名称只能包含字母、数字、点、下划线和短横线，最长 64 个字符。"
-        case .commandFailed(let message), .invalidStatus(let message):
+        case .commandFailed(let message), .invalidStatus(let message), .invalidUsage(let message):
             return message
         }
     }

@@ -1,0 +1,315 @@
+package codex
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const usageReadTimeout = 20 * time.Second
+
+type synchronizedBuffer struct {
+	mu      sync.Mutex
+	builder strings.Builder
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builder.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builder.String()
+}
+
+type UsageSnapshot struct {
+	PlanType            string                       `json:"plan_type,omitempty"`
+	RateLimits          RateLimitSnapshot            `json:"rate_limits"`
+	RateLimitsByLimitID map[string]RateLimitSnapshot `json:"rate_limits_by_limit_id,omitempty"`
+	ResetCredits        *ResetCreditsSummary         `json:"reset_credits,omitempty"`
+}
+
+type RateLimitSnapshot struct {
+	LimitID              string                     `json:"limit_id,omitempty"`
+	LimitName            string                     `json:"limit_name,omitempty"`
+	Primary              *RateLimitWindow           `json:"primary,omitempty"`
+	Secondary            *RateLimitWindow           `json:"secondary,omitempty"`
+	Credits              *CreditsSnapshot           `json:"credits,omitempty"`
+	IndividualLimit      *SpendControlLimitSnapshot `json:"individual_limit,omitempty"`
+	SpendControlReached  *bool                      `json:"spend_control_reached,omitempty"`
+	PlanType             string                     `json:"plan_type,omitempty"`
+	RateLimitReachedType string                     `json:"rate_limit_reached_type,omitempty"`
+}
+
+type RateLimitWindow struct {
+	UsedPercent        float64 `json:"used_percent"`
+	WindowDurationMins *int64  `json:"window_duration_mins,omitempty"`
+	ResetsAt           *int64  `json:"resets_at,omitempty"`
+}
+
+type CreditsSnapshot struct {
+	HasCredits bool   `json:"has_credits"`
+	Unlimited  bool   `json:"unlimited"`
+	Balance    string `json:"balance,omitempty"`
+}
+
+type SpendControlLimitSnapshot struct {
+	Limit            string  `json:"limit"`
+	Used             string  `json:"used"`
+	RemainingPercent float64 `json:"remaining_percent"`
+	ResetsAt         int64   `json:"resets_at"`
+}
+
+type ResetCreditsSummary struct {
+	AvailableCount int64             `json:"available_count"`
+	Credits        []RateLimitCredit `json:"credits,omitempty"`
+}
+
+type RateLimitCredit struct {
+	ResetType   string `json:"reset_type,omitempty"`
+	Status      string `json:"status,omitempty"`
+	GrantedAt   int64  `json:"granted_at"`
+	ExpiresAt   *int64 `json:"expires_at,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type rpcAccountRead struct {
+	Account *struct {
+		Type     string `json:"type"`
+		PlanType string `json:"planType"`
+	} `json:"account"`
+}
+
+type rpcRateLimitResponse struct {
+	RateLimits          rpcRateLimitSnapshot            `json:"rateLimits"`
+	RateLimitsByLimitID map[string]rpcRateLimitSnapshot `json:"rateLimitsByLimitId"`
+	ResetCredits        *rpcResetCreditsSummary         `json:"rateLimitResetCredits"`
+}
+
+type rpcRateLimitSnapshot struct {
+	LimitID              *string                       `json:"limitId"`
+	LimitName            *string                       `json:"limitName"`
+	Primary              *rpcRateLimitWindow           `json:"primary"`
+	Secondary            *rpcRateLimitWindow           `json:"secondary"`
+	Credits              *rpcCreditsSnapshot           `json:"credits"`
+	IndividualLimit      *rpcSpendControlLimitSnapshot `json:"individualLimit"`
+	SpendControlReached  *bool                         `json:"spendControlReached"`
+	PlanType             *string                       `json:"planType"`
+	RateLimitReachedType *string                       `json:"rateLimitReachedType"`
+}
+
+type rpcRateLimitWindow struct {
+	UsedPercent        float64 `json:"usedPercent"`
+	WindowDurationMins *int64  `json:"windowDurationMins"`
+	ResetsAt           *int64  `json:"resetsAt"`
+}
+
+type rpcCreditsSnapshot struct {
+	HasCredits bool    `json:"hasCredits"`
+	Unlimited  bool    `json:"unlimited"`
+	Balance    *string `json:"balance"`
+}
+
+type rpcSpendControlLimitSnapshot struct {
+	Limit            string  `json:"limit"`
+	Used             string  `json:"used"`
+	RemainingPercent float64 `json:"remainingPercent"`
+	ResetsAt         int64   `json:"resetsAt"`
+}
+
+type rpcResetCreditsSummary struct {
+	AvailableCount int64                `json:"availableCount"`
+	Credits        []rpcRateLimitCredit `json:"credits"`
+}
+
+type rpcRateLimitCredit struct {
+	ResetType   string  `json:"resetType"`
+	Status      string  `json:"status"`
+	GrantedAt   int64   `json:"grantedAt"`
+	ExpiresAt   *int64  `json:"expiresAt"`
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+}
+
+// ReadUsage asks the official Codex app-server for the selected ChatGPT
+// account's plan and rate-limit snapshot. It never reads auth storage itself.
+func ReadUsage(home string) (UsageSnapshot, error) {
+	binary, err := FindReal("codex")
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), usageReadTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binary, "app-server")
+	cmd.Env = environment(home)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	var stderr synchronizedBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return UsageSnapshot{}, err
+	}
+	defer stopUsageAppServer(cmd, stdin)
+
+	encoder := json.NewEncoder(stdin)
+	decoder := json.NewDecoder(stdout)
+	if err := encoder.Encode(map[string]any{
+		"method": "initialize",
+		"id":     1,
+		"params": map[string]any{"clientInfo": map[string]string{
+			"name": "codex_account_bridge", "title": "CodexAccountBridge", "version": "1.0",
+		}},
+	}); err != nil {
+		return UsageSnapshot{}, err
+	}
+	if _, err := readResponse(decoder, 1); err != nil {
+		return UsageSnapshot{}, usageRPCError(ctx, stderr.String(), "initialize official Codex app-server", err)
+	}
+	if err := encoder.Encode(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {
+		return UsageSnapshot{}, err
+	}
+
+	if err := encoder.Encode(map[string]any{
+		"method": "account/read", "id": 2, "params": map[string]bool{"refreshToken": false},
+	}); err != nil {
+		return UsageSnapshot{}, err
+	}
+	accountResponse, err := readResponse(decoder, 2)
+	if err != nil {
+		return UsageSnapshot{}, usageRPCError(ctx, stderr.String(), "read Codex account", err)
+	}
+	var account rpcAccountRead
+	if err := json.Unmarshal(accountResponse.Result, &account); err != nil {
+		return UsageSnapshot{}, fmt.Errorf("decode Codex account: %w", err)
+	}
+	if account.Account == nil || account.Account.Type != "chatgpt" {
+		return UsageSnapshot{}, errors.New("ChatGPT login is required to read Codex usage")
+	}
+
+	if err := encoder.Encode(map[string]any{"method": "account/rateLimits/read", "id": 3}); err != nil {
+		return UsageSnapshot{}, err
+	}
+	rateResponse, err := readResponse(decoder, 3)
+	if err != nil {
+		return UsageSnapshot{}, usageRPCError(ctx, stderr.String(), "read Codex rate limits", err)
+	}
+	var rateLimits rpcRateLimitResponse
+	if err := json.Unmarshal(rateResponse.Result, &rateLimits); err != nil {
+		return UsageSnapshot{}, fmt.Errorf("decode Codex rate limits: %w", err)
+	}
+
+	result := UsageSnapshot{
+		PlanType:            account.Account.PlanType,
+		RateLimits:          convertRateLimit(rateLimits.RateLimits),
+		RateLimitsByLimitID: make(map[string]RateLimitSnapshot, len(rateLimits.RateLimitsByLimitID)),
+		ResetCredits:        convertResetCredits(rateLimits.ResetCredits),
+	}
+	for id, snapshot := range rateLimits.RateLimitsByLimitID {
+		result.RateLimitsByLimitID[id] = convertRateLimit(snapshot)
+	}
+	if result.RateLimits.PlanType == "" {
+		result.RateLimits.PlanType = result.PlanType
+	}
+	return result, nil
+}
+
+func stopUsageAppServer(cmd *exec.Cmd, stdin io.Closer) {
+	_ = stdin.Close()
+	if cmd.Process != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	select {
+	case <-wait:
+	case <-time.After(2 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-wait
+	}
+}
+
+func usageRPCError(ctx context.Context, stderr, action string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: timed out", action)
+	}
+	detail := strings.TrimSpace(stderr)
+	if detail != "" {
+		return fmt.Errorf("%s: %s", action, detail)
+	}
+	return fmt.Errorf("%s: %w", action, err)
+}
+
+func convertRateLimit(value rpcRateLimitSnapshot) RateLimitSnapshot {
+	result := RateLimitSnapshot{
+		SpendControlReached: value.SpendControlReached,
+	}
+	if value.LimitID != nil {
+		result.LimitID = *value.LimitID
+	}
+	if value.LimitName != nil {
+		result.LimitName = *value.LimitName
+	}
+	if value.PlanType != nil {
+		result.PlanType = *value.PlanType
+	}
+	if value.RateLimitReachedType != nil {
+		result.RateLimitReachedType = *value.RateLimitReachedType
+	}
+	if value.Primary != nil {
+		result.Primary = &RateLimitWindow{UsedPercent: value.Primary.UsedPercent, WindowDurationMins: value.Primary.WindowDurationMins, ResetsAt: value.Primary.ResetsAt}
+	}
+	if value.Secondary != nil {
+		result.Secondary = &RateLimitWindow{UsedPercent: value.Secondary.UsedPercent, WindowDurationMins: value.Secondary.WindowDurationMins, ResetsAt: value.Secondary.ResetsAt}
+	}
+	if value.Credits != nil {
+		result.Credits = &CreditsSnapshot{HasCredits: value.Credits.HasCredits, Unlimited: value.Credits.Unlimited}
+		if value.Credits.Balance != nil {
+			result.Credits.Balance = *value.Credits.Balance
+		}
+	}
+	if value.IndividualLimit != nil {
+		result.IndividualLimit = &SpendControlLimitSnapshot{
+			Limit: value.IndividualLimit.Limit, Used: value.IndividualLimit.Used,
+			RemainingPercent: value.IndividualLimit.RemainingPercent, ResetsAt: value.IndividualLimit.ResetsAt,
+		}
+	}
+	return result
+}
+
+func convertResetCredits(value *rpcResetCreditsSummary) *ResetCreditsSummary {
+	if value == nil {
+		return nil
+	}
+	result := &ResetCreditsSummary{AvailableCount: value.AvailableCount, Credits: make([]RateLimitCredit, 0, len(value.Credits))}
+	for _, credit := range value.Credits {
+		item := RateLimitCredit{ResetType: credit.ResetType, Status: credit.Status, GrantedAt: credit.GrantedAt, ExpiresAt: credit.ExpiresAt}
+		if credit.Title != nil {
+			item.Title = *credit.Title
+		}
+		if credit.Description != nil {
+			item.Description = *credit.Description
+		}
+		result.Credits = append(result.Credits, item)
+	}
+	return result
+}

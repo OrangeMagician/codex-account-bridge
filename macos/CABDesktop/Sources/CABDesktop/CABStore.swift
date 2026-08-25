@@ -23,6 +23,10 @@ final class CABStore: ObservableObject {
     @Published var showServerManager = false
     @Published var showingGlobalSettings = true
     @Published var lastDesktopAccount: String?
+    @Published var usageByAccount: [String: AccountUsageReport] = [:]
+    @Published var usageFetchedAt: Date?
+    @Published var usageLoadError: String?
+    @Published var isUsageRefreshing = false
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -31,6 +35,9 @@ final class CABStore: ObservableObject {
     private let lastDesktopAccountKey = "lastDesktopAccount.v1"
     private var loginOutputBuffer = ""
     private var loginBrowserOpened = false
+    private var usageCacheKey: String?
+    private var usageRefreshingKeys: Set<String> = []
+    private let usageCacheLifetime: TimeInterval = 120
 
     init() {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
@@ -81,6 +88,10 @@ final class CABStore: ObservableObject {
         account.home == status.currentLogin?.home
     }
 
+    func usage(for accountName: String) -> AccountUsageReport? {
+        usageByAccount[accountName]
+    }
+
     var availableBrowsers: [BrowserChoice] {
         service.installedBrowsers()
     }
@@ -94,12 +105,17 @@ final class CABStore: ObservableObject {
     }
 
     func refresh() {
-        Task { await reload() }
+        Task { await reload(forceUsage: true) }
+    }
+
+    func refreshUsage() {
+        Task { await reloadUsage(force: true) }
     }
 
     func changeTarget(_ next: BridgeTarget) {
         target = next
         selectedAccount = nil
+        clearUsage()
         if next == .remote && remoteServers.isEmpty {
             status = Self.emptyStatus
             showServerManager = true
@@ -112,6 +128,7 @@ final class CABStore: ObservableObject {
         selectedRemoteID = id
         if let id { defaults.set(id.uuidString, forKey: selectedRemoteKey) }
         selectedAccount = nil
+        clearUsage()
         refresh()
     }
 
@@ -218,7 +235,7 @@ final class CABStore: ObservableObject {
                 if result.exitCode != 0 {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                 }
-                await reload()
+                await reload(forceUsage: true)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -277,11 +294,17 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func reload() async {
+    private func reload(forceUsage: Bool = false) async {
         isBusy = true
-        defer { isBusy = false }
+        let key = currentUsageCacheKey
+        let capturedTarget = target
+        let capturedHost = remoteHost
         do {
-            let loaded = try await service.loadStatus(target: target, remoteHost: remoteHost)
+            let loaded = try await service.loadStatus(target: capturedTarget, remoteHost: capturedHost)
+            guard key == currentUsageCacheKey else {
+                isBusy = false
+                return
+            }
             status = loaded
             if selectedAccount == nil || !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
                 selectedAccount = loaded.defaultAccount ?? loaded.accounts.first?.name
@@ -290,9 +313,58 @@ final class CABStore: ObservableObject {
             rotationOrder = configured + loaded.accounts.map(\.name).filter { !configured.contains($0) }
             rotationIncluded = Set(configured)
             errorMessage = nil
+            isBusy = false
+            await reloadUsage(force: forceUsage)
         } catch {
             errorMessage = error.localizedDescription
+            isBusy = false
         }
+    }
+
+    private func reloadUsage(force: Bool) async {
+        let key = currentUsageCacheKey
+        if !force,
+           usageCacheKey == key,
+           let usageFetchedAt,
+           Date().timeIntervalSince(usageFetchedAt) < usageCacheLifetime {
+            return
+        }
+        guard !usageRefreshingKeys.contains(key) else { return }
+        usageRefreshingKeys.insert(key)
+        isUsageRefreshing = true
+        defer {
+            usageRefreshingKeys.remove(key)
+            isUsageRefreshing = !usageRefreshingKeys.isEmpty
+        }
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        do {
+            let report = try await service.loadUsage(target: capturedTarget, remoteHost: capturedHost)
+            guard key == currentUsageCacheKey else { return }
+            usageByAccount = Dictionary(uniqueKeysWithValues: report.accounts.map { ($0.name, $0) })
+            usageFetchedAt = report.fetchedAt
+            usageCacheKey = key
+            usageLoadError = nil
+        } catch {
+            guard key == currentUsageCacheKey else { return }
+            usageLoadError = error.localizedDescription
+        }
+    }
+
+    private var currentUsageCacheKey: String {
+        switch target {
+        case .local:
+            return "local"
+        case .remote:
+            return "remote:\(selectedRemoteID?.uuidString ?? remoteHost)"
+        }
+    }
+
+    private func clearUsage() {
+        usageByAccount = [:]
+        usageFetchedAt = nil
+        usageLoadError = nil
+        usageCacheKey = nil
     }
 
     private func persistRemoteServers() {
@@ -324,7 +396,7 @@ final class CABStore: ObservableObject {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                 }
                 afterSuccess?()
-                await reload()
+                await reload(forceUsage: true)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -371,7 +443,7 @@ final class CABStore: ObservableObject {
                         throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                     }
                 }
-                await reload()
+                await reload(forceUsage: true)
             } catch {
                 errorMessage = error.localizedDescription
             }

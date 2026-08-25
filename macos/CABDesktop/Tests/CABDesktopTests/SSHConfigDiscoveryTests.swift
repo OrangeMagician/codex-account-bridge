@@ -4,6 +4,16 @@ import Testing
 
 @Suite("SSH config and login URL discovery")
 struct SSHConfigDiscoveryTests {
+    @Test func decodesStableUsageReportWithoutAccountIdentityData() throws {
+        let json = #"{"fetched_at":"2026-08-25T08:11:44Z","accounts":[{"name":"work","usage":{"plan_type":"plus","rate_limits":{"limit_id":"codex","primary":{"used_percent":42.5,"window_duration_mins":10080,"resets_at":1788139274},"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"plan_type":"plus"},"reset_credits":{"available_count":1,"credits":[{"reset_type":"codexRateLimits","status":"available","granted_at":1788000000,"expires_at":1789000000}]}}}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let report = try decoder.decode(UsageReport.self, from: Data(json.utf8))
+        #expect(report.accounts.count == 1)
+        #expect(report.accounts[0].usage?.rateLimits.primary?.remainingPercent == 57.5)
+        #expect(report.accounts[0].usage?.resetCredits?.availableCount == 1)
+    }
+
     @Test func discoversConcreteAliasesAndIncludesWithoutReadingIdentityFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let ssh = root.appendingPathComponent(".ssh")
