@@ -67,6 +67,11 @@ final class CABService {
             guard let executable = cabExecutable() else { throw BridgeError.executableMissing }
             process.executableURL = executable
             process.arguments = arguments
+            process.environment = localCABEnvironment(
+                baseEnvironment: ProcessInfo.processInfo.environment,
+                homeDirectory: fileManager.homeDirectoryForCurrentUser,
+                executableCheck: fileManager.isExecutableFile(atPath:)
+            )
         } else {
             let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
@@ -442,6 +447,37 @@ final class CABService {
     private func appleScriptQuote(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
+}
+
+func localCABEnvironment(
+    baseEnvironment: [String: String],
+    homeDirectory: URL,
+    executableCheck: (String) -> Bool
+) -> [String: String] {
+    var environment = baseEnvironment
+    let searchDirectories = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        homeDirectory.appendingPathComponent(".local/bin").path,
+    ]
+    let existingDirectories = (baseEnvironment["PATH"] ?? "")
+        .split(separator: ":")
+        .map(String.init)
+    var seen = Set<String>()
+    environment["PATH"] = (searchDirectories + existingDirectories)
+        .filter { !$0.isEmpty && seen.insert($0).inserted }
+        .joined(separator: ":")
+
+    if baseEnvironment["CAB_REAL_CODEX"]?.isEmpty != false {
+        let candidates = searchDirectories.map { URL(fileURLWithPath: $0).appendingPathComponent("codex").path } + [
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Applications/Codex.app/Contents/Resources/codex",
+        ]
+        if let executable = candidates.first(where: executableCheck) {
+            environment["CAB_REAL_CODEX"] = executable
+        }
+    }
+    return environment
 }
 
 func isCodexDesktopProcess(executablePath: String, desktopApplicationPath: String?) -> Bool {

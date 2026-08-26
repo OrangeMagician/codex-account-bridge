@@ -31,6 +31,27 @@ struct SSHConfigDiscoveryTests {
         #expect(codexProcessLabel(executablePath: "/opt/homebrew/bin/codex") == "Codex CLI 或 app-server")
     }
 
+    @Test func finderLaunchEnvironmentCanResolveHomebrewCodex() {
+        let environment = localCABEnvironment(
+            baseEnvironment: ["PATH": "/usr/bin:/bin"],
+            homeDirectory: URL(fileURLWithPath: "/Users/test"),
+            executableCheck: { $0 == "/opt/homebrew/bin/codex" }
+        )
+
+        #expect(environment["CAB_REAL_CODEX"] == "/opt/homebrew/bin/codex")
+        #expect(environment["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/Users/test/.local/bin:/usr/bin:/bin")
+    }
+
+    @Test func explicitCodexPathIsNeverOverridden() {
+        let environment = localCABEnvironment(
+            baseEnvironment: ["PATH": "/usr/bin", "CAB_REAL_CODEX": "/custom/codex"],
+            homeDirectory: URL(fileURLWithPath: "/Users/test"),
+            executableCheck: { _ in true }
+        )
+
+        #expect(environment["CAB_REAL_CODEX"] == "/custom/codex")
+    }
+
     @Test func preparesOfficialThreadCatalogRebuildWithBackup() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

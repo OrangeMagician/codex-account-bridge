@@ -60,6 +60,7 @@ struct AccountStatus: Codable, Equatable, Identifiable {
     let remote: Bool
 
     var isLoggedIn: Bool { login == "present" }
+    var isLoginUnknown: Bool { login == "unknown" }
 }
 
 struct UsageReport: Codable, Equatable {

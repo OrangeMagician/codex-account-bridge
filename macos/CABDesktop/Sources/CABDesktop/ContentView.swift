@@ -125,8 +125,8 @@ struct ContentView: View {
                 Section("账号") {
                     ForEach(store.status.accounts) { account in
                         HStack(spacing: 9) {
-                            Image(systemName: account.isLoggedIn ? "checkmark.circle.fill" : "exclamationmark.circle")
-                                .foregroundStyle(account.isLoggedIn ? .green : .orange)
+                            Image(systemName: account.isLoggedIn ? "checkmark.circle.fill" : (account.isLoginUnknown ? "questionmark.circle" : "exclamationmark.circle"))
+                                .foregroundStyle(account.isLoggedIn ? .green : (account.isLoginUnknown ? .secondary : .orange))
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(account.name)
                                 HStack(spacing: 5) {
@@ -350,6 +350,8 @@ struct ContentView: View {
             } else if let message = store.usage(for: account.name)?.error {
                 Label(shortUsageError(message), systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.orange)
+            } else if account.isLoginUnknown {
+                Text("状态未知").font(.callout).foregroundStyle(.secondary)
             } else if !account.isLoggedIn {
                 Text("未登录").font(.callout).foregroundStyle(.secondary)
             } else {
@@ -436,7 +438,7 @@ struct ContentView: View {
                         Text(account.home).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                     Spacer()
-                    statusBadge(account.isLoggedIn ? "已登录" : "未登录", color: account.isLoggedIn ? .green : .orange)
+                    statusBadge(account.isLoggedIn ? "已登录" : (account.isLoginUnknown ? "状态未知" : "未登录"), color: account.isLoggedIn ? .green : (account.isLoginUnknown ? .gray : .orange))
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 9) {
@@ -455,6 +457,13 @@ struct ContentView: View {
                         if store.usesDefaultCodexHome(account) {
                             Text("此账号直接使用 ~/.codex。完成重新登录会替换 Codex 桌面端使用的认证，请仅在确实需要更换该账号身份时操作。")
                                 .font(.caption).foregroundStyle(.orange)
+                        }
+                    } else if account.isLoginUnknown {
+                        HStack {
+                            Label("暂时无法通过官方 Codex 确认登录状态，请刷新后再操作。", systemImage: "questionmark.circle")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("刷新状态", action: store.refresh)
                         }
                     } else {
                         loginActions(account)
@@ -564,6 +573,9 @@ struct ContentView: View {
                         Button("重新读取", action: store.refreshUsage)
                             .disabled(store.isUsageRefreshing)
                     }
+                } else if account.isLoginUnknown {
+                    Label("登录状态暂时无法确认，请刷新状态。", systemImage: "questionmark.circle")
+                        .foregroundStyle(.secondary)
                 } else if !account.isLoggedIn {
                     Label("账号登录后才能读取官方 Codex 额度。", systemImage: "person.crop.circle.badge.exclamationmark")
                         .foregroundStyle(.secondary)
