@@ -5,11 +5,28 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PACKAGE="$ROOT/macos/CABDesktop"
 OUTPUT="$ROOT/dist/CodexAccountBridge.app"
 EXECUTABLE="$PACKAGE/.build/release/CABDesktop"
+ICON_SOURCE="$PACKAGE/Resources/AppIcon.png"
 
 swift build -c release --package-path "$PACKAGE"
 mkdir -p "$OUTPUT/Contents/MacOS" "$OUTPUT/Contents/Resources"
 install -m 0755 "$EXECUTABLE" "$OUTPUT/Contents/MacOS/CABDesktop"
 ditto "$PACKAGE/Resources" "$OUTPUT/Contents/Resources"
+
+ICON_TEMP=$(mktemp -d "${TMPDIR:-/tmp}/cab-icon.XXXXXX")
+trap 'rm -rf "$ICON_TEMP"' EXIT HUP INT TERM
+ICONSET="$ICON_TEMP/AppIcon.iconset"
+mkdir -p "$ICONSET"
+sips -z 16 16 "$ICON_SOURCE" --out "$ICONSET/icon_16x16.png" >/dev/null
+sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET/icon_32x32.png" >/dev/null
+sips -z 64 64 "$ICON_SOURCE" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+sips -z 128 128 "$ICON_SOURCE" --out "$ICONSET/icon_128x128.png" >/dev/null
+sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET/icon_256x256.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET/icon_512x512.png" >/dev/null
+sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$ICONSET" -o "$OUTPUT/Contents/Resources/AppIcon.icns"
 
 PLIST="$OUTPUT/Contents/Info.plist"
 plutil -create xml1 "$PLIST"
@@ -19,8 +36,9 @@ plutil -insert CFBundleIdentifier -string "com.orangemagician.codex-account-brid
 plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$PLIST"
 plutil -insert CFBundleName -string "CodexAccountBridge" "$PLIST"
 plutil -insert CFBundlePackageType -string "APPL" "$PLIST"
-plutil -insert CFBundleShortVersionString -string "0.6.3" "$PLIST"
-plutil -insert CFBundleVersion -string "13" "$PLIST"
+plutil -insert CFBundleIconFile -string "AppIcon" "$PLIST"
+plutil -insert CFBundleShortVersionString -string "0.6.4" "$PLIST"
+plutil -insert CFBundleVersion -string "14" "$PLIST"
 plutil -insert CFBundleDevelopmentRegion -string "en" "$PLIST"
 plutil -insert CFBundleLocalizations -json '["en","zh-Hans"]' "$PLIST"
 plutil -insert LSMinimumSystemVersion -string "13.0" "$PLIST"

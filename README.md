@@ -1,5 +1,9 @@
 # codex-account-bridge
 
+<p align="center">
+  <img src="macos/CABDesktop/Resources/AppIcon.png" width="160" alt="CodexAccountBridge icon">
+</p>
+
 `codex-account-bridge`（命令名 `cab`）是在 macOS 和 Linux 上管理多个官方 Codex 登录的安全型开源工具，包含 CLI 与原生 macOS 管理界面。它不实现 OAuth、不代理模型流量、不复制令牌，也不会根据额度或错误自动切换账号。
 
 > 当前状态：早期预览。请先在非关键账号和仓库中验证，再用于日常工作。
