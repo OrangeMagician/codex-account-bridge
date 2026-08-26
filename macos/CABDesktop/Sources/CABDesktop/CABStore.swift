@@ -231,9 +231,10 @@ final class CABStore: ObservableObject {
         Task {
             isBusy = true
             var desktopWasStopped = false
+            var workspaceSync: CodexWorkspaceSyncResult?
             let fallbackHome = previousDesktopHome(fallback: account.home)
-            let sessionMode = preserveSessionsOnDesktopSwitch ? "保留共享会话" : "保持会话独立"
-            output = "正在检查会话迁移条件，准备应用“\(sessionMode)”设置…\n"
+            let sessionMode = preserveSessionsOnDesktopSwitch ? "保留项目与共享会话" : "保持项目与会话独立"
+            output = "正在检查切换条件，准备应用“\(sessionMode)”设置…\n"
             do {
                 if preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != status.sharedSessions {
                     let conflicts = try await service.runningNonDesktopCodexProcesses()
@@ -246,6 +247,17 @@ final class CABStore: ObservableObject {
                 try await service.stopCodexDesktop()
                 desktopWasStopped = true
                 let sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded()
+                if preserveSessionsOnDesktopSwitch {
+                    workspaceSync = try service.synchronizeCodexWorkspaceState(
+                        sourceHome: fallbackHome,
+                        targetHome: account.home,
+                        knownHomes: status.accounts.map(\.home)
+                    )
+                    if let workspaceSync {
+                        let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
+                        output += "已同步 \(workspaceSync.projectCount) 个桌面项目及会话归属\(backupMessage)。\n"
+                    }
+                }
                 if preserveSessionsOnDesktopSwitch || sessionModeChanged,
                    let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
                     output += "已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n"
@@ -254,10 +266,18 @@ final class CABStore: ObservableObject {
                 desktopWasStopped = false
                 lastDesktopAccount = account.name
                 defaults.set(account.name, forKey: lastDesktopAccountKey)
-                output += "已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "会话历史已共享" : "会话历史保持独立")。\n"
+                output += "已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "项目和会话历史已保留" : "项目和会话保持独立")。\n"
             } catch {
                 var message = error.localizedDescription
                 if desktopWasStopped {
+                    if let workspaceSync {
+                        do {
+                            try service.restoreCodexWorkspaceState(workspaceSync)
+                            output += "切换未完成，已恢复目标账号原有的项目状态。\n"
+                        } catch {
+                            message += "\n同时无法自动恢复目标账号的项目状态：\(error.localizedDescription)"
+                        }
+                    }
                     do {
                         try await service.startCodexDesktop(codexHome: fallbackHome)
                         output += "切换未完成，已重新启动原 Codex 桌面账号。\n"

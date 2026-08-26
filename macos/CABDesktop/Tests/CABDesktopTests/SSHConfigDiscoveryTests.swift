@@ -45,6 +45,56 @@ struct SSHConfigDiscoveryTests {
         #expect(try sqliteScalarForTest(database, sql: "PRAGMA integrity_check;") == "ok")
     }
 
+    @Test func synchronizesOnlyAllowlistedWorkspaceCatalogFields() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try #"{"local-projects":{"project-a":{"id":"project-a"}},"project-order":["project-a"],"thread-project-assignments":{"thread-a":{"projectId":"project-a"}},"selected-project":{"projectId":"project-a","type":"local"},"account-token":"must-not-copy","electron-persisted-atom-state":{"prompt-history":["private"]}}"#.write(
+            to: source.appendingPathComponent(".codex-global-state.json"), atomically: true, encoding: .utf8
+        )
+        try #"{"local-projects":{"project-b":{"id":"project-b"}},"project-order":["project-b"],"account-token":"target-only","window-preference":42}"#.write(
+            to: target.appendingPathComponent(".codex-global-state.json"), atomically: true, encoding: .utf8
+        )
+
+        let result = try CodexWorkspaceState.synchronize(
+            sourceHome: source.path,
+            targetHome: target.path,
+            knownHomes: [source.path, target.path]
+        )
+        let data = try Data(contentsOf: target.appendingPathComponent(".codex-global-state.json"))
+        let state = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let projects = try #require(state["local-projects"] as? [String: Any])
+
+        #expect(result.projectCount == 2)
+        #expect(result.backupURL != nil)
+        #expect(Set(projects.keys) == ["project-a", "project-b"])
+        #expect(state["project-order"] as? [String] == ["project-a", "project-b"])
+        #expect(state["account-token"] as? String == "target-only")
+        #expect(state["electron-persisted-atom-state"] == nil)
+        #expect(state["window-preference"] as? Int == 42)
+    }
+
+    @Test func restoresWorkspaceCatalogAfterFailedDesktopSwitch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let targetState = target.appendingPathComponent(".codex-global-state.json")
+        try #"{"local-projects":{"before":{"id":"before"}}}"#.write(to: targetState, atomically: true, encoding: .utf8)
+        try #"{"local-projects":{"after":{"id":"after"}}}"#.write(
+            to: source.appendingPathComponent(".codex-global-state.json"), atomically: true, encoding: .utf8
+        )
+
+        let result = try CodexWorkspaceState.synchronize(sourceHome: source.path, targetHome: target.path, knownHomes: [])
+        try CodexWorkspaceState.restore(result)
+
+        let restored = try String(contentsOf: targetState, encoding: .utf8)
+        #expect(restored == #"{"local-projects":{"before":{"id":"before"}}}"#)
+    }
+
     @Test func decodesStableUsageReportWithoutAccountIdentityData() throws {
         let json = #"{"fetched_at":"2026-08-25T08:11:44Z","accounts":[{"name":"work","usage":{"plan_type":"plus","rate_limits":{"limit_id":"codex","primary":{"used_percent":42.5,"window_duration_mins":10080,"resets_at":1788139274},"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"plan_type":"plus"},"reset_credits":{"available_count":1,"credits":[{"reset_type":"codexRateLimits","status":"available","granted_at":1788000000,"expires_at":1789000000}]}}}]}"#
         let decoder = JSONDecoder()

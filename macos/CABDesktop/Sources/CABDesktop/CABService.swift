@@ -178,6 +178,25 @@ final class CABService {
         try await startCodexDesktop(codexHome: codexHome)
     }
 
+    /// Merges only the official desktop app's workspace catalog into the target
+    /// CODEX_HOME. Authentication, config, plugins, prompts, and unrelated UI
+    /// state remain account-local.
+    func synchronizeCodexWorkspaceState(
+        sourceHome: String,
+        targetHome: String,
+        knownHomes: [String]
+    ) throws -> CodexWorkspaceSyncResult {
+        try CodexWorkspaceState.synchronize(
+            sourceHome: sourceHome,
+            targetHome: targetHome,
+            knownHomes: knownHomes
+        )
+    }
+
+    func restoreCodexWorkspaceState(_ result: CodexWorkspaceSyncResult) throws {
+        try CodexWorkspaceState.restore(result)
+    }
+
     /// Marks the official Codex thread catalog for a full rebuild from the
     /// selected CODEX_HOME's active and archived session directories. CAB never
     /// reads thread rows or rollout contents; it checkpoints, verifies, backs up,

@@ -57,7 +57,7 @@ struct ContentView: View {
                 .environmentObject(store)
         }
         .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitch != nil }, set: { if !$0 { pendingDesktopSwitch = nil } }), titleVisibility: .visible) {
-            Button(store.preserveSessionsOnDesktopSwitch ? "保留会话并切换" : "使用独立会话并切换", role: .destructive) {
+            Button(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话并切换" : "使用独立项目与会话并切换", role: .destructive) {
                 if let account = pendingDesktopSwitch { store.switchCodexDesktop(to: account) }
                 pendingDesktopSwitch = nil
             }
@@ -65,8 +65,8 @@ struct ContentView: View {
         } message: {
             Text(desktopSwitchWarning)
         }
-        .confirmationDialog("更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
-            Button(pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立") {
+        .confirmationDialog(store.target == .local ? "更改项目与会话保留？" : "更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
+            Button(store.target == .local ? (pendingSessionSharing == true ? "确认切换时保留" : "确认保持独立") : (pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立")) {
                 if let enabled = pendingSessionSharing {
                     if store.target == .local {
                         store.setPreserveSessionsOnDesktopSwitch(enabled)
@@ -216,7 +216,7 @@ struct ContentView: View {
                 HStack {
                     Label("切换策略", systemImage: "rectangle.2.swap")
                     Spacer()
-                    statusBadge(store.preserveSessionsOnDesktopSwitch ? "保留会话历史" : "会话保持独立", color: store.preserveSessionsOnDesktopSwitch ? .orange : .green)
+                    statusBadge(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话" : "项目与会话独立", color: store.preserveSessionsOnDesktopSwitch ? .orange : .green)
                 }
                 if loggedInAccounts.isEmpty {
                     VStack(spacing: 8) {
@@ -363,7 +363,7 @@ struct ContentView: View {
         GroupBox {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("跨账号会话历史").font(.headline)
+                    Text(store.target == .local ? "跨账号项目与会话" : "跨账号会话历史").font(.headline)
                     Text(sessionSharingDescription)
                         .font(.callout).foregroundStyle(.secondary)
                     Text(store.target == .local ? "设置会在下次切换 Codex 桌面账号时应用；不会共享登录凭据。" : "这是服务器级隐私策略，修改前必须退出该服务器上的所有 Codex 进程。")
@@ -385,15 +385,15 @@ struct ContentView: View {
             }
             .padding(8)
         } label: {
-            Label("会话共享", systemImage: "rectangle.2.swap")
+            Label(store.target == .local ? "项目与会话" : "会话共享", systemImage: "rectangle.2.swap")
         }
     }
 
     private var sessionSharingDescription: String {
         if store.target == .local {
             return store.preserveSessionsOnDesktopSwitch
-                ? "切换桌面账号时共用任务历史，新账号仍可看到之前的对话。"
-                : "切换桌面账号时恢复各账号的独立任务历史。"
+                ? "切换桌面账号时同步项目列表、会话归属和任务历史，新账号仍能看到原来的项目与对话。"
+                : "切换桌面账号时保持各账号自己的项目列表和任务历史。"
         }
         return store.status.sharedSessions
             ? "服务器上的账号共用任务历史，其中可能包含其他账号的上下文。"
@@ -403,16 +403,16 @@ struct ContentView: View {
     private var sessionSharingWarning: String {
         if store.target == .local {
             return pendingSessionSharing == true
-                ? "开启后，下次切换桌面账号前 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再合并并共享历史。其他账号可能看到已有对话，但登录凭据始终独立。"
-                : "关闭后，下次切换桌面账号时 CAB 会为每个账号恢复独立的任务历史副本。登录凭据不会改变。"
+                ? "开启后，下次切换桌面账号前 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再同步项目列表、会话归属并合并历史。其他账号可能看到项目路径和已有对话，但登录凭据始终独立。"
+                : "关闭后，下次切换桌面账号时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。"
         }
         return "操作前必须退出服务器上的所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。"
     }
 
     private var desktopSwitchWarning: String {
         let sessionEffect = store.preserveSessionsOnDesktopSwitch
-            ? "如果尚未共享，会先检查 CLI 和编辑器扩展，再安全合并会话历史；预检不通过时不会关闭桌面端。"
-            : "如果当前正在共享，会先恢复各账号独立的会话副本。"
+            ? "会先检查 CLI 和编辑器扩展，再安全同步项目列表、会话归属并合并历史；预检不通过时不会关闭桌面端。"
+            : "如果当前正在共享，会先恢复各账号独立的会话副本；项目列表也保持账号独立。"
         return "这会关闭正在运行的 Codex 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。\(sessionEffect)请先保存正在进行的工作。"
     }
 
