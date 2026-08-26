@@ -128,13 +128,21 @@ struct ContentView: View {
                             Image(systemName: account.isLoggedIn ? "checkmark.circle.fill" : (account.isLoginUnknown ? "questionmark.circle" : "exclamationmark.circle"))
                                 .foregroundStyle(account.isLoggedIn ? .green : (account.isLoginUnknown ? .secondary : .orange))
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(account.name)
-                                HStack(spacing: 5) {
-                                    if account.default { Text("默认") }
-                                    if account.remote { Text("远程") }
+                                HStack(spacing: 6) {
+                                    Text(account.name)
+                                    if account.default {
+                                        Image(systemName: "star.fill")
+                                            .foregroundStyle(.secondary)
+                                            .help("默认 CLI 账号")
+                                            .accessibilityLabel("默认 CLI 账号")
+                                    }
+                                    if account.remote {
+                                        Image(systemName: "server.rack")
+                                            .foregroundStyle(.secondary)
+                                            .help("远程服务器默认账号")
+                                            .accessibilityLabel("远程服务器默认账号")
+                                    }
                                 }
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
                                 sidebarUsage(account)
                             }
                         }
