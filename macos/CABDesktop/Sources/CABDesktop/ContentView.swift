@@ -100,6 +100,7 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .disabled(store.isBusy)
             .padding()
 
             if store.target == .remote {
@@ -110,7 +111,7 @@ struct ContentView: View {
                         }
                     }
                     .labelsHidden()
-                    .disabled(store.remoteServers.isEmpty)
+                    .disabled(store.remoteServers.isEmpty || store.isBusy)
                     Button { store.showServerManager = true } label: { Image(systemName: "slider.horizontal.3") }
                         .help("管理服务器")
                 }
@@ -125,8 +126,15 @@ struct ContentView: View {
                 Section("账号") {
                     ForEach(store.status.accounts) { account in
                         HStack(spacing: 9) {
-                            Image(systemName: account.isLoggedIn ? "checkmark.circle.fill" : (account.isLoginUnknown ? "questionmark.circle" : "exclamationmark.circle"))
-                                .foregroundStyle(account.isLoggedIn ? .green : (account.isLoginUnknown ? .secondary : .orange))
+                            Group {
+                                if store.isLoginInProgress(account.name) {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: account.isLoggedIn ? "checkmark.circle.fill" : (account.isLoginUnknown ? "questionmark.circle" : "exclamationmark.circle"))
+                                        .foregroundStyle(account.isLoggedIn ? .green : (account.isLoginUnknown ? .secondary : .orange))
+                                }
+                            }
+                            .frame(width: 16)
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
                                     Text(account.name)
@@ -267,7 +275,16 @@ struct ContentView: View {
     private var usageOverviewCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                if let error = store.usageLoadError {
+                if let accountName = store.loginAccountName {
+                    Label(
+                        store.loginStatusConfirmed
+                            ? "已检测到 \(accountName) 登录成功，正在更新账号状态与额度…"
+                            : "正在等待 \(accountName) 完成官方登录，登录成功后将自动读取额度。",
+                        systemImage: store.loginStatusConfirmed ? "checkmark.circle" : "person.badge.clock"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(store.loginStatusConfirmed ? .green : .secondary)
+                } else if let error = store.usageLoadError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(.orange)
@@ -342,7 +359,14 @@ struct ContentView: View {
             }
             .frame(width: 110, alignment: .leading)
 
-            if let report = store.usage(for: account.name), let usage = report.usage {
+            if store.isLoginInProgress(account.name) {
+                Label(
+                    store.loginStatusConfirmed ? "登录成功，正在更新" : "等待官方登录",
+                    systemImage: store.loginStatusConfirmed ? "checkmark.circle" : "person.badge.clock"
+                )
+                .font(.callout)
+                .foregroundStyle(store.loginStatusConfirmed ? .green : .secondary)
+            } else if let report = store.usage(for: account.name), let usage = report.usage {
                 if let window = usage.rateLimits.primary {
                     ProgressView(value: window.remainingPercent, total: 100)
                         .tint(usageColor(window.remainingPercent))
@@ -446,11 +470,32 @@ struct ContentView: View {
                         Text(account.home).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                     Spacer()
-                    statusBadge(account.isLoggedIn ? "已登录" : (account.isLoginUnknown ? "状态未知" : "未登录"), color: account.isLoggedIn ? .green : (account.isLoginUnknown ? .gray : .orange))
+                    if store.isLoginInProgress(account.name) {
+                        statusBadge(store.loginStatusConfirmed ? "登录成功" : "登录中", color: store.loginStatusConfirmed ? .green : .blue)
+                    } else {
+                        statusBadge(account.isLoggedIn ? "已登录" : (account.isLoginUnknown ? "状态未知" : "未登录"), color: account.isLoggedIn ? .green : (account.isLoginUnknown ? .gray : .orange))
+                    }
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 9) {
-                    if account.isLoggedIn {
+                    if store.isLoginInProgress(account.name) {
+                        HStack(spacing: 10) {
+                            if store.loginStatusConfirmed {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                Text("已检测到官方 Codex 登录成功，正在完成状态与额度更新。")
+                            } else {
+                                ProgressView().controlSize(.small)
+                                Text("正在等待浏览器完成官方授权，成功后会自动更新。")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if store.canManuallyCheckLogin {
+                                Button("立即检查状态", action: store.checkPendingLoginStatus)
+                            }
+                        }
+                        Text("无需手动刷新额度。若浏览器已显示完成但这里尚未变化，可以立即检查官方登录状态。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if account.isLoggedIn {
                         HStack {
                             Label("账号已登录，正常切换无需重新认证", systemImage: "checkmark.shield")
                                 .foregroundStyle(.secondary)
@@ -493,7 +538,20 @@ struct ContentView: View {
     private func accountUsageCard(_ account: AccountStatus) -> some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
-                if let report = store.usage(for: account.name), let usage = report.usage {
+                if store.isLoginInProgress(account.name) {
+                    HStack(spacing: 10) {
+                        if store.loginStatusConfirmed {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text("登录成功，正在读取官方 Codex 额度…")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ProgressView().controlSize(.small)
+                            Text("完成官方登录后，这里会自动显示额度。")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+                } else if let report = store.usage(for: account.name), let usage = report.usage {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Codex 使用额度").font(.headline)

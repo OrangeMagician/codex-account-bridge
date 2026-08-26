@@ -35,6 +35,9 @@ final class CABStore: ObservableObject {
     @Published var usageFetchedAt: Date?
     @Published var usageLoadError: String?
     @Published var isUsageRefreshing = false
+    @Published private(set) var loginAccountName: String?
+    @Published private(set) var loginStatusConfirmed = false
+    @Published private(set) var canManuallyCheckLogin = false
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -46,6 +49,7 @@ final class CABStore: ObservableObject {
     private var hasSavedDesktopSessionPreference = false
     private var loginOutputBuffer = ""
     private var loginBrowserOpened = false
+    private var loginStatusMonitor: Task<Void, Never>?
     private var usageCacheByKey: [String: UsageCacheEntry] = [:]
     private var usageRefreshingKeys: Set<String> = []
 
@@ -103,6 +107,10 @@ final class CABStore: ObservableObject {
 
     func usage(for accountName: String) -> AccountUsageReport? {
         usageByAccount[accountName]
+    }
+
+    func isLoginInProgress(_ accountName: String) -> Bool {
+        loginAccountName == accountName
     }
 
     var availableBrowsers: [BrowserChoice] {
@@ -204,15 +212,32 @@ final class CABStore: ObservableObject {
         }
     }
 
-    func loginInDefaultBrowser(_ name: String) { run(["login", name], refreshUsageAfterSuccess: true) }
+    func loginInDefaultBrowser(_ name: String) {
+        run(["login", name], loginAccount: name, refreshUsageAfterSuccess: true)
+    }
     func loginWithDeviceCode(_ name: String) {
-        run(["login", "--device-auth", name], loginBrowser: .systemDefault, refreshUsageAfterSuccess: true)
+        run(["login", "--device-auth", name], loginBrowser: .systemDefault, loginAccount: name, refreshUsageAfterSuccess: true)
     }
     func loginInBrowser(_ name: String, browser: BrowserChoice) {
-        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: false), refreshUsageAfterSuccess: true)
+        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: false), loginAccount: name, refreshUsageAfterSuccess: true)
     }
     func loginPrivately(_ name: String, browser: BrowserChoice) {
-        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: true), refreshUsageAfterSuccess: true)
+        run(["login", "--browser-auth", name], loginBrowser: .selected(browser, privateWindow: true), loginAccount: name, refreshUsageAfterSuccess: true)
+    }
+
+    func checkPendingLoginStatus() {
+        guard let accountName = loginAccountName, canManuallyCheckLogin else { return }
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        let capturedKey = currentUsageCacheKey
+        Task {
+            _ = await detectCompletedLogin(
+                accountName: accountName,
+                target: capturedTarget,
+                remoteHost: capturedHost,
+                usageKey: capturedKey
+            )
+        }
     }
 
     func setDefault(_ name: String) { run(["use", name]) }
@@ -412,6 +437,10 @@ final class CABStore: ObservableObject {
                 return
             }
             status = loaded
+            if let loginAccountName,
+               loaded.accounts.first(where: { $0.name == loginAccountName })?.isLoggedIn == true {
+                markLoginStatusConfirmed(accountName: loginAccountName)
+            }
             if !hasSavedDesktopSessionPreference && capturedTarget == .local {
                 preserveSessionsOnDesktopSwitch = loaded.sharedSessions
             }
@@ -510,6 +539,7 @@ final class CABStore: ObservableObject {
     private func run(
         _ arguments: [String],
         loginBrowser: LoginBrowser? = nil,
+        loginAccount: String? = nil,
         refreshUsageAfterSuccess: Bool = false,
         afterSuccess: (() -> Void)? = nil
     ) {
@@ -519,6 +549,9 @@ final class CABStore: ObservableObject {
             output = "$ cab \(arguments.joined(separator: " "))\n"
             loginOutputBuffer = ""
             loginBrowserOpened = false
+            if let loginAccount {
+                beginLoginStatusMonitoring(accountName: loginAccount)
+            }
             do {
                 let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
                     Task { @MainActor in self?.receiveOutput(chunk, loginBrowser: loginBrowser) }
@@ -527,12 +560,83 @@ final class CABStore: ObservableObject {
                     throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
                 }
                 afterSuccess?()
+                loginStatusMonitor?.cancel()
+                loginStatusMonitor = nil
                 await reload(forceUsage: refreshUsageAfterSuccess)
+                if loginAccount != nil { clearLoginProgress() }
             } catch {
+                if loginAccount != nil { clearLoginProgress() }
                 errorMessage = error.localizedDescription
             }
             isBusy = false
         }
+    }
+
+    private func beginLoginStatusMonitoring(accountName: String) {
+        loginStatusMonitor?.cancel()
+        loginAccountName = accountName
+        loginStatusConfirmed = false
+        let accountWasLoggedIn = status.accounts.first(where: { $0.name == accountName })?.isLoggedIn == true
+        canManuallyCheckLogin = !accountWasLoggedIn
+        guard !accountWasLoggedIn else { return }
+
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        let capturedKey = currentUsageCacheKey
+        loginStatusMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 750_000_000)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                if await self.detectCompletedLogin(
+                    accountName: accountName,
+                    target: capturedTarget,
+                    remoteHost: capturedHost,
+                    usageKey: capturedKey
+                ) {
+                    return
+                }
+            }
+        }
+    }
+
+    private func detectCompletedLogin(
+        accountName: String,
+        target: BridgeTarget,
+        remoteHost: String,
+        usageKey: String
+    ) async -> Bool {
+        guard loginAccountName == accountName, usageKey == currentUsageCacheKey else { return true }
+        do {
+            let loaded = try await service.loadStatus(target: target, remoteHost: remoteHost)
+            guard loginAccountName == accountName, usageKey == currentUsageCacheKey else { return true }
+            status = loaded
+            guard loaded.accounts.first(where: { $0.name == accountName })?.isLoggedIn == true else { return false }
+            markLoginStatusConfirmed(accountName: accountName)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func markLoginStatusConfirmed(accountName: String) {
+        guard loginAccountName == accountName else { return }
+        if !loginStatusConfirmed {
+            output += "\n已检测到官方 Codex 登录成功，正在完成状态与额度更新…\n"
+        }
+        loginStatusConfirmed = true
+        canManuallyCheckLogin = false
+    }
+
+    private func clearLoginProgress() {
+        loginStatusMonitor?.cancel()
+        loginStatusMonitor = nil
+        loginAccountName = nil
+        loginStatusConfirmed = false
+        canManuallyCheckLogin = false
     }
 
     private func receiveOutput(_ chunk: String, loginBrowser: LoginBrowser?) {
