@@ -546,6 +546,12 @@ final class CABStore: ObservableObject {
         guard !isBusy else { return }
         Task {
             isBusy = true
+            let capturedTarget = target
+            let capturedHost = remoteHost
+            let capturedKey = currentUsageCacheKey
+            let shouldWaitForNewLogin = loginAccount.map { accountName in
+                status.accounts.first(where: { $0.name == accountName })?.isLoggedIn != true
+            } ?? false
             output = "$ cab \(arguments.joined(separator: " "))\n"
             loginOutputBuffer = ""
             loginBrowserOpened = false
@@ -553,7 +559,7 @@ final class CABStore: ObservableObject {
                 beginLoginStatusMonitoring(accountName: loginAccount)
             }
             do {
-                let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
+                let result = try await service.execute(arguments, target: capturedTarget, remoteHost: capturedHost) { [weak self] chunk in
                     Task { @MainActor in self?.receiveOutput(chunk, loginBrowser: loginBrowser) }
                 }
                 if result.exitCode != 0 {
@@ -562,6 +568,19 @@ final class CABStore: ObservableObject {
                 afterSuccess?()
                 loginStatusMonitor?.cancel()
                 loginStatusMonitor = nil
+                if let loginAccount, shouldWaitForNewLogin, !loginStatusConfirmed {
+                    for _ in 0..<8 {
+                        if await detectCompletedLogin(
+                            accountName: loginAccount,
+                            target: capturedTarget,
+                            remoteHost: capturedHost,
+                            usageKey: capturedKey
+                        ) {
+                            break
+                        }
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
+                }
                 await reload(forceUsage: refreshUsageAfterSuccess)
                 if loginAccount != nil { clearLoginProgress() }
             } catch {
