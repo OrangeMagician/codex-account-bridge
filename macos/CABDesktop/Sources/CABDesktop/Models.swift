@@ -63,6 +63,25 @@ struct AccountStatus: Codable, Equatable, Identifiable {
     var isLoginUnknown: Bool { login == "unknown" }
 }
 
+struct AgentBindingReport: Codable, Equatable {
+    let agents: [AgentBindingStatus]
+}
+
+struct AgentBindingStatus: Codable, Equatable, Identifiable {
+    var id: String { service }
+    let service: String
+    let kind: String
+    let active: Bool
+    let account: String?
+}
+
+struct AgentBindingRequest: Identifiable {
+    var id: String { service }
+    let service: String
+    let account: String?
+    let active: Bool
+}
+
 struct UsageReport: Codable, Equatable {
     let fetchedAt: Date
     let accounts: [AccountUsageReport]

@@ -56,6 +56,19 @@ final class CABService {
         }
     }
 
+    func loadAgentBindings(remoteHost: String) async throws -> AgentBindingReport {
+        let result = try await execute(["agent", "list", "--json"], target: .remote, remoteHost: remoteHost)
+        guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+        guard let data = result.output.data(using: .utf8) else {
+            throw BridgeError.commandFailed("cab 返回了无法读取的智能体绑定信息。")
+        }
+        do {
+            return try JSONDecoder().decode(AgentBindingReport.self, from: data)
+        } catch {
+            throw BridgeError.commandFailed("无法解析智能体绑定信息：\(error.localizedDescription)")
+        }
+    }
+
     func execute(
         _ arguments: [String],
         target: BridgeTarget,

@@ -38,6 +38,9 @@ final class CABStore: ObservableObject {
     @Published private(set) var loginAccountName: String?
     @Published private(set) var loginStatusConfirmed = false
     @Published private(set) var canManuallyCheckLogin = false
+    @Published var agentBindings: [AgentBindingStatus] = []
+    @Published var agentSelections: [String: String] = [:]
+    @Published var agentBindingError: String?
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -243,6 +246,22 @@ final class CABStore: ObservableObject {
     func setDefault(_ name: String) { run(["use", name]) }
     func setRemote(_ name: String) { run(["remote", "use", name]) }
 
+    func setAgentSelection(service: String, account: String) {
+        agentSelections[service] = account
+    }
+
+    func applyAgentBinding(_ request: AgentBindingRequest) {
+        guard target == .remote, !isBusy else { return }
+        var arguments = ["agent"]
+        if let account = request.account, !account.isEmpty {
+            arguments += ["bind", "--service", request.service, "--account", account]
+        } else {
+            arguments += ["unbind", "--service", request.service]
+        }
+        if request.active { arguments.append("--confirm-restart-agent") }
+        run(arguments)
+    }
+
     func switchCodexDesktop(to account: AccountStatus) {
         guard target == .local, account.isLoggedIn else {
             errorMessage = "只能用这台 Mac 上已登录的账号启动 Codex 桌面客户端。"
@@ -437,6 +456,22 @@ final class CABStore: ObservableObject {
                 return
             }
             status = loaded
+            if capturedTarget == .remote {
+                do {
+                    let report = try await service.loadAgentBindings(remoteHost: capturedHost)
+                    guard key == currentUsageCacheKey else { isBusy = false; return }
+                    agentBindings = report.agents
+                    agentSelections = Dictionary(uniqueKeysWithValues: report.agents.map { ($0.service, $0.account ?? "") })
+                    agentBindingError = nil
+                } catch {
+                    agentBindings = []
+                    agentBindingError = error.localizedDescription
+                }
+            } else {
+                agentBindings = []
+                agentSelections = [:]
+                agentBindingError = nil
+            }
             if let loginAccountName,
                loaded.accounts.first(where: { $0.name == loginAccountName })?.isLoggedIn == true {
                 markLoginStatusConfirmed(accountName: loginAccountName)

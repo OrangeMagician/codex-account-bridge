@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var pendingDesktopSwitch: AccountStatus?
     @State private var pendingSessionSharing: Bool?
     @State private var pendingReauthentication: ReauthenticationRequest?
+    @State private var pendingAgentBinding: AgentBindingRequest?
 
     var body: some View {
         NavigationSplitView {
@@ -88,6 +89,17 @@ struct ContentView: View {
             Button("取消", role: .cancel) { pendingReauthentication = nil }
         } message: {
             Text(reauthenticationWarning)
+        }
+        .confirmationDialog("应用智能体账号绑定？", isPresented: Binding(get: { pendingAgentBinding != nil }, set: { if !$0 { pendingAgentBinding = nil } }), titleVisibility: .visible) {
+            Button(pendingAgentBinding?.account == nil ? "解除绑定" : "应用绑定", role: .destructive) {
+                if let request = pendingAgentBinding { store.applyAgentBinding(request) }
+                pendingAgentBinding = nil
+            }
+            Button("取消", role: .cancel) { pendingAgentBinding = nil }
+        } message: {
+            if let request = pendingAgentBinding {
+                Text(request.active ? "这会重启 \(request.service)，正在运行的智能体任务可能中断。CAB 只设置 CODEX_HOME，不会读取或复制令牌。" : "服务当前未运行；CAB 只设置 CODEX_HOME，不会启动服务或读取令牌。")
+            }
         }
         .task { await MainActor.run { store.refresh() } }
     }
@@ -194,7 +206,52 @@ struct ContentView: View {
             usageOverviewCard
             if store.target == .local { desktopSwitcherCard }
             sessionSharingCard
+            if store.target == .remote { agentBindingsCard }
             rotationCard
+        }
+    }
+
+    private var agentBindingsCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("为 Hermes 或 OpenClaw 的 systemd 用户服务选择明确的 Codex 账号。绑定仅写入 CAB 管理的 CODEX_HOME 覆盖，不复制授权文件。")
+                    .font(.callout).foregroundStyle(.secondary)
+                if let error = store.agentBindingError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                } else if store.agentBindings.isEmpty {
+                    Label("未发现支持的 Hermes 或 OpenClaw 用户服务。", systemImage: "tray")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.agentBindings) { agent in
+                        HStack(spacing: 12) {
+                            Image(systemName: agent.kind == "OpenClaw" ? "shippingbox" : "sparkles")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(agent.kind).fontWeight(.medium)
+                                Text(agent.service).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            statusBadge(agent.active ? "运行中" : "未运行", color: agent.active ? .green : .gray)
+                            Picker("账号", selection: Binding(
+                                get: { store.agentSelections[agent.service] ?? "" },
+                                set: { store.setAgentSelection(service: agent.service, account: $0) }
+                            )) {
+                                Text("不绑定").tag("")
+                                ForEach(loggedInAccounts) { account in Text(account.name).tag(account.name) }
+                            }
+                            .labelsHidden().frame(width: 150)
+                            Button("应用") {
+                                let selected = store.agentSelections[agent.service] ?? ""
+                                pendingAgentBinding = AgentBindingRequest(service: agent.service, account: selected.isEmpty ? nil : selected, active: agent.active)
+                            }
+                            .disabled(store.isBusy || (store.agentSelections[agent.service] ?? "") == (agent.account ?? ""))
+                        }
+                        if agent.id != store.agentBindings.last?.id { Divider() }
+                    }
+                }
+            }.padding(8)
+        } label: {
+            Label("智能体账号绑定", systemImage: "person.2.badge.gearshape")
         }
     }
 

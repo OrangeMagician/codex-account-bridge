@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OrangeMagician/codex-account-bridge/internal/agentbinding"
 	"github.com/OrangeMagician/codex-account-bridge/internal/codex"
 	"github.com/OrangeMagician/codex-account-bridge/internal/config"
 	"github.com/OrangeMagician/codex-account-bridge/internal/session"
@@ -88,6 +89,8 @@ func Run(argv []string, version string) (int, error) {
 		return statusCommand(cfg, args)
 	case "usage":
 		return usageCommand(cfg, args)
+	case "agent":
+		return agentCommand(cfg, args)
 	case "sessions":
 		return sessionsCommand(paths, &cfg, args)
 	case "shim":
@@ -116,6 +119,9 @@ Commands:
   cab app-server [--account NAME] -- [app-server arguments]
   cab status [--json]
   cab usage [--account NAME] [--json]
+  cab agent list [--json]
+  cab agent bind --service UNIT --account NAME --confirm-restart-agent
+  cab agent unbind --service UNIT --confirm-restart-agent
   cab rotation status [--json]
   cab rotation configure --accounts NAME,NAME
   cab rotation enable|disable|reset
@@ -130,6 +136,100 @@ Commands:
 Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
 no proxy, auth copying, automatic project trust, or approval/sandbox bypass.
 `)
+}
+
+func agentCommand(cfg config.Config, args []string) (int, error) {
+	if len(args) == 0 {
+		return 2, errors.New("agent requires list, bind, or unbind")
+	}
+	manager, err := agentbinding.DefaultManager()
+	if err != nil {
+		return 1, err
+	}
+	homes := make(map[string]string, len(cfg.Accounts))
+	for _, account := range cfg.Accounts {
+		homes[account.Name] = account.Home
+	}
+	switch args[0] {
+	case "list":
+		flags := newFlags("agent list")
+		jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 {
+			return 2, errors.New("usage: cab agent list [--json]")
+		}
+		bindings, err := manager.List(homes)
+		if err != nil {
+			return 1, err
+		}
+		if *jsonOutput {
+			return printJSON(struct {
+				Agents []agentbinding.Binding `json:"agents"`
+			}{bindings})
+		}
+		if len(bindings) == 0 {
+			fmt.Println("No supported agent services found.")
+			return 0, nil
+		}
+		fmt.Println("SERVICE\tKIND\tACTIVE\tACCOUNT")
+		for _, binding := range bindings {
+			fmt.Printf("%s\t%s\t%t\t%s\n", binding.Service, binding.Kind, binding.Active, markerValue(binding.Account, "unbound"))
+		}
+		return 0, nil
+	case "bind":
+		flags := newFlags("agent bind")
+		service := flags.String("service", "", "supported systemd user service")
+		accountName := flags.String("account", "", "configured Codex account")
+		confirm := flags.Bool("confirm-restart-agent", false, "confirm interruption of an active agent")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 || *service == "" || *accountName == "" {
+			return 2, errors.New("usage: cab agent bind --service UNIT --account NAME --confirm-restart-agent")
+		}
+		account, ok := cfg.Find(*accountName)
+		if !ok {
+			return 2, fmt.Errorf("unknown account %q", *accountName)
+		}
+		loggedIn, err := codex.LoggedIn(account.Home)
+		if err != nil {
+			return 1, fmt.Errorf("check account login: %w", err)
+		}
+		if !loggedIn {
+			return 2, fmt.Errorf("account %q is not logged in", account.Name)
+		}
+		if err := manager.Bind(*service, account.Home, *confirm); err != nil {
+			return 1, err
+		}
+		fmt.Printf("bound %s to %s\n", *service, account.Name)
+		return 0, nil
+	case "unbind":
+		flags := newFlags("agent unbind")
+		service := flags.String("service", "", "supported systemd user service")
+		confirm := flags.Bool("confirm-restart-agent", false, "confirm interruption of an active agent")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 || *service == "" {
+			return 2, errors.New("usage: cab agent unbind --service UNIT --confirm-restart-agent")
+		}
+		if err := manager.Unbind(*service, *confirm); err != nil {
+			return 1, err
+		}
+		fmt.Printf("removed CAB binding from %s\n", *service)
+		return 0, nil
+	default:
+		return 2, fmt.Errorf("unknown agent command %q", args[0])
+	}
+}
+
+func markerValue(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 type accountUsageOutput struct {

@@ -143,6 +143,7 @@ open "dist/CodexAccountBridge.app"
 界面将操作分为两个层级：
 
 - “全局设置”集中管理 Codex 桌面端账号、本机项目与会话保留、服务器跨账号会话共享和新任务自动轮换；这些策略作用于当前选择的整台 Mac 或 SSH 主机，不属于某个账号。
+- 远程服务器的“智能体账号绑定”会发现 Hermes gateway/bridge 与 OpenClaw gateway 的 systemd 用户服务，并为每个服务明确选择一个已登录账号。CAB 只写自己管理的 `CODEX_HOME` drop-in，不读取或复制授权文件；运行中的服务会在确认后重启，失败时自动恢复原绑定。
 - 单个账号页面只负责登录状态、重新认证、默认 CLI/Remote 账号和移除登记。已登录账号不会再把“登录”作为主操作。
 - 账号列表显示剩余额度摘要；“全局设置”提供所有账号额度概览，账号详情显示完整周期、精确重置时间和官方可选 Credits/消费上限。额度按当前 Mac/远程服务器分别缓存在内存中，默认 15 分钟更新一次，也可选择 5/30/60 分钟或仅手动刷新；进入账号详情不会重复请求。
 
@@ -177,6 +178,16 @@ codex --version
 ```
 
 shim 会让桌面版执行的 `codex app-server` 使用 `cab remote use` 固定的账号。切换账号后，应先结束现有远程任务，再运行 `cab remote use NAME` 并重新连接 SSH 主机。不要在同一个进行中的远程任务中途换账号。
+
+也可以在服务器终端显式管理支持的智能体服务：
+
+```bash
+cab agent list
+cab agent bind --service hermes-gateway-coder.service --account work --confirm-restart-agent
+cab agent unbind --service hermes-gateway-coder.service --confirm-restart-agent
+```
+
+CAB 不会因额度、限流、认证或运行错误自动切换智能体账号。服务未运行时只保存绑定而不会启动；服务运行时必须显式确认重启，以免静默中断任务。
 
 移除 shim 会恢复最近一次安装时创建的备份：
 
