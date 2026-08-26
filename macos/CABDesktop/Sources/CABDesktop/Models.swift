@@ -271,6 +271,13 @@ struct CommandResult {
     let exitCode: Int32
 }
 
+struct CodexProcessConflict: Equatable, Identifiable {
+    let pid: Int32
+    let label: String
+
+    var id: Int32 { pid }
+}
+
 enum BridgeError: LocalizedError {
     case executableMissing
     case invalidAccountName

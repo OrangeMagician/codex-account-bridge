@@ -403,7 +403,7 @@ struct ContentView: View {
     private var sessionSharingWarning: String {
         if store.target == .local {
             return pendingSessionSharing == true
-                ? "开启后，下次切换桌面账号时 CAB 会先关闭桌面端，再合并并共享各账号的任务历史。其他账号可能看到已有对话，但登录凭据始终独立。"
+                ? "开启后，下次切换桌面账号前 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再合并并共享历史。其他账号可能看到已有对话，但登录凭据始终独立。"
                 : "关闭后，下次切换桌面账号时 CAB 会为每个账号恢复独立的任务历史副本。登录凭据不会改变。"
         }
         return "操作前必须退出服务器上的所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。"
@@ -411,7 +411,7 @@ struct ContentView: View {
 
     private var desktopSwitchWarning: String {
         let sessionEffect = store.preserveSessionsOnDesktopSwitch
-            ? "如果尚未共享，会先安全合并会话历史，切换后仍能看到原有对话。"
+            ? "如果尚未共享，会先检查 CLI 和编辑器扩展，再安全合并会话历史；预检不通过时不会关闭桌面端。"
             : "如果当前正在共享，会先恢复各账号独立的会话副本。"
         return "这会关闭正在运行的 Codex 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。\(sessionEffect)请先保存正在进行的工作。"
     }

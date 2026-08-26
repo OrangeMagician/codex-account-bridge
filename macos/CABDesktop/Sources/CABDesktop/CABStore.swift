@@ -230,21 +230,42 @@ final class CABStore: ObservableObject {
         guard !isBusy else { return }
         Task {
             isBusy = true
+            var desktopWasStopped = false
+            let fallbackHome = previousDesktopHome(fallback: account.home)
             let sessionMode = preserveSessionsOnDesktopSwitch ? "保留共享会话" : "保持会话独立"
-            output = "正在关闭 Codex 桌面客户端，应用“\(sessionMode)”设置，并使用 \(account.name) 重新启动…\n"
+            output = "正在检查会话迁移条件，准备应用“\(sessionMode)”设置…\n"
             do {
+                if preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != status.sharedSessions {
+                    let conflicts = try await service.runningNonDesktopCodexProcesses()
+                    guard conflicts.isEmpty else {
+                        let details = conflicts.map { "\($0.label)（PID \($0.pid)）" }.joined(separator: "、")
+                        throw BridgeError.commandFailed("检测到仍在运行的 \(details)。请先结束其中的任务并退出对应扩展或 CLI 后重试。Codex 桌面端尚未关闭。")
+                    }
+                }
+                output += "预检通过，正在关闭 Codex 桌面客户端并切换账号…\n"
                 try await service.stopCodexDesktop()
+                desktopWasStopped = true
                 let sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded()
                 if preserveSessionsOnDesktopSwitch || sessionModeChanged,
                    let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
                     output += "已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n"
                 }
                 try await service.startCodexDesktop(codexHome: account.home)
+                desktopWasStopped = false
                 lastDesktopAccount = account.name
                 defaults.set(account.name, forKey: lastDesktopAccountKey)
                 output += "已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "会话历史已共享" : "会话历史保持独立")。\n"
             } catch {
-                errorMessage = error.localizedDescription
+                var message = error.localizedDescription
+                if desktopWasStopped {
+                    do {
+                        try await service.startCodexDesktop(codexHome: fallbackHome)
+                        output += "切换未完成，已重新启动原 Codex 桌面账号。\n"
+                    } catch {
+                        message += "\n同时无法自动恢复 Codex 桌面客户端：\(error.localizedDescription)"
+                    }
+                }
+                errorMessage = message
             }
             isBusy = false
         }
@@ -349,6 +370,14 @@ final class CABStore: ObservableObject {
         }
         status = try await service.loadStatus(target: .local, remoteHost: "")
         return modeChanged
+    }
+
+    private func previousDesktopHome(fallback: String) -> String {
+        if let lastDesktopAccount,
+           let account = status.accounts.first(where: { $0.name == lastDesktopAccount }) {
+            return account.home
+        }
+        return status.currentLogin?.home ?? fallback
     }
 
     private func reload(forceUsage: Bool = false) async {

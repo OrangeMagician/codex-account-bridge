@@ -22,6 +22,15 @@ struct SSHConfigDiscoveryTests {
         #expect(UsageRefreshInterval.manual.duration == nil)
     }
 
+    @Test func classifiesEditorCodexProcessesAndExcludesDesktopChildren() {
+        let vscode = "/Users/test/.vscode/extensions/openai.chatgpt/bin/codex"
+        let desktop = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        #expect(codexProcessLabel(executablePath: vscode) == "VS Code 的 Codex 扩展")
+        #expect(!isCodexDesktopProcess(executablePath: vscode, desktopApplicationPath: "/Applications/ChatGPT.app"))
+        #expect(isCodexDesktopProcess(executablePath: desktop, desktopApplicationPath: "/Applications/ChatGPT.app"))
+        #expect(codexProcessLabel(executablePath: "/opt/homebrew/bin/codex") == "Codex CLI 或 app-server")
+    }
+
     @Test func preparesOfficialThreadCatalogRebuildWithBackup() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -280,6 +280,49 @@ final class CABService {
         }
     }
 
+    func runningNonDesktopCodexProcesses() async throws -> [CodexProcessConflict] {
+        let pgrep = try await runLocalProcess("/usr/bin/pgrep", arguments: ["-x", "codex"])
+        if pgrep.exitCode == 1 { return [] }
+        guard pgrep.exitCode == 0 else {
+            throw BridgeError.commandFailed(pgrep.errorOutput.nonEmpty ?? "无法枚举正在运行的 Codex 进程。")
+        }
+        let desktopPath = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex")?.standardizedFileURL.path
+        var result: [CodexProcessConflict] = []
+        for line in pgrep.output.split(whereSeparator: \.isNewline) {
+            guard let pid = Int32(line.trimmingCharacters(in: .whitespacesAndNewlines)) else { continue }
+            let ps = try await runLocalProcess("/bin/ps", arguments: ["-ww", "-p", String(pid), "-o", "comm="])
+            guard ps.exitCode == 0 else { continue }
+            let executablePath = ps.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !isCodexDesktopProcess(executablePath: executablePath, desktopApplicationPath: desktopPath) else { continue }
+            result.append(CodexProcessConflict(pid: pid, label: codexProcessLabel(executablePath: executablePath)))
+        }
+        return result
+    }
+
+    private func runLocalProcess(_ executable: String, arguments: [String]) async throws -> CommandResult {
+        try await withCheckedThrowingContinuation { continuation in
+            let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            process.standardOutput = stdout
+            process.standardError = stderr
+            process.terminationHandler = { finished in
+                continuation.resume(returning: CommandResult(
+                    output: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+                    errorOutput: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+                    exitCode: finished.terminationStatus
+                ))
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
     func discoverSSHHosts() throws -> [String] {
         try SSHConfigDiscovery().discover()
     }
@@ -379,5 +422,33 @@ final class CABService {
 
     private func appleScriptQuote(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+}
+
+func isCodexDesktopProcess(executablePath: String, desktopApplicationPath: String?) -> Bool {
+    if let desktopApplicationPath, executablePath.contains(desktopApplicationPath + "/Contents/") {
+        return true
+    }
+    return executablePath.contains("/Codex.app/Contents/") || executablePath.contains("/ChatGPT.app/Contents/")
+}
+
+func codexProcessLabel(executablePath: String) -> String {
+    let value = executablePath.lowercased()
+    if value.contains("/.vscode/extensions/") || value.contains("/visual studio code.app/") {
+        return "VS Code 的 Codex 扩展"
+    }
+    if value.contains("/cursor.app/") || value.contains("/.cursor/extensions/") {
+        return "Cursor 的 Codex 扩展"
+    }
+    if value.contains("jetbrains") {
+        return "JetBrains 的 Codex 插件"
+    }
+    return "Codex CLI 或 app-server"
+}
+
+private extension String {
+    var nonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
