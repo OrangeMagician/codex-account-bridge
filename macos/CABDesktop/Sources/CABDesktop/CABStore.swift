@@ -42,6 +42,7 @@ final class CABStore: ObservableObject {
     @Published var agentSelections: [String: String] = [:]
     @Published var agentBindingError: String?
     @Published var bulkAgentAccount = ""
+    @Published var pendingRemoteSessionChange: RemoteSessionProcessRequest?
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -341,33 +342,38 @@ final class CABStore: ObservableObject {
         }
     }
 
-    func setSessionSharingEnabled(_ enabled: Bool) {
+    func prepareSessionSharingChange(_ enabled: Bool) {
         guard !isBusy else { return }
         Task {
             isBusy = true
             defer { isBusy = false }
             do {
-                if try await service.hasRunningCodexProcesses(target: target, remoteHost: remoteHost) {
-                    throw BridgeError.commandFailed("检测到目标机器仍有 Codex 在运行。请退出桌面端、CLI 和编辑器插件后，再修改会话共享。")
-                }
-                let arguments = enabled
-                    ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
-                    : ["sessions", "disable", "--confirm-codex-stopped"]
-                output = "$ cab \(arguments.joined(separator: " "))\n"
-                let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
-                    Task { @MainActor in self?.output += chunk }
-                }
-                if result.exitCode != 0 {
-                    throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
-                }
-                if target == .local {
-                    setPreserveSessionsOnDesktopSwitch(enabled)
-                }
-                await reload()
+                let report = try await service.loadCodexProcesses(target: target, remoteHost: remoteHost)
+                if report.processes.isEmpty { try await applySessionSharingChange(enabled) }
+                else { pendingRemoteSessionChange = RemoteSessionProcessRequest(enabled: enabled, processes: report.processes) }
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    func stopProcessesAndApplySessionChange(_ request: RemoteSessionProcessRequest) {
+        guard !isBusy else { return }
+        Task {
+            isBusy = true; defer { isBusy = false }
+            do {
+                try await service.stopCodexProcesses(request.processes.map(\.pid), target: target, remoteHost: remoteHost)
+                try await applySessionSharingChange(request.enabled)
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    private func applySessionSharingChange(_ enabled: Bool) async throws {
+        let arguments = enabled ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"] : ["sessions", "disable", "--confirm-codex-stopped"]
+        output = "$ cab \(arguments.joined(separator: " "))\n"
+        let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in Task { @MainActor in self?.output += chunk } }
+        if result.exitCode != 0 { throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput) }
+        await reload()
     }
 
     func remove(_ name: String) {

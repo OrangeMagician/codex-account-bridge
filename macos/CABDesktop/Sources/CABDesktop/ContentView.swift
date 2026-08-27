@@ -73,7 +73,7 @@ struct ContentView: View {
                     if store.target == .local {
                         store.setPreserveSessionsOnDesktopSwitch(enabled)
                     } else {
-                        store.setSessionSharingEnabled(enabled)
+                        store.prepareSessionSharingChange(enabled)
                     }
                 }
                 pendingSessionSharing = nil
@@ -81,6 +81,17 @@ struct ContentView: View {
             Button("取消", role: .cancel) { pendingSessionSharing = nil }
         } message: {
             Text(sessionSharingWarning)
+        }
+        .confirmationDialog("检测到未关闭的 Codex", isPresented: Binding(get: { store.pendingRemoteSessionChange != nil }, set: { if !$0 { store.pendingRemoteSessionChange = nil } }), titleVisibility: .visible) {
+            Button("关闭这些进程并继续", role: .destructive) {
+                if let request = store.pendingRemoteSessionChange { store.stopProcessesAndApplySessionChange(request) }
+                store.pendingRemoteSessionChange = nil
+            }
+            Button("取消", role: .cancel) { store.pendingRemoteSessionChange = nil }
+        } message: {
+            if let request = store.pendingRemoteSessionChange {
+                Text(processResolutionMessage(request))
+            }
         }
         .confirmationDialog("重新登录账号？", isPresented: Binding(get: { pendingReauthentication != nil }, set: { if !$0 { pendingReauthentication = nil } }), titleVisibility: .visible) {
             Button("继续官方登录", role: .destructive) {
@@ -533,6 +544,13 @@ struct ContentView: View {
                 : "关闭后，下次切换桌面账号时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。"
         }
         return "操作前必须退出服务器上的所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。"
+    }
+
+    private func processResolutionMessage(_ request: RemoteSessionProcessRequest) -> String {
+        let details = request.processes.map { process in
+            "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
+        }.joined(separator: "\n")
+        return "以下 Codex 仍在运行：\n\(details)\n\n确认后只会请求这些进程正常退出；全部退出后才会\(request.enabled ? "开启" : "关闭")会话共享。未保存的任务可能中断。"
     }
 
     private var desktopSwitchWarning: String {

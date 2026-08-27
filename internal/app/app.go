@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/OrangeMagician/codex-account-bridge/internal/agentbinding"
 	"github.com/OrangeMagician/codex-account-bridge/internal/codex"
+	"github.com/OrangeMagician/codex-account-bridge/internal/codexprocess"
 	"github.com/OrangeMagician/codex-account-bridge/internal/config"
 	"github.com/OrangeMagician/codex-account-bridge/internal/session"
 )
@@ -91,6 +93,8 @@ func Run(argv []string, version string) (int, error) {
 		return usageCommand(cfg, args)
 	case "agent":
 		return agentCommand(cfg, args)
+	case "processes":
+		return processesCommand(args)
 	case "sessions":
 		return sessionsCommand(paths, &cfg, args)
 	case "shim":
@@ -123,6 +127,8 @@ Commands:
   cab agent bind --service UNIT --account NAME --confirm-restart-agent
   cab agent bind-all --account NAME --confirm-restart-agent
   cab agent unbind --service UNIT --confirm-restart-agent
+  cab processes list [--json]
+  cab processes stop --pids PID,PID --confirm-stop-codex
   cab rotation status [--json]
   cab rotation configure --accounts NAME,NAME
   cab rotation enable|disable|reset
@@ -137,6 +143,66 @@ Commands:
 Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
 no proxy, auth copying, automatic project trust, or approval/sandbox bypass.
 `)
+}
+
+func processesCommand(args []string) (int, error) {
+	if len(args) == 0 {
+		return 2, errors.New("processes requires list or stop")
+	}
+	switch args[0] {
+	case "list":
+		flags := newFlags("processes list")
+		jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 {
+			return 2, errors.New("usage: cab processes list [--json]")
+		}
+		processes, err := codexprocess.List()
+		if err != nil {
+			return 1, err
+		}
+		if *jsonOutput {
+			return printJSON(struct {
+				Processes []codexprocess.Process `json:"processes"`
+			}{processes})
+		}
+		if len(processes) == 0 {
+			fmt.Println("No Codex processes are running.")
+			return 0, nil
+		}
+		fmt.Println("PID\tELAPSED\tTTY\tSTATE\tEXECUTABLE")
+		for _, process := range processes {
+			fmt.Printf("%d\t%s\t%s\t%s\t%s\n", process.PID, process.Elapsed, process.TTY, process.State, process.Executable)
+		}
+		return 0, nil
+	case "stop":
+		flags := newFlags("processes stop")
+		values := flags.String("pids", "", "comma-separated PIDs from processes list")
+		confirm := flags.Bool("confirm-stop-codex", false, "confirm normal termination of listed Codex processes")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 || *values == "" || !*confirm {
+			return 2, errors.New("usage: cab processes stop --pids PID,PID --confirm-stop-codex")
+		}
+		var pids []int
+		for _, value := range strings.Split(*values, ",") {
+			pid, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || pid <= 0 {
+				return 2, fmt.Errorf("invalid PID %q", value)
+			}
+			pids = append(pids, pid)
+		}
+		if err := codexprocess.Stop(pids); err != nil {
+			return 1, err
+		}
+		fmt.Printf("stopped %d requested Codex process(es)\n", len(pids))
+		return 0, nil
+	default:
+		return 2, fmt.Errorf("unknown processes command %q", args[0])
+	}
 }
 
 func agentCommand(cfg config.Config, args []string) (int, error) {
@@ -769,6 +835,17 @@ func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int
 	}
 	if len(cfg.Accounts) < 2 && args[0] == "enable" {
 		return 2, errors.New("configure at least two accounts first")
+	}
+	running, err := codexprocess.List()
+	if err != nil {
+		return 1, err
+	}
+	if len(running) > 0 {
+		pids := make([]string, 0, len(running))
+		for _, process := range running {
+			pids = append(pids, strconv.Itoa(process.PID))
+		}
+		return 2, fmt.Errorf("Codex is still running (PIDs %s); close it before changing session sharing", strings.Join(pids, ", "))
 	}
 	switch args[0] {
 	case "enable":

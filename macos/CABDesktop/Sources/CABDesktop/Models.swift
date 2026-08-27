@@ -89,6 +89,31 @@ struct AgentBulkBindingRequest: Identifiable {
     let activeServiceCount: Int
 }
 
+struct CodexProcessReport: Codable, Equatable {
+    let processes: [CodexProcessStatus]
+}
+
+struct CodexProcessStatus: Codable, Equatable, Identifiable {
+    var id: Int { pid }
+    let pid: Int
+    let parentPID: Int
+    let elapsed: String
+    let tty: String
+    let state: String
+    let executable: String
+
+    enum CodingKeys: String, CodingKey {
+        case pid, elapsed, tty, state, executable
+        case parentPID = "parent_pid"
+    }
+}
+
+struct RemoteSessionProcessRequest: Identifiable {
+    var id: String { "\(enabled):\(processes.map(\.pid))" }
+    let enabled: Bool
+    let processes: [CodexProcessStatus]
+}
+
 struct UsageReport: Codable, Equatable {
     let fetchedAt: Date
     let accounts: [AccountUsageReport]

@@ -69,6 +69,20 @@ final class CABService {
         }
     }
 
+    func loadCodexProcesses(target: BridgeTarget, remoteHost: String) async throws -> CodexProcessReport {
+        let result = try await execute(["processes", "list", "--json"], target: target, remoteHost: remoteHost)
+        guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+        guard let data = result.output.data(using: .utf8) else { throw BridgeError.commandFailed("cab 返回了无法读取的 Codex 进程信息。") }
+        do { return try JSONDecoder().decode(CodexProcessReport.self, from: data) }
+        catch { throw BridgeError.commandFailed("无法解析 Codex 进程信息：\(error.localizedDescription)") }
+    }
+
+    func stopCodexProcesses(_ pids: [Int], target: BridgeTarget, remoteHost: String) async throws {
+        guard !pids.isEmpty else { return }
+        let result = try await execute(["processes", "stop", "--pids", pids.map(String.init).joined(separator: ","), "--confirm-stop-codex"], target: target, remoteHost: remoteHost)
+        guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+    }
+
     func execute(
         _ arguments: [String],
         target: BridgeTarget,
