@@ -16,6 +16,8 @@ enum CodexWorkspaceState {
     // preferences are deliberately excluded.
     private static let mergedObjectKeys = [
         "local-projects",
+        "remote-connection-analytics-id-by-host-id",
+        "remote-connection-auto-connect-by-host-id",
         "thread-project-assignments",
         "thread-workspace-root-hints",
         "thread-projectless-output-directories",
@@ -26,9 +28,19 @@ enum CodexWorkspaceState {
         "project-order",
         "projectless-thread-ids",
     ]
+    private static let entityArrayKeys = [
+        "codex-managed-remote-connections": "hostId",
+        "remote-projects": "id",
+    ]
+    private static let entityAllowedFields = [
+        "codex-managed-remote-connections": Set(["hostId", "displayName", "source", "alias", "hostname", "sshPort", "connectionAnalyticsId"]),
+        "remote-projects": Set(["id", "hostId", "remotePath", "label"]),
+    ]
     private static let selectedValueKeys = [
         "active-workspace-roots",
+        "remote-project-connection-backfill-completed",
         "selected-project",
+        "selected-remote-host-id",
     ]
 
     static func synchronize(
@@ -73,6 +85,26 @@ enum CodexWorkspaceState {
             if !merged.isEmpty || targetState[key] != nil { targetState[key] = merged }
         }
 
+        for (key, identityKey) in entityArrayKeys {
+            var merged: [[String: Any]] = []
+            var positions: [String: Int] = [:]
+            let allowedFields = entityAllowedFields[key] ?? []
+            for state in states.reversed() {
+                guard let values = state[key] as? [[String: Any]] else { continue }
+                for value in values {
+                    guard let identity = value[identityKey] as? String, !identity.isEmpty else { continue }
+                    let sanitized = value.filter { allowedFields.contains($0.key) }
+                    if let position = positions[identity] {
+                        merged[position] = sanitized
+                    } else {
+                        positions[identity] = merged.count
+                        merged.append(sanitized)
+                    }
+                }
+            }
+            if !merged.isEmpty || targetState[key] != nil { targetState[key] = merged }
+        }
+
         for key in selectedValueKeys {
             if let value = states.compactMap({ meaningfulValue($0[key]) }).first {
                 targetState[key] = value
@@ -112,7 +144,8 @@ enum CodexWorkspaceState {
             targetURL: targetURL,
             backupURL: backupURL,
             targetPreviouslyExisted: targetPreviouslyExisted,
-            projectCount: (targetState["local-projects"] as? [String: Any])?.count ?? 0
+            projectCount: ((targetState["local-projects"] as? [String: Any])?.count ?? 0)
+                + ((targetState["remote-projects"] as? [[String: Any]])?.count ?? 0)
         )
     }
 

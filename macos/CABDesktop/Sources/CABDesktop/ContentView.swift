@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: CABStore
-    @State private var pendingDesktopSwitch: AccountStatus?
+    @State private var pendingDesktopSwitchConfirmation: AccountStatus?
     @State private var pendingSessionSharing: Bool?
     @State private var pendingReauthentication: ReauthenticationRequest?
     @State private var pendingAgentBinding: AgentBindingRequest?
@@ -59,14 +59,22 @@ struct ContentView: View {
             ServerManagerView()
                 .environmentObject(store)
         }
-        .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitch != nil }, set: { if !$0 { pendingDesktopSwitch = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitchConfirmation != nil }, set: { if !$0 { pendingDesktopSwitchConfirmation = nil } }), titleVisibility: .visible) {
             Button(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话并切换" : "使用独立项目与会话并切换", role: .destructive) {
-                if let account = pendingDesktopSwitch { store.switchCodexDesktop(to: account) }
-                pendingDesktopSwitch = nil
+                if let account = pendingDesktopSwitchConfirmation { store.switchCodexDesktop(to: account) }
+                pendingDesktopSwitchConfirmation = nil
             }
-            Button("取消", role: .cancel) { pendingDesktopSwitch = nil }
+            Button("取消", role: .cancel) { pendingDesktopSwitchConfirmation = nil }
         } message: {
             Text(desktopSwitchWarning)
+        }
+        .sheet(item: $store.pendingDesktopSwitch) { request in
+            DesktopSwitchProcessSheet(
+                request: request,
+                isBusy: store.isBusy,
+                onCancel: { store.pendingDesktopSwitch = nil },
+                onContinue: { store.closeProcessesAndContinueDesktopSwitch(request) }
+            )
         }
         .confirmationDialog(store.target == .local ? "更改项目与会话保留？" : "更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
             Button(store.target == .local ? (pendingSessionSharing == true ? "确认切换时保留" : "确认保持独立") : (pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立")) {
@@ -376,7 +384,7 @@ struct ContentView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Button("用此账号启动") { pendingDesktopSwitch = account }
+                                Button("用此账号启动") { pendingDesktopSwitchConfirmation = account }
                                     .disabled(store.isUsageRefreshing || store.isBusy)
                             }
                             .padding(.vertical, 9)
@@ -648,7 +656,7 @@ struct ContentView: View {
                             Spacer()
                             reauthenticationMenu(account)
                             if store.target == .local {
-                                Button("切换 Codex 桌面端") { pendingDesktopSwitch = account }
+                                Button("切换 Codex 桌面端") { pendingDesktopSwitchConfirmation = account }
                                     .buttonStyle(.borderedProminent)
                                     .disabled(store.isUsageRefreshing || store.isBusy)
                             }
@@ -1093,6 +1101,76 @@ struct ContentView: View {
             .foregroundStyle(color)
             .padding(.horizontal, 9).padding(.vertical, 5)
             .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct DesktopSwitchProcessSheet: View {
+    let request: DesktopSwitchProcessRequest
+    let isBusy: Bool
+    let onCancel: () -> Void
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "exclamationmark.bubble.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("还有 Codex 会话正在运行")
+                        .font(.title2.bold())
+                    Text("关闭下列会话后，才能安全切换到 \(request.account.name)。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(request.processes) { process in
+                        HStack(spacing: 12) {
+                            Image(systemName: process.title == nil ? "terminal" : "text.bubble")
+                                .frame(width: 22)
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(process.title ?? process.label)
+                                    .fontWeight(.medium)
+                                    .lineLimit(2)
+                                Text("\(process.label) · PID \(process.pid)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+
+            Text("“关闭这些会话并切换”只会向上面列出的进程发送正常退出请求。请先确认任务内容已经保存。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel, action: onCancel)
+                    .disabled(isBusy)
+                Button(role: .destructive, action: onContinue) {
+                    if isBusy {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("关闭这些会话并切换")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(isBusy)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 520, minHeight: 340)
+        .interactiveDismissDisabled(isBusy)
     }
 }
 

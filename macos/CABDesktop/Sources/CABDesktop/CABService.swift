@@ -338,7 +338,7 @@ final class CABService {
         }
     }
 
-    func runningNonDesktopCodexProcesses() async throws -> [CodexProcessConflict] {
+    func runningNonDesktopCodexProcesses(knownHomes: [String]) async throws -> [CodexProcessConflict] {
         let pgrep = try await runLocalProcess("/usr/bin/pgrep", arguments: ["-x", "codex"])
         if pgrep.exitCode == 1 { return [] }
         guard pgrep.exitCode == 0 else {
@@ -352,9 +352,44 @@ final class CABService {
             guard ps.exitCode == 0 else { continue }
             let executablePath = ps.output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !isCodexDesktopProcess(executablePath: executablePath, desktopApplicationPath: desktopPath) else { continue }
-            result.append(CodexProcessConflict(pid: pid, label: codexProcessLabel(executablePath: executablePath)))
+            let title = try await codexThreadTitle(pid: pid, knownHomes: knownHomes)
+            result.append(CodexProcessConflict(pid: pid, label: codexProcessLabel(executablePath: executablePath), title: title))
         }
         return result
+    }
+
+    func stopLocalCodexProcesses(_ pids: [Int32]) async throws {
+        guard !pids.isEmpty else { return }
+        let result = try await execute(
+            ["processes", "stop", "--pids", pids.map(String.init).joined(separator: ","), "--confirm-stop-codex"],
+            target: .local,
+            remoteHost: ""
+        )
+        guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+    }
+
+    private func codexThreadTitle(pid: Int32, knownHomes: [String]) async throws -> String? {
+        let ps = try await runLocalProcess("/bin/ps", arguments: ["-ww", "-p", String(pid), "-o", "args="])
+        guard ps.exitCode == 0 else { return nil }
+        let range = NSRange(ps.output.startIndex..., in: ps.output)
+        let expression = try NSRegularExpression(pattern: #"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"#)
+        let threadIDs = expression.matches(in: ps.output, range: range).compactMap { match -> String? in
+            guard let valueRange = Range(match.range, in: ps.output) else { return nil }
+            return String(ps.output[valueRange]).lowercased()
+        }
+        guard !threadIDs.isEmpty, FileManager.default.isExecutableFile(atPath: "/usr/bin/sqlite3") else { return nil }
+        for home in knownHomes {
+            let database = URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("state_5.sqlite")
+            guard FileManager.default.fileExists(atPath: database.path) else { continue }
+            for threadID in threadIDs {
+                let sql = "SELECT COALESCE(NULLIF(name,''), NULLIF(title,'')) FROM threads WHERE id='\(threadID)' LIMIT 1;"
+                let query = try await runLocalProcess("/usr/bin/sqlite3", arguments: ["-readonly", database.path, sql])
+                if query.exitCode == 0, let title = query.output.nonEmpty {
+                    return title
+                }
+            }
+        }
+        return nil
     }
 
     private func runLocalProcess(_ executable: String, arguments: [String]) async throws -> CommandResult {

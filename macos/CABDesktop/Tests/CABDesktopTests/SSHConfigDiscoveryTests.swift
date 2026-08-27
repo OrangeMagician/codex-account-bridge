@@ -72,7 +72,7 @@ struct SSHConfigDiscoveryTests {
         let target = root.appendingPathComponent("target")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-        try #"{"local-projects":{"project-a":{"id":"project-a"}},"project-order":["project-a"],"thread-project-assignments":{"thread-a":{"projectId":"project-a"}},"selected-project":{"projectId":"project-a","type":"local"},"account-token":"must-not-copy","electron-persisted-atom-state":{"prompt-history":["private"]}}"#.write(
+        try #"{"local-projects":{"project-a":{"id":"project-a"}},"project-order":["project-a"],"thread-project-assignments":{"thread-a":{"projectId":"remote-a"}},"selected-project":{"projectId":"remote-a","type":"remote"},"codex-managed-remote-connections":[{"hostId":"host-a","alias":"oraclearm","identity":null}],"remote-projects":[{"id":"remote-a","hostId":"host-a","remotePath":"/srv/app","label":"app"}],"remote-connection-auto-connect-by-host-id":{"host-a":true},"remote-connection-analytics-id-by-host-id":{"host-a":"analytics-a"},"selected-remote-host-id":"host-a","remote-project-connection-backfill-completed":true,"account-token":"must-not-copy","electron-persisted-atom-state":{"prompt-history":["private"]}}"#.write(
             to: source.appendingPathComponent(".codex-global-state.json"), atomically: true, encoding: .utf8
         )
         try #"{"local-projects":{"project-b":{"id":"project-b"}},"project-order":["project-b"],"account-token":"target-only","window-preference":42}"#.write(
@@ -88,13 +88,22 @@ struct SSHConfigDiscoveryTests {
         let state = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let projects = try #require(state["local-projects"] as? [String: Any])
 
-        #expect(result.projectCount == 2)
+        #expect(result.projectCount == 3)
         #expect(result.backupURL != nil)
         #expect(Set(projects.keys) == ["project-a", "project-b"])
         #expect(state["project-order"] as? [String] == ["project-a", "project-b"])
         #expect(state["account-token"] as? String == "target-only")
         #expect(state["electron-persisted-atom-state"] == nil)
         #expect(state["window-preference"] as? Int == 42)
+        let connections = try #require(state["codex-managed-remote-connections"] as? [[String: Any]])
+        let remoteProjects = try #require(state["remote-projects"] as? [[String: Any]])
+        #expect(connections.count == 1)
+        #expect(connections[0]["alias"] as? String == "oraclearm")
+        #expect(connections[0]["identity"] == nil)
+        #expect(remoteProjects.count == 1)
+        #expect(remoteProjects[0]["remotePath"] as? String == "/srv/app")
+        #expect((state["remote-connection-auto-connect-by-host-id"] as? [String: Bool])?["host-a"] == true)
+        #expect(state["selected-remote-host-id"] as? String == "host-a")
     }
 
     @Test func restoresWorkspaceCatalogAfterFailedDesktopSwitch() throws {

@@ -45,6 +45,7 @@ final class CABStore: ObservableObject {
     @Published var pendingRemoteSessionChange: RemoteSessionProcessRequest?
     @Published var legacySessions: LegacySessionReport?
     @Published var pendingLegacyProcesses: [CodexProcessStatus]?
+    @Published var pendingDesktopSwitch: DesktopSwitchProcessRequest?
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -281,19 +282,48 @@ final class CABStore: ObservableObject {
             return
         }
         guard !isBusy else { return }
+        performDesktopSwitch(to: account, checkProcesses: true)
+    }
+
+    func closeProcessesAndContinueDesktopSwitch(_ request: DesktopSwitchProcessRequest) {
+        guard !isBusy else { return }
         Task {
             isBusy = true
+            errorMessage = nil
+            do {
+                try await service.stopLocalCodexProcesses(request.processes.map(\.pid))
+                let remaining = try await service.runningNonDesktopCodexProcesses(knownHomes: status.accounts.map(\.home))
+                isBusy = false
+                if remaining.isEmpty {
+                    pendingDesktopSwitch = nil
+                    performDesktopSwitch(to: request.account, checkProcesses: true)
+                } else {
+                    pendingDesktopSwitch = DesktopSwitchProcessRequest(account: request.account, processes: remaining)
+                }
+            } catch {
+                isBusy = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func performDesktopSwitch(to account: AccountStatus, checkProcesses: Bool) {
+        guard !isBusy else { return }
+        Task {
+            isBusy = true
+            errorMessage = nil
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
             let fallbackHome = previousDesktopHome(fallback: account.home)
             let sessionMode = preserveSessionsOnDesktopSwitch ? "保留项目与共享会话" : "保持项目与会话独立"
             output = "正在检查切换条件，准备应用“\(sessionMode)”设置…\n"
             do {
-                if preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != status.sharedSessions {
-                    let conflicts = try await service.runningNonDesktopCodexProcesses()
-                    guard conflicts.isEmpty else {
-                        let details = conflicts.map { "\($0.label)（PID \($0.pid)）" }.joined(separator: "、")
-                        throw BridgeError.commandFailed("检测到仍在运行的 \(details)。请先结束其中的任务并退出对应扩展或 CLI 后重试。Codex 桌面端尚未关闭。")
+                if checkProcesses && (preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != status.sharedSessions) {
+                    let conflicts = try await service.runningNonDesktopCodexProcesses(knownHomes: status.accounts.map(\.home))
+                    if !conflicts.isEmpty {
+                        pendingDesktopSwitch = DesktopSwitchProcessRequest(account: account, processes: conflicts)
+                        isBusy = false
+                        return
                     }
                 }
                 output += "预检通过，正在关闭 Codex 桌面客户端并切换账号…\n"

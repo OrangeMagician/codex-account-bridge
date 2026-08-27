@@ -334,8 +334,16 @@ struct CommandResult {
 struct CodexProcessConflict: Equatable, Identifiable {
     let pid: Int32
     let label: String
+    let title: String?
 
     var id: Int32 { pid }
+}
+
+struct DesktopSwitchProcessRequest: Identifiable {
+    let account: AccountStatus
+    let processes: [CodexProcessConflict]
+
+    var id: String { account.name }
 }
 
 enum BridgeError: LocalizedError {
