@@ -50,6 +50,30 @@ func TestFindRealRejectsSelfOverride(t *testing.T) {
 	}
 }
 
+func TestFindRealUsesRecoverableShimBackup(t *testing.T) {
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(self, filepath.Join(dir, "codex")); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(dir, "codex.cab-backup-20260827T051837Z")
+	if err := os.WriteFile(backup, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", "")
+	t.Setenv("PATH", dir)
+	got, err := FindReal("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != backup {
+		t.Fatalf("FindReal() = %q, want %q", got, backup)
+	}
+}
+
 func TestLoggedInUsesOfficialStatusWithoutReadingCredentials(t *testing.T) {
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")

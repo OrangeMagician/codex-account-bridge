@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 )
 
@@ -27,6 +28,7 @@ func FindReal(binary string) (string, error) {
 	self, _ := os.Executable()
 	self, _ = filepath.EvalSymlinks(self)
 	self, _ = filepath.Abs(self)
+	var shimBackups []string
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		candidate := filepath.Join(dir, binary)
 		if executable(candidate) != nil {
@@ -41,6 +43,23 @@ func FindReal(binary string) (string, error) {
 			continue
 		}
 		if self != "" && real == self {
+			backups, _ := filepath.Glob(candidate + ".cab-backup-*")
+			shimBackups = append(shimBackups, backups...)
+			continue
+		}
+		return candidate, nil
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(shimBackups)))
+	for _, candidate := range shimBackups {
+		if executable(candidate) != nil {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue
+		}
+		real, err = filepath.Abs(real)
+		if err != nil || (self != "" && real == self) {
 			continue
 		}
 		return candidate, nil
