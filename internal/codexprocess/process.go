@@ -31,7 +31,7 @@ func List() ([]Process, error) {
 		}
 		return nil, fmt.Errorf("list Codex processes: %w", err)
 	}
-	var result []Process
+	result := []Process{}
 	for _, value := range strings.Fields(string(out)) {
 		pid, err := strconv.Atoi(value)
 		if err != nil {
