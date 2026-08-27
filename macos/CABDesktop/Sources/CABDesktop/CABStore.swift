@@ -43,6 +43,8 @@ final class CABStore: ObservableObject {
     @Published var agentBindingError: String?
     @Published var bulkAgentAccount = ""
     @Published var pendingRemoteSessionChange: RemoteSessionProcessRequest?
+    @Published var legacySessions: LegacySessionReport?
+    @Published var pendingLegacyProcesses: [CodexProcessStatus]?
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -376,6 +378,31 @@ final class CABStore: ObservableObject {
         await reload()
     }
 
+    func prepareLegacyImport() {
+        guard target == .remote, !isBusy else { return }
+        Task { isBusy = true; defer { isBusy = false }; do {
+            let report = try await service.loadCodexProcesses(target: target, remoteHost: remoteHost)
+            if report.processes.isEmpty { try await applyLegacyImport() } else { pendingLegacyProcesses = report.processes }
+        } catch { errorMessage = error.localizedDescription } }
+    }
+
+    func stopProcessesAndImportLegacy(_ processes: [CodexProcessStatus]) {
+        guard !isBusy else { return }
+        Task { isBusy = true; defer { isBusy = false }; do {
+            try await service.stopCodexProcesses(processes.map(\.pid), target: target, remoteHost: remoteHost)
+            try await applyLegacyImport()
+        } catch { errorMessage = error.localizedDescription } }
+    }
+
+    private func applyLegacyImport() async throws {
+        let arguments = ["sessions", "import-current", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
+        output = "$ cab \(arguments.joined(separator: " "))\n"
+        let result = try await service.execute(arguments, target: target, remoteHost: remoteHost)
+        if result.exitCode != 0 { throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput) }
+        legacySessions = try await service.loadLegacySessions(remoteHost: remoteHost)
+        await reload()
+    }
+
     func remove(_ name: String) {
         run(["account", "remove", name], refreshUsageAfterSuccess: true) { [weak self] in
             if self?.selectedAccount == name { self?.selectedAccount = nil }
@@ -482,15 +509,18 @@ final class CABStore: ObservableObject {
                             ?? ""
                     }
                     agentBindingError = nil
+                    legacySessions = loaded.sharedSessions ? try? await service.loadLegacySessions(remoteHost: capturedHost) : nil
                 } catch {
                     agentBindings = []
                     agentBindingError = error.localizedDescription
+                    legacySessions = nil
                 }
             } else {
                 agentBindings = []
                 agentSelections = [:]
                 bulkAgentAccount = ""
                 agentBindingError = nil
+                legacySessions = nil
             }
             if let loginAccountName,
                loaded.accounts.first(where: { $0.name == loginAccountName })?.isLoggedIn == true {

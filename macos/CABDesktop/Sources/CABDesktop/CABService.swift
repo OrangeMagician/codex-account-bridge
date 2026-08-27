@@ -83,6 +83,13 @@ final class CABService {
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
     }
 
+    func loadLegacySessions(remoteHost: String) async throws -> LegacySessionReport {
+        let result = try await execute(["sessions", "legacy-status", "--json"], target: .remote, remoteHost: remoteHost)
+        guard result.exitCode == 0, let data = result.output.data(using: .utf8) else { throw BridgeError.commandFailed(preferredMessage(result)) }
+        do { return try JSONDecoder().decode(LegacySessionReport.self, from: data) }
+        catch { throw BridgeError.commandFailed("无法解析旧会话信息：\(error.localizedDescription)") }
+    }
+
     func execute(
         _ arguments: [String],
         target: BridgeTarget,

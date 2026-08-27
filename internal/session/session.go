@@ -26,6 +26,82 @@ type stagedHistory struct {
 
 var historyDirectoryNames = []string{"sessions", "archived_sessions"}
 
+type LegacyReport struct {
+	SourceHome       string `json:"source_home"`
+	Sessions         int    `json:"sessions"`
+	ArchivedSessions int    `json:"archived_sessions"`
+}
+
+func LegacyStatus(cfg config.Config, sourceHome string) (LegacyReport, error) {
+	report := LegacyReport{SourceHome: sourceHome}
+	if cfg.SharedSessionsDir == "" {
+		return report, errors.New("session sharing is not enabled")
+	}
+	for _, account := range cfg.Accounts {
+		if filepath.Clean(account.Home) == filepath.Clean(sourceHome) {
+			return report, nil
+		}
+	}
+	counts := []*int{&report.Sessions, &report.ArchivedSessions}
+	for index, name := range historyDirectoryNames {
+		source := filepath.Join(sourceHome, name)
+		shared := sharedHistoryDir(cfg.SharedSessionsDir, name)
+		if sameResolvedPath(source, shared) {
+			continue
+		}
+		count, err := pendingRegularFiles(source, shared)
+		if err != nil {
+			return report, err
+		}
+		*counts[index] = count
+	}
+	return report, nil
+}
+
+func pendingRegularFiles(sourceRoot, targetRoot string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(sourceRoot, func(source string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		relative, err := filepath.Rel(sourceRoot, source)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(filepath.Join(targetRoot, relative)); errors.Is(err, fs.ErrNotExist) {
+			count++
+		} else if err != nil {
+			return err
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	return count, err
+}
+
+func ImportLegacy(paths config.Paths, cfg config.Config, sourceHome string) (LegacyReport, error) {
+	report, err := LegacyStatus(cfg, sourceHome)
+	if err != nil {
+		return report, err
+	}
+	unlock, err := lock(paths.DataDir)
+	if err != nil {
+		return report, err
+	}
+	defer unlock()
+	for _, name := range historyDirectoryNames {
+		if err := mergeTree(filepath.Join(sourceHome, name), sharedHistoryDir(cfg.SharedSessionsDir, name)); err != nil {
+			return report, fmt.Errorf("import legacy %s: %w", name, err)
+		}
+	}
+	return report, nil
+}
+
 func Enable(paths config.Paths, cfg *config.Config) error {
 	unlock, err := lock(paths.DataDir)
 	if err != nil {

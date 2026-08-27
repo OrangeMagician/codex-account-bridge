@@ -8,6 +8,41 @@ import (
 	"github.com/OrangeMagician/codex-account-bridge/internal/config"
 )
 
+func TestImportLegacyMergesDefaultHistoryWithoutRemovingSource(t *testing.T) {
+	root := t.TempDir()
+	paths := config.Paths{ConfigDir: filepath.Join(root, "config"), DataDir: filepath.Join(root, "data"), File: filepath.Join(root, "config", "config.json")}
+	source := filepath.Join(root, "legacy")
+	legacyFile := filepath.Join(source, "sessions", "2026", "08", "27", "rollout.jsonl")
+	if err := os.MkdirAll(filepath.Dir(legacyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyFile, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Empty()
+	cfg.SharedSessionsDir = filepath.Join(paths.DataDir, "shared", "sessions")
+	report, err := ImportLegacy(paths, cfg, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Sessions != 1 {
+		t.Fatalf("sessions=%d", report.Sessions)
+	}
+	if _, err := os.Stat(legacyFile); err != nil {
+		t.Fatalf("source removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.SharedSessionsDir, "2026", "08", "27", "rollout.jsonl")); err != nil {
+		t.Fatalf("shared copy missing: %v", err)
+	}
+	remaining, err := LegacyStatus(cfg, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining.Sessions != 0 {
+		t.Fatalf("remaining sessions=%d", remaining.Sessions)
+	}
+}
+
 func TestEnableDisableSharesActiveAndArchivedHistoryWithoutAuth(t *testing.T) {
 	root := t.TempDir()
 	paths := config.Paths{ConfigDir: filepath.Join(root, "config"), DataDir: filepath.Join(root, "data"), File: filepath.Join(root, "config", "config.json")}

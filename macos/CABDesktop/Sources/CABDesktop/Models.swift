@@ -114,6 +114,14 @@ struct RemoteSessionProcessRequest: Identifiable {
     let processes: [CodexProcessStatus]
 }
 
+struct LegacySessionReport: Codable, Equatable {
+    let sourceHome: String
+    let sessions: Int
+    let archivedSessions: Int
+    enum CodingKeys: String, CodingKey { case sourceHome = "source_home"; case sessions; case archivedSessions = "archived_sessions" }
+    var total: Int { sessions + archivedSessions }
+}
+
 struct UsageReport: Codable, Equatable {
     let fetchedAt: Date
     let accounts: [AccountUsageReport]

@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var pendingReauthentication: ReauthenticationRequest?
     @State private var pendingAgentBinding: AgentBindingRequest?
     @State private var pendingBulkAgentBinding: AgentBulkBindingRequest?
+    @State private var pendingLegacyImport = false
 
     var body: some View {
         NavigationSplitView {
@@ -91,6 +92,23 @@ struct ContentView: View {
         } message: {
             if let request = store.pendingRemoteSessionChange {
                 Text(processResolutionMessage(request))
+            }
+        }
+        .confirmationDialog("导入旧默认历史？", isPresented: $pendingLegacyImport, titleVisibility: .visible) {
+            Button("导入并共享", role: .destructive) { store.prepareLegacyImport() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("旧 ~/.codex 中的会话会复制到共享库，所有已登记账号都能看到其中的上下文。源文件不会删除。")
+        }
+        .confirmationDialog("导入前需要关闭 Codex", isPresented: Binding(get: { store.pendingLegacyProcesses != nil }, set: { if !$0 { store.pendingLegacyProcesses = nil } }), titleVisibility: .visible) {
+            Button("关闭并导入", role: .destructive) {
+                if let processes = store.pendingLegacyProcesses { store.stopProcessesAndImportLegacy(processes) }
+                store.pendingLegacyProcesses = nil
+            }
+            Button("取消", role: .cancel) { store.pendingLegacyProcesses = nil }
+        } message: {
+            if let processes = store.pendingLegacyProcesses {
+                Text(legacyImportProcessMessage(processes))
             }
         }
         .confirmationDialog("重新登录账号？", isPresented: Binding(get: { pendingReauthentication != nil }, set: { if !$0 { pendingReauthentication = nil } }), titleVisibility: .visible) {
@@ -498,26 +516,37 @@ struct ContentView: View {
 
     private var sessionSharingCard: some View {
         GroupBox {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(store.target == .local ? "跨账号项目与会话" : "跨账号会话历史").font(.headline)
-                    Text(sessionSharingDescription)
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text(store.target == .local ? "设置会在下次切换 Codex 桌面账号时应用；不会共享登录凭据。" : "这是服务器级隐私策略，修改前必须退出该服务器上的所有 Codex 进程。")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 8) {
-                    if store.target == .local && store.preserveSessionsOnDesktopSwitch != store.status.sharedSessions {
-                        statusBadge(store.preserveSessionsOnDesktopSwitch ? "下次切换时开启" : "下次切换时关闭", color: .blue)
-                    } else {
-                        statusBadge(store.status.sharedSessions ? "当前已共享" : "当前独立", color: store.status.sharedSessions ? .orange : .green)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.target == .local ? "跨账号项目与会话" : "跨账号会话历史").font(.headline)
+                        Text(sessionSharingDescription)
+                            .font(.callout).foregroundStyle(.secondary)
+                        Text(store.target == .local ? "设置会在下次切换 Codex 桌面账号时应用；不会共享登录凭据。" : "这是服务器级隐私策略，修改前必须退出该服务器上的所有 Codex 进程。")
+                            .font(.caption).foregroundStyle(.orange)
                     }
-                    Toggle(store.target == .local ? "切换时保留" : "共享", isOn: Binding(
-                        get: { store.target == .local ? store.preserveSessionsOnDesktopSwitch : store.status.sharedSessions },
-                        set: { pendingSessionSharing = $0 }
-                    ))
-                    .toggleStyle(.switch)
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 8) {
+                        if store.target == .local && store.preserveSessionsOnDesktopSwitch != store.status.sharedSessions {
+                            statusBadge(store.preserveSessionsOnDesktopSwitch ? "下次切换时开启" : "下次切换时关闭", color: .blue)
+                        } else {
+                            statusBadge(store.status.sharedSessions ? "当前已共享" : "当前独立", color: store.status.sharedSessions ? .orange : .green)
+                        }
+                        Toggle(store.target == .local ? "切换时保留" : "共享", isOn: Binding(
+                            get: { store.target == .local ? store.preserveSessionsOnDesktopSwitch : store.status.sharedSessions },
+                            set: { pendingSessionSharing = $0 }
+                        ))
+                        .toggleStyle(.switch)
+                    }
+                }
+                if store.target == .remote, store.status.sharedSessions, let legacy = store.legacySessions, legacy.total > 0 {
+                    Divider()
+                    HStack {
+                        Label("旧 ~/.codex 中发现 \(legacy.total) 个未导入会话", systemImage: "clock.arrow.circlepath")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("导入旧历史") { pendingLegacyImport = true }
+                    }
                 }
             }
             .padding(8)
@@ -551,6 +580,13 @@ struct ContentView: View {
             "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
         }.joined(separator: "\n")
         return "以下 Codex 仍在运行：\n\(details)\n\n确认后只会请求这些进程正常退出；全部退出后才会\(request.enabled ? "开启" : "关闭")会话共享。未保存的任务可能中断。"
+    }
+
+    private func legacyImportProcessMessage(_ processes: [CodexProcessStatus]) -> String {
+        let details = processes.map { process in
+            "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
+        }.joined(separator: "\n")
+        return "以下 Codex 仍在运行：\n\(details)\n\n确认后只会请求这些进程正常退出；全部退出后才会导入旧历史。未保存的任务可能中断。"
     }
 
     private var desktopSwitchWarning: String {

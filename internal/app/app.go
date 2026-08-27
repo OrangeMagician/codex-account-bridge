@@ -135,6 +135,8 @@ Commands:
   cab remote use NAME
   cab sessions enable --acknowledge-cross-account-context --confirm-codex-stopped
   cab sessions disable --confirm-codex-stopped
+  cab sessions legacy-status [--json]
+  cab sessions import-current --acknowledge-cross-account-context --confirm-codex-stopped
   cab shim install [--dir PATH] [--force]
   cab shim remove [--dir PATH]
   cab doctor
@@ -824,6 +826,29 @@ func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int
 	if len(args) == 0 {
 		return 2, errors.New("sessions requires enable or disable")
 	}
+	if args[0] == "legacy-status" {
+		flags := newFlags("sessions legacy-status")
+		jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 {
+			return 2, errors.New("usage: cab sessions legacy-status [--json]")
+		}
+		home, err := config.DefaultCodexHome()
+		if err != nil {
+			return 1, err
+		}
+		report, err := session.LegacyStatus(*cfg, home)
+		if err != nil {
+			return 1, err
+		}
+		if *jsonOutput {
+			return printJSON(report)
+		}
+		fmt.Printf("%d sessions and %d archived sessions in %s\n", report.Sessions, report.ArchivedSessions, report.SourceHome)
+		return 0, nil
+	}
 	flags := newFlags("sessions " + args[0])
 	stopped := flags.Bool("confirm-codex-stopped", false, "confirm all affected Codex processes are stopped")
 	ack := flags.Bool("acknowledge-cross-account-context", false, "acknowledge that another account can read resumed context")
@@ -846,6 +871,21 @@ func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int
 			pids = append(pids, strconv.Itoa(process.PID))
 		}
 		return 2, fmt.Errorf("Codex is still running (PIDs %s); close it before changing session sharing", strings.Join(pids, ", "))
+	}
+	if args[0] == "import-current" {
+		if !*ack {
+			return 2, errors.New("--acknowledge-cross-account-context is required")
+		}
+		home, err := config.DefaultCodexHome()
+		if err != nil {
+			return 1, err
+		}
+		report, err := session.ImportLegacy(paths, *cfg, home)
+		if err != nil {
+			return 1, err
+		}
+		fmt.Printf("imported %d sessions and %d archived sessions from %s\n", report.Sessions, report.ArchivedSessions, report.SourceHome)
+		return 0, nil
 	}
 	switch args[0] {
 	case "enable":
