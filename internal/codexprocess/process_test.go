@@ -9,6 +9,7 @@ func TestParsePSAcceptsOnlyLiveExactCodex(t *testing.T) {
 	}
 	for _, value := range []string{
 		"7 05:12 pts/3 Z+ /opt/codex\n",
+		"7 05:12 pts/3 UE /opt/codex\n",
 		"7 05:12 pts/3 Sl+ /opt/not-codex\n",
 		"invalid\n",
 	} {

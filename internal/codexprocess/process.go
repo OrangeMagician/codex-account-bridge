@@ -104,7 +104,7 @@ func parsePS(pid int, output string) (Process, bool) {
 	if len(fields) < 5 {
 		return Process{}, false
 	}
-	if strings.HasPrefix(fields[3], "Z") {
+	if strings.HasPrefix(fields[3], "Z") || strings.Contains(fields[3], "E") {
 		return Process{}, false
 	}
 	ppid, err := strconv.Atoi(fields[0])
