@@ -41,6 +41,7 @@ final class CABStore: ObservableObject {
     @Published var agentBindings: [AgentBindingStatus] = []
     @Published var agentSelections: [String: String] = [:]
     @Published var agentBindingError: String?
+    @Published var bulkAgentAccount = ""
 
     private let service = CABService()
     private let defaults = UserDefaults.standard
@@ -262,6 +263,11 @@ final class CABStore: ObservableObject {
         run(arguments)
     }
 
+    func applyAllAgentBindings(account: String) {
+        guard target == .remote, !isBusy, !account.isEmpty else { return }
+        run(["agent", "bind-all", "--account", account, "--confirm-restart-agent"])
+    }
+
     func switchCodexDesktop(to account: AccountStatus) {
         guard target == .local, account.isLoggedIn else {
             errorMessage = "只能用这台 Mac 上已登录的账号启动 Codex 桌面客户端。"
@@ -462,6 +468,13 @@ final class CABStore: ObservableObject {
                     guard key == currentUsageCacheKey else { isBusy = false; return }
                     agentBindings = report.agents
                     agentSelections = Dictionary(uniqueKeysWithValues: report.agents.map { ($0.service, $0.account ?? "") })
+                    let loggedInNames = Set(loaded.accounts.filter(\.isLoggedIn).map(\.name))
+                    if !loggedInNames.contains(bulkAgentAccount) {
+                        bulkAgentAccount = loaded.remoteAccount.flatMap { loggedInNames.contains($0) ? $0 : nil }
+                            ?? loaded.defaultAccount.flatMap { loggedInNames.contains($0) ? $0 : nil }
+                            ?? loaded.accounts.first(where: \.isLoggedIn)?.name
+                            ?? ""
+                    }
                     agentBindingError = nil
                 } catch {
                     agentBindings = []
@@ -470,6 +483,7 @@ final class CABStore: ObservableObject {
             } else {
                 agentBindings = []
                 agentSelections = [:]
+                bulkAgentAccount = ""
                 agentBindingError = nil
             }
             if let loginAccountName,

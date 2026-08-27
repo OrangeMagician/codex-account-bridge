@@ -121,6 +121,7 @@ Commands:
   cab usage [--account NAME] [--json]
   cab agent list [--json]
   cab agent bind --service UNIT --account NAME --confirm-restart-agent
+  cab agent bind-all --account NAME --confirm-restart-agent
   cab agent unbind --service UNIT --confirm-restart-agent
   cab rotation status [--json]
   cab rotation configure --accounts NAME,NAME
@@ -204,6 +205,63 @@ func agentCommand(cfg config.Config, args []string) (int, error) {
 			return 1, err
 		}
 		fmt.Printf("bound %s to %s\n", *service, account.Name)
+		return 0, nil
+	case "bind-all":
+		flags := newFlags("agent bind-all")
+		accountName := flags.String("account", "", "configured Codex account")
+		confirm := flags.Bool("confirm-restart-agent", false, "confirm interruption of active agents")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2, err
+		}
+		if flags.NArg() != 0 || *accountName == "" {
+			return 2, errors.New("usage: cab agent bind-all --account NAME --confirm-restart-agent")
+		}
+		account, ok := cfg.Find(*accountName)
+		if !ok {
+			return 2, fmt.Errorf("unknown account %q", *accountName)
+		}
+		loggedIn, err := codex.LoggedIn(account.Home)
+		if err != nil {
+			return 1, fmt.Errorf("check account login: %w", err)
+		}
+		if !loggedIn {
+			return 2, fmt.Errorf("account %q is not logged in", account.Name)
+		}
+		bindings, err := manager.List(homes)
+		if err != nil {
+			return 1, err
+		}
+		changed := make([]agentbinding.Binding, 0, len(bindings))
+		for _, binding := range bindings {
+			if binding.Account != account.Name {
+				changed = append(changed, binding)
+			}
+		}
+		if len(changed) == 0 {
+			fmt.Printf("all supported agent services already use %s\n", account.Name)
+			return 0, nil
+		}
+		if !*confirm {
+			for _, binding := range changed {
+				if binding.Active {
+					return 2, errors.New("one or more changed services are active; pass --confirm-restart-agent after saving all agent tasks")
+				}
+			}
+		}
+		var failures []string
+		bound := 0
+		for _, binding := range changed {
+			if err := manager.Bind(binding.Service, account.Home, *confirm); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", binding.Service, err))
+				continue
+			}
+			bound++
+			fmt.Printf("bound %s to %s\n", binding.Service, account.Name)
+		}
+		if len(failures) > 0 {
+			return 1, fmt.Errorf("bound %d service(s); failed: %s", bound, strings.Join(failures, "; "))
+		}
+		fmt.Printf("bound %d supported agent service(s) to %s\n", bound, account.Name)
 		return 0, nil
 	case "unbind":
 		flags := newFlags("agent unbind")

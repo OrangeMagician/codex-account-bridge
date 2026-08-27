@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var pendingSessionSharing: Bool?
     @State private var pendingReauthentication: ReauthenticationRequest?
     @State private var pendingAgentBinding: AgentBindingRequest?
+    @State private var pendingBulkAgentBinding: AgentBulkBindingRequest?
 
     var body: some View {
         NavigationSplitView {
@@ -99,6 +100,17 @@ struct ContentView: View {
         } message: {
             if let request = pendingAgentBinding {
                 Text(request.active ? "这会重启 \(request.service)，正在运行的智能体任务可能中断。CAB 只设置 CODEX_HOME，不会读取或复制令牌。" : "服务当前未运行；CAB 只设置 CODEX_HOME，不会启动服务或读取令牌。")
+            }
+        }
+        .confirmationDialog("将全部智能体绑定到同一账号？", isPresented: Binding(get: { pendingBulkAgentBinding != nil }, set: { if !$0 { pendingBulkAgentBinding = nil } }), titleVisibility: .visible) {
+            Button("绑定全部智能体", role: .destructive) {
+                if let request = pendingBulkAgentBinding { store.applyAllAgentBindings(account: request.account) }
+                pendingBulkAgentBinding = nil
+            }
+            Button("取消", role: .cancel) { pendingBulkAgentBinding = nil }
+        } message: {
+            if let request = pendingBulkAgentBinding {
+                Text("将 \(request.serviceCount) 个智能体服务统一绑定到 \(request.account)。其中 \(request.activeServiceCount) 个正在运行的服务需要重启，当前任务可能中断。CAB 不会读取或复制令牌。")
             }
         }
         .task { await MainActor.run { store.refresh() } }
@@ -223,6 +235,29 @@ struct ContentView: View {
                     Label("未发现支持的 Hermes 或 OpenClaw 用户服务。", systemImage: "tray")
                         .foregroundStyle(.secondary)
                 } else {
+                    HStack(spacing: 10) {
+                        Label("全部使用", systemImage: "person.2.fill")
+                            .fontWeight(.medium)
+                        Spacer()
+                        Picker("全部智能体账号", selection: $store.bulkAgentAccount) {
+                            Text("选择账号").tag("")
+                            ForEach(loggedInAccounts) { account in Text(account.name).tag(account.name) }
+                        }
+                        .labelsHidden().frame(width: 150)
+                        Button("一键绑定全部") {
+                            let changed = store.agentBindings.filter { $0.account != store.bulkAgentAccount }
+                            pendingBulkAgentBinding = AgentBulkBindingRequest(
+                                account: store.bulkAgentAccount,
+                                serviceCount: changed.count,
+                                activeServiceCount: changed.filter(\.active).count
+                            )
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isBusy || store.bulkAgentAccount.isEmpty || store.agentBindings.allSatisfy { $0.account == store.bulkAgentAccount })
+                    }
+                    .padding(10)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    Divider()
                     ForEach(store.agentBindings) { agent in
                         HStack(spacing: 12) {
                             Image(systemName: agent.kind == "OpenClaw" ? "shippingbox" : "sparkles")

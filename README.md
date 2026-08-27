@@ -184,6 +184,7 @@ shim 会让桌面版执行的 `codex app-server` 使用 `cab remote use` 固定�
 ```bash
 cab agent list
 cab agent bind --service hermes-gateway-coder.service --account work --confirm-restart-agent
+cab agent bind-all --account work --confirm-restart-agent
 cab agent unbind --service hermes-gateway-coder.service --confirm-restart-agent
 ```
 

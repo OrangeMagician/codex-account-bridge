@@ -82,6 +82,13 @@ struct AgentBindingRequest: Identifiable {
     let active: Bool
 }
 
+struct AgentBulkBindingRequest: Identifiable {
+    var id: String { account }
+    let account: String
+    let serviceCount: Int
+    let activeServiceCount: Int
+}
+
 struct UsageReport: Codable, Equatable {
     let fetchedAt: Date
     let accounts: [AccountUsageReport]
