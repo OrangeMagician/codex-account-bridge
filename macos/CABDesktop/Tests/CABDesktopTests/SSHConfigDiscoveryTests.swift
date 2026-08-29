@@ -58,12 +58,17 @@ struct SSHConfigDiscoveryTests {
         let database = root.appendingPathComponent("state_5.sqlite")
         try runSQLiteForTest(database, sql: "CREATE TABLE backfill_state (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT INTO backfill_state VALUES (1, 'complete');")
 
-        let backup = try await CABService().prepareCodexThreadIndexRebuild(codexHome: root.path)
+        let service = CABService()
+        let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: root.path)
 
         #expect(backup != nil)
         #expect(FileManager.default.fileExists(atPath: backup?.path ?? ""))
         #expect(try sqliteScalarForTest(database, sql: "SELECT count(*) FROM backfill_state;") == "0")
         #expect(try sqliteScalarForTest(database, sql: "PRAGMA integrity_check;") == "ok")
+        if let backup {
+            try service.restoreCodexThreadIndex(backupURL: backup, codexHome: root.path)
+            #expect(try sqliteScalarForTest(database, sql: "SELECT count(*) FROM backfill_state;") == "1")
+        }
     }
 
     @Test func synchronizesOnlyAllowlistedWorkspaceCatalogFields() throws {
@@ -165,7 +170,17 @@ struct SSHConfigDiscoveryTests {
         #expect(service.officialLoginURL(in: "plugin warning https://chatgpt.com/backend-api/plugins/featured") == nil)
         let oauth = "https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
         #expect(service.officialLoginURL(in: "Open \(oauth)")?.absoluteString == oauth)
+        #expect(service.officialLoginURL(in: "https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fauth%2Fcallback") == nil)
         #expect(service.officialLoginURL(in: "https://auth.openai.com/oauth/authorize?redirect_uri=https%3A%2F%2Fevil.example%2Fcallback") == nil)
+    }
+
+    @Test func commandOutputBufferCapsRetainedOutput() {
+        let buffer = CommandOutputBuffer()
+        let oversized = String(repeating: "x", count: 2_100_000)
+        _ = buffer.append(Data(oversized.utf8), toStandardOutput: true)
+        let result = buffer.result(exitCode: 0)
+        #expect(result.output.count < 2_001_000)
+        #expect(result.output.contains("CAB 已截断"))
     }
 
     @Test func safariIsAvailableOnlyForRegularBrowserLogin() {

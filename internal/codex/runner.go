@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -8,12 +9,23 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
+	"time"
 )
+
+const loginStatusTimeout = 10 * time.Second
 
 func FindReal(binary string) (string, error) {
 	if configured := os.Getenv("CAB_REAL_CODEX"); configured != "" {
-		path, err := filepath.Abs(configured)
+		if !filepath.IsAbs(configured) {
+			return "", errors.New("CAB_REAL_CODEX must be an absolute path")
+		}
+		path, err := filepath.EvalSymlinks(configured)
+		if err != nil {
+			return "", err
+		}
+		path, err = filepath.Abs(path)
 		if err != nil {
 			return "", err
 		}
@@ -28,8 +40,13 @@ func FindReal(binary string) (string, error) {
 	self, _ := os.Executable()
 	self, _ = filepath.EvalSymlinks(self)
 	self, _ = filepath.Abs(self)
+	workingDirectory, _ := os.Getwd()
+	workingDirectory = worktreeRoot(workingDirectory)
 	var shimBackups []string
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
 		candidate := filepath.Join(dir, binary)
 		if executable(candidate) != nil {
 			continue
@@ -47,7 +64,10 @@ func FindReal(binary string) (string, error) {
 			shimBackups = append(shimBackups, backups...)
 			continue
 		}
-		return candidate, nil
+		if workingDirectory != "" && pathInside(workingDirectory, real) {
+			continue
+		}
+		return real, nil
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(shimBackups)))
 	for _, candidate := range shimBackups {
@@ -62,9 +82,39 @@ func FindReal(binary string) (string, error) {
 		if err != nil || (self != "" && real == self) {
 			continue
 		}
-		return candidate, nil
+		if workingDirectory != "" && pathInside(workingDirectory, real) {
+			continue
+		}
+		return real, nil
 	}
 	return "", fmt.Errorf("official %s executable not found; install it or set CAB_REAL_CODEX", binary)
+}
+
+func worktreeRoot(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	home, _ = filepath.EvalSymlinks(home)
+	for candidate := resolved; ; candidate = filepath.Dir(candidate) {
+		for _, marker := range []string{".git", "go.mod"} {
+			if _, err := os.Lstat(filepath.Join(candidate, marker)); err == nil {
+				if candidate != string(filepath.Separator) && filepath.Clean(candidate) != filepath.Clean(home) {
+					return candidate
+				}
+				return ""
+			}
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return ""
+		}
+	}
 }
 
 func sameAsSelf(path string) bool {
@@ -91,7 +141,15 @@ func executable(path string) error {
 	if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
 		return errors.New("not executable")
 	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return errors.New("executable is writable by group or other users")
+	}
 	return nil
+}
+
+func pathInside(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func Run(home string, args []string) (int, error) {
@@ -135,13 +193,18 @@ func LoggedIn(home string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	cmd := exec.Command(binary, "login", "status")
+	ctx, cancel := context.WithTimeout(context.Background(), loginStatusTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "login", "status")
 	cmd.Env = environment(home)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	err = cmd.Run()
 	if err == nil {
 		return true, nil
+	}
+	if ctx.Err() != nil {
+		return false, errors.New("official Codex login status timed out")
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

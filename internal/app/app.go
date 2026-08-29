@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/OrangeMagician/codex-account-bridge/internal/agentbinding"
@@ -30,7 +30,9 @@ func Run(argv []string, version string) (int, error) {
 		return 1, err
 	}
 	if filepath.Base(argv[0]) == "codex" {
-		cfg, err := config.Load(paths)
+		cfg, err := config.ReadLocked(paths, func(latest config.Config) error {
+			return session.Recover(paths, latest)
+		})
 		if err != nil {
 			return 1, err
 		}
@@ -38,6 +40,11 @@ func Run(argv []string, version string) (int, error) {
 		if err != nil {
 			return 2, fmt.Errorf("remote shim: %w", err)
 		}
+		unlock, err := session.AcquireRunLease(paths)
+		if err != nil {
+			return 1, err
+		}
+		defer unlock()
 		return codex.Run(account.Home, argv[1:])
 	}
 	if len(argv) < 2 {
@@ -55,20 +62,35 @@ func Run(argv []string, version string) (int, error) {
 		return 0, nil
 	}
 	if command == "init" {
-		cfg, err := config.Load(paths)
-		if err != nil {
-			return 1, err
-		}
 		if err := config.EnsureDataDir(paths); err != nil {
 			return 1, err
 		}
-		if err := config.Save(paths, cfg); err != nil {
+		if _, err := config.UpdateSimple(paths, func(*config.Config) error { return nil }); err != nil {
 			return 1, err
 		}
 		fmt.Printf("initialized %s\n", paths.File)
 		return 0, nil
 	}
-	cfg, err := config.Load(paths)
+	if command == "doctor" {
+		flags := newFlags("doctor")
+		repair := flags.Bool("repair", false, "recover an interrupted CAB session transaction")
+		if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+			return 2, errors.New("usage: cab doctor [--repair]")
+		}
+		cfg, err := config.ReadLocked(paths, func(latest config.Config) error {
+			if *repair {
+				return session.Recover(paths, latest)
+			}
+			return nil
+		})
+		if err != nil {
+			return 1, err
+		}
+		return doctor(paths, cfg)
+	}
+	cfg, err := config.ReadLocked(paths, func(latest config.Config) error {
+		return session.Recover(paths, latest)
+	})
 	if err != nil {
 		return 1, err
 	}
@@ -99,8 +121,6 @@ func Run(argv []string, version string) (int, error) {
 		return sessionsCommand(paths, &cfg, args)
 	case "shim":
 		return shimCommand(paths, args)
-	case "doctor":
-		return doctor(paths, cfg)
 	default:
 		return 2, fmt.Errorf("unknown command %q; run cab help", command)
 	}
@@ -139,7 +159,7 @@ Commands:
   cab sessions import-current --acknowledge-cross-account-context --confirm-codex-stopped
   cab shim install [--dir PATH] [--force]
   cab shim remove [--dir PATH]
-  cab doctor
+  cab doctor [--repair]
   cab version
 
 Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
@@ -391,21 +411,31 @@ func usageCommand(cfg config.Config, args []string) (int, error) {
 		return 2, errors.New("no accounts configured")
 	}
 
-	report := usageOutput{FetchedAt: time.Now().UTC().Format(time.RFC3339), Accounts: make([]accountUsageOutput, 0, len(accounts))}
-	for _, account := range accounts {
-		item := accountUsageOutput{Name: account.Name}
-		loggedIn, err := codex.LoggedIn(account.Home)
-		if err != nil {
-			item.Error = fmt.Sprintf("check login: %v", err)
-		} else if !loggedIn {
-			item.Error = "account is not logged in"
-		} else if usage, err := codex.ReadUsage(account.Home); err != nil {
-			item.Error = err.Error()
-		} else {
-			item.Usage = &usage
-		}
-		report.Accounts = append(report.Accounts, item)
+	report := usageOutput{FetchedAt: time.Now().UTC().Format(time.RFC3339), Accounts: make([]accountUsageOutput, len(accounts))}
+	limit := make(chan struct{}, 4)
+	var wait sync.WaitGroup
+	for index, account := range accounts {
+		index, account := index, account
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			item := accountUsageOutput{Name: account.Name}
+			usage, err := codex.ReadUsage(account.Home)
+			if err != nil {
+				if strings.Contains(err.Error(), "ChatGPT login is required") {
+					item.Error = "account is not logged in"
+				} else {
+					item.Error = err.Error()
+				}
+			} else {
+				item.Usage = &usage
+			}
+			report.Accounts[index] = item
+		}()
 	}
+	wait.Wait()
 	if *jsonOutput {
 		return printJSON(report)
 	}
@@ -457,6 +487,9 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 			return 2, errors.New("usage: cab account add [--home PATH] NAME")
 		}
 		name := flags.Arg(0)
+		if err := config.ValidateAccountName(name); err != nil {
+			return 2, err
+		}
 		home := *homeFlag
 		if home == "" {
 			home = filepath.Join(paths.DataDir, "accounts", name)
@@ -465,21 +498,35 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 		if err != nil {
 			return 1, err
 		}
-		if err := ensureAccountHome(home); err != nil {
+		if config.PathsOverlap(home, paths.ConfigDir) {
+			return 2, errors.New("account home cannot overlap the CAB config directory")
+		}
+		updated, err := config.Update(paths, func(latest *config.Config) (config.Mutation, error) {
+			if latest.SharedSessionsDir != "" {
+				return config.Mutation{}, errors.New("disable session sharing before adding an account")
+			}
+			if _, ok := latest.Find(name); ok {
+				return config.Mutation{}, fmt.Errorf("account %q already exists", name)
+			}
+			mutation, prepareErr := prepareAccountHome(home)
+			if prepareErr != nil {
+				return config.Mutation{}, prepareErr
+			}
+			return mutation, latest.Add(config.Account{Name: name, Home: home})
+		})
+		if err != nil {
 			return 1, err
 		}
-		if err := cfg.Add(config.Account{Name: name, Home: home}); err != nil {
-			return 2, err
-		}
-		if err := config.Save(paths, *cfg); err != nil {
-			return 1, err
-		}
+		*cfg = updated
 		fmt.Printf("added %s at %s\n", name, home)
 		fmt.Printf("next: cab login %s\n", name)
 		return 0, nil
 	case "import-current":
 		if len(args) != 2 {
 			return 2, errors.New("usage: cab account import-current NAME")
+		}
+		if err := config.ValidateAccountName(args[1]); err != nil {
+			return 2, err
 		}
 		home, err := config.DefaultCodexHome()
 		if err != nil {
@@ -497,15 +544,25 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 		if !loggedIn {
 			return 2, errors.New("the default Codex home is not logged in")
 		}
-		if err := ensureAccountHome(home); err != nil {
+		updated, err := config.Update(paths, func(latest *config.Config) (config.Mutation, error) {
+			if latest.SharedSessionsDir != "" {
+				return config.Mutation{}, errors.New("disable session sharing before importing an account")
+			}
+			for _, account := range latest.Accounts {
+				if filepath.Clean(account.Home) == filepath.Clean(home) {
+					return config.Mutation{}, fmt.Errorf("current Codex home is already registered as %q", account.Name)
+				}
+			}
+			mutation, prepareErr := prepareAccountHome(home)
+			if prepareErr != nil {
+				return config.Mutation{}, prepareErr
+			}
+			return mutation, latest.Add(config.Account{Name: args[1], Home: home})
+		})
+		if err != nil {
 			return 1, err
 		}
-		if err := cfg.Add(config.Account{Name: args[1], Home: home}); err != nil {
-			return 2, err
-		}
-		if err := config.Save(paths, *cfg); err != nil {
-			return 1, err
-		}
+		*cfg = updated
 		fmt.Printf("registered existing Codex login as %s; credentials were not copied\n", args[1])
 		return 0, nil
 	case "remove":
@@ -519,19 +576,29 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 		if _, ok := cfg.Find(name); !ok {
 			return 2, fmt.Errorf("unknown account %q", name)
 		}
-		cfg.Remove(name)
-		if strings.EqualFold(cfg.DefaultAccount, name) {
-			cfg.DefaultAccount = ""
-			if len(cfg.Accounts) > 0 {
-				cfg.DefaultAccount = cfg.Accounts[0].Name
+		updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+			if latest.SharedSessionsDir != "" {
+				return errors.New("disable session sharing before removing an account")
 			}
-		}
-		if strings.EqualFold(cfg.RemoteAccount, name) {
-			cfg.RemoteAccount = ""
-		}
-		if err := config.Save(paths, *cfg); err != nil {
+			if _, ok := latest.Find(name); !ok {
+				return fmt.Errorf("unknown account %q", name)
+			}
+			latest.Remove(name)
+			if strings.EqualFold(latest.DefaultAccount, name) {
+				latest.DefaultAccount = ""
+				if len(latest.Accounts) > 0 {
+					latest.DefaultAccount = latest.Accounts[0].Name
+				}
+			}
+			if strings.EqualFold(latest.RemoteAccount, name) {
+				latest.RemoteAccount = ""
+			}
+			return nil
+		})
+		if err != nil {
 			return 1, err
 		}
+		*cfg = updated
 		fmt.Printf("removed %s from config; files were preserved\n", name)
 		return 0, nil
 	default:
@@ -547,14 +614,22 @@ func useCommand(paths config.Paths, cfg *config.Config, args []string, remote bo
 	if !ok {
 		return 2, fmt.Errorf("unknown account %q", args[0])
 	}
-	if remote {
-		cfg.RemoteAccount = account.Name
-	} else {
-		cfg.DefaultAccount = account.Name
-	}
-	if err := config.Save(paths, *cfg); err != nil {
+	updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+		current, ok := latest.Find(account.Name)
+		if !ok {
+			return fmt.Errorf("unknown account %q", account.Name)
+		}
+		if remote {
+			latest.RemoteAccount = current.Name
+		} else {
+			latest.DefaultAccount = current.Name
+		}
+		return nil
+	})
+	if err != nil {
 		return 1, err
 	}
+	*cfg = updated
 	if remote {
 		fmt.Printf("remote app-server account: %s\n", account.Name)
 	} else {
@@ -617,6 +692,11 @@ func runCommand(paths config.Paths, cfg config.Config, args []string, appServer 
 	if appServer {
 		commandArgs = append([]string{"app-server"}, commandArgs...)
 	}
+	unlock, err := session.AcquireRunLease(paths)
+	if err != nil {
+		return 1, err
+	}
+	defer unlock()
 	return codex.Run(account.Home, commandArgs)
 }
 
@@ -654,12 +734,13 @@ func rotationCommand(paths config.Paths, cfg *config.Config, args []string) (int
 			return 2, errors.New("usage: cab rotation configure --accounts NAME,NAME")
 		}
 		names := splitAccountNames(*accounts)
-		if err := cfg.SetRotationAccounts(names); err != nil {
-			return 2, err
-		}
-		if err := config.Save(paths, *cfg); err != nil {
+		updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+			return latest.SetRotationAccounts(names)
+		})
+		if err != nil {
 			return 1, err
 		}
+		*cfg = updated
 		fmt.Printf("rotation order: %s\n", strings.Join(cfg.Rotation.Accounts, ", "))
 		return 0, nil
 	case "enable":
@@ -669,30 +750,45 @@ func rotationCommand(paths config.Paths, cfg *config.Config, args []string) (int
 		if len(cfg.Rotation.Accounts) < 2 {
 			return 2, errors.New("configure at least two rotation accounts first")
 		}
-		cfg.Rotation.Enabled = true
-		if err := config.Save(paths, *cfg); err != nil {
+		updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+			if len(latest.Rotation.Accounts) < 2 {
+				return errors.New("configure at least two rotation accounts first")
+			}
+			latest.Rotation.Enabled = true
+			return nil
+		})
+		if err != nil {
 			return 1, err
 		}
+		*cfg = updated
 		fmt.Println("launch rotation enabled; quota and errors never trigger switching")
 		return 0, nil
 	case "disable":
 		if len(args) != 1 {
 			return 2, errors.New("usage: cab rotation disable")
 		}
-		cfg.Rotation.Enabled = false
-		if err := config.Save(paths, *cfg); err != nil {
+		updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+			latest.Rotation.Enabled = false
+			return nil
+		})
+		if err != nil {
 			return 1, err
 		}
+		*cfg = updated
 		fmt.Println("launch rotation disabled")
 		return 0, nil
 	case "reset":
 		if len(args) != 1 {
 			return 2, errors.New("usage: cab rotation reset")
 		}
-		cfg.Rotation.NextIndex = 0
-		if err := config.Save(paths, *cfg); err != nil {
+		updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+			latest.Rotation.NextIndex = 0
+			return nil
+		})
+		if err != nil {
 			return 1, err
 		}
+		*cfg = updated
 		fmt.Println("rotation reset to the first configured account")
 		return 0, nil
 	default:
@@ -759,44 +855,13 @@ func statusCommand(cfg config.Config, args []string) (int, error) {
 }
 
 func takeNextRotationAccount(paths config.Paths) (config.Account, error) {
-	if err := config.EnsureConfigDir(paths); err != nil {
-		return config.Account{}, err
-	}
-	lockPath := filepath.Join(paths.ConfigDir, "rotation.lock")
-	if info, err := os.Lstat(lockPath); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
-		return config.Account{}, fmt.Errorf("refusing unsafe rotation lock: %s", lockPath)
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return config.Account{}, err
-	}
-	fd, err := syscall.Open(lockPath, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	var account config.Account
+	_, err := config.UpdateSimple(paths, func(latest *config.Config) error {
+		var err error
+		account, err = latest.NextRotationAccount()
+		return err
+	})
 	if err != nil {
-		return config.Account{}, err
-	}
-	lock := os.NewFile(uintptr(fd), lockPath)
-	defer lock.Close()
-	var stat syscall.Stat_t
-	if err := syscall.Fstat(fd, &stat); err != nil {
-		return config.Account{}, err
-	}
-	if stat.Mode&syscall.S_IFMT != syscall.S_IFREG {
-		return config.Account{}, fmt.Errorf("rotation lock is not a regular file: %s", lockPath)
-	}
-	if err := lock.Chmod(0o600); err != nil {
-		return config.Account{}, err
-	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return config.Account{}, err
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	latest, err := config.Load(paths)
-	if err != nil {
-		return config.Account{}, err
-	}
-	account, err := latest.NextRotationAccount()
-	if err != nil {
-		return config.Account{}, err
-	}
-	if err := config.Save(paths, latest); err != nil {
 		return config.Account{}, err
 	}
 	return account, nil
@@ -880,31 +945,48 @@ func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int
 		if err != nil {
 			return 1, err
 		}
-		report, err := session.ImportLegacy(paths, *cfg, home)
+		var report session.LegacyReport
+		_, err = config.ReadLocked(paths, func(latest config.Config) error {
+			var importErr error
+			report, importErr = session.ImportLegacy(paths, latest, home)
+			return importErr
+		})
 		if err != nil {
 			return 1, err
 		}
 		fmt.Printf("imported %d sessions and %d archived sessions from %s\n", report.Sessions, report.ArchivedSessions, report.SourceHome)
 		return 0, nil
 	}
-	switch args[0] {
-	case "enable":
-		if !*ack {
-			return 2, errors.New("--acknowledge-cross-account-context is required")
-		}
-		if err := session.Enable(paths, cfg); err != nil {
-			return 1, err
-		}
-	case "disable":
-		if err := session.Disable(paths, cfg); err != nil {
-			return 1, err
-		}
-	default:
+	if args[0] != "enable" && args[0] != "disable" {
 		return 2, fmt.Errorf("unknown sessions command %q", args[0])
 	}
-	if err := config.Save(paths, *cfg); err != nil {
+	if args[0] == "enable" && !*ack {
+		return 2, errors.New("--acknowledge-cross-account-context is required")
+	}
+	updated, err := config.Update(paths, func(latest *config.Config) (config.Mutation, error) {
+		if args[0] == "enable" && len(latest.Accounts) < 2 {
+			return config.Mutation{}, errors.New("configure at least two accounts first")
+		}
+		running, listErr := codexprocess.List()
+		if listErr != nil {
+			return config.Mutation{}, listErr
+		}
+		if len(running) > 0 {
+			pids := make([]string, 0, len(running))
+			for _, process := range running {
+				pids = append(pids, strconv.Itoa(process.PID))
+			}
+			return config.Mutation{}, fmt.Errorf("Codex started while preparing the operation (PIDs %s); close it and retry", strings.Join(pids, ", "))
+		}
+		if args[0] == "enable" {
+			return session.PrepareEnable(paths, latest)
+		}
+		return session.PrepareDisable(paths, latest)
+	})
+	if err != nil {
 		return 1, err
 	}
+	*cfg = updated
 	fmt.Printf("session sharing %sd\n", args[0])
 	return 0, nil
 }
@@ -927,6 +1009,9 @@ func shimCommand(paths config.Paths, args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	if resolvedDir == string(filepath.Separator) {
+		return 2, errors.New("shim directory cannot be filesystem root")
+	}
 	target := filepath.Join(resolvedDir, "codex")
 	self, err := os.Executable()
 	if err != nil {
@@ -938,6 +1023,14 @@ func shimCommand(paths config.Paths, args []string) (int, error) {
 	}
 	switch args[0] {
 	case "install":
+		backup := ""
+		if info, err := os.Lstat(resolvedDir); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return 2, fmt.Errorf("refusing unsafe shim directory: %s", resolvedDir)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return 1, err
+		}
 		if err := os.MkdirAll(resolvedDir, 0o700); err != nil {
 			return 1, err
 		}
@@ -952,7 +1045,7 @@ func shimCommand(paths config.Paths, args []string) (int, error) {
 			if !*force {
 				return 2, fmt.Errorf("%s exists; use --force to create a recoverable backup", target)
 			}
-			backup := target + ".cab-backup-" + time.Now().UTC().Format("20060102T150405Z")
+			backup = target + ".cab-backup-" + time.Now().UTC().Format("20060102T150405Z")
 			if err := os.Rename(target, backup); err != nil {
 				return 1, err
 			}
@@ -961,6 +1054,11 @@ func shimCommand(paths config.Paths, args []string) (int, error) {
 			return 1, err
 		}
 		if err := os.Symlink(self, target); err != nil {
+			if backup != "" {
+				if restoreErr := os.Rename(backup, target); restoreErr != nil {
+					return 1, fmt.Errorf("install shim: %w; restore previous entry: %v", err, restoreErr)
+				}
+			}
 			return 1, err
 		}
 		fmt.Printf("installed remote shim at %s\n", target)
@@ -1036,6 +1134,9 @@ func doctor(paths config.Paths, cfg config.Config) (int, error) {
 		}
 	}
 	check(paths.File != "", "config path resolved")
+	pendingRecovery, recoveryErr := session.RecoveryStatus(paths, cfg)
+	check(recoveryErr == nil, "session transaction journal is valid")
+	check(!pendingRecovery, "no interrupted session transaction requires recovery")
 	if issues > 0 {
 		return 1, fmt.Errorf("doctor found %d issue(s)", issues)
 	}
@@ -1054,6 +1155,9 @@ func selectedAccount(cfg config.Config, name string) (config.Account, error) {
 }
 
 func ensureAccountHome(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) == string(filepath.Separator) {
+		return fmt.Errorf("refusing unsafe account home: %s", path)
+	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("refusing unsafe account home: %s", path)
@@ -1066,6 +1170,27 @@ func ensureAccountHome(path string) error {
 		return err
 	}
 	return os.Chmod(path, 0o700)
+}
+
+func prepareAccountHome(path string) (config.Mutation, error) {
+	_, err := os.Lstat(path)
+	created := errors.Is(err, fs.ErrNotExist)
+	if err != nil && !created {
+		return config.Mutation{}, err
+	}
+	if err := ensureAccountHome(path); err != nil {
+		return config.Mutation{}, err
+	}
+	if !created {
+		return config.Mutation{}, nil
+	}
+	return config.Mutation{Rollback: func() error {
+		err := os.Remove(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}}, nil
 }
 
 func authStatus(home string) string {

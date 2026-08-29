@@ -187,6 +187,9 @@ func readResponse(decoder *json.Decoder, id int) (appServerMessage, error) {
 }
 
 func validateBrowserAuthURL(raw string) error {
+	if len(raw) == 0 || len(raw) > 32*1024 {
+		return errors.New("official Codex app-server returned an invalid authorization URL length")
+	}
 	authURL, err := url.Parse(raw)
 	if err != nil || authURL.Scheme != "https" || !officialAuthHost(authURL.Hostname()) {
 		return errors.New("official Codex app-server returned a non-OpenAI authorization URL")
@@ -196,7 +199,7 @@ func validateBrowserAuthURL(raw string) error {
 		return errors.New("official Codex app-server returned an unexpected callback URL")
 	}
 	port, err := strconv.Atoi(redirectURL.Port())
-	if err != nil || port < 1 || port > 65535 {
+	if err != nil || (port != 1455 && port != 1457) {
 		return errors.New("official Codex app-server returned an invalid callback port")
 	}
 	return nil

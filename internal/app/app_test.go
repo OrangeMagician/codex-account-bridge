@@ -141,10 +141,13 @@ func TestRunRotationRejectsSymlinkLock(t *testing.T) {
 	if err := os.WriteFile(target, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(paths.ConfigDir, "rotation.lock")); err != nil {
+	if err := os.Remove(filepath.Join(paths.ConfigDir, "config.lock")); err != nil {
 		t.Fatal(err)
 	}
-	if code, err := Run([]string{"cab", "run"}, "test"); err == nil || code != 2 {
+	if err := os.Symlink(target, filepath.Join(paths.ConfigDir, "config.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := Run([]string{"cab", "run"}, "test"); err == nil || code != 1 {
 		t.Fatalf("expected unsafe lock rejection, code=%d err=%v", code, err)
 	}
 }
@@ -183,5 +186,30 @@ func TestImportCurrentRegistersExistingHomeWithoutCopying(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("current home mode = %04o, want 0700", info.Mode().Perm())
+	}
+}
+
+func TestEnsureAccountHomeRejectsFilesystemRoot(t *testing.T) {
+	if err := ensureAccountHome(string(filepath.Separator)); err == nil {
+		t.Fatal("expected filesystem root rejection")
+	}
+}
+
+func TestAccountAddRollsBackNewHomeWhenConfigRejectsAccount(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CAB_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("CAB_DATA_HOME", filepath.Join(root, "data"))
+	_, _ = Run([]string{"cab", "init"}, "test")
+	firstHome := filepath.Join(root, "accounts", "first")
+	if code, err := Run([]string{"cab", "account", "add", "--home", firstHome, "first"}, "test"); err != nil || code != 0 {
+		t.Fatalf("add first account: code=%d err=%v", code, err)
+	}
+	rejectedHome := filepath.Join(firstHome, "nested")
+
+	if code, err := Run([]string{"cab", "account", "add", "--home", rejectedHome, "second"}, "test"); err == nil || code != 1 {
+		t.Fatalf("expected overlapping account home rejection, code=%d err=%v", code, err)
+	}
+	if _, err := os.Lstat(rejectedHome); !os.IsNotExist(err) {
+		t.Fatalf("rejected account home was not rolled back: %v", err)
 	}
 }

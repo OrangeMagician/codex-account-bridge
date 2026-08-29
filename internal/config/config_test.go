@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -60,6 +62,95 @@ func TestLoadRejectsSymlink(t *testing.T) {
 	_, err := Load(Paths{ConfigDir: root, DataDir: filepath.Join(root, "data"), File: link})
 	if err == nil {
 		t.Fatal("expected symlink rejection")
+	}
+}
+
+func TestLoadRejectsSymlinkAccountHome(t *testing.T) {
+	root := t.TempDir()
+	paths := Paths{ConfigDir: filepath.Join(root, "config"), DataDir: filepath.Join(root, "data")}
+	paths.File = filepath.Join(paths.ConfigDir, "config.json")
+	realHome := filepath.Join(root, "real-home")
+	linkHome := filepath.Join(root, "linked-home")
+	if err := os.MkdirAll(realHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realHome, linkHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.ConfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := fmt.Sprintf("{\"version\":1,\"default_account\":\"one\",\"accounts\":[{\"name\":\"one\",\"home\":%q}]}\n", linkHome)
+	if err := os.WriteFile(paths.File, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(paths); err == nil {
+		t.Fatal("expected symlink account home rejection")
+	}
+}
+
+func TestLoadRejectsUnknownAndDuplicateFields(t *testing.T) {
+	root := t.TempDir()
+	paths := Paths{ConfigDir: filepath.Join(root, "config"), DataDir: filepath.Join(root, "data")}
+	paths.File = filepath.Join(paths.ConfigDir, "config.json")
+	if err := os.MkdirAll(paths.ConfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range []string{
+		`{"version":1,"accounts":[],"unexpected":true}`,
+		`{"version":1,"version":1,"accounts":[]}`,
+	} {
+		if err := os.WriteFile(paths.File, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(paths); err == nil {
+			t.Fatalf("expected invalid config rejection for %s", data)
+		}
+	}
+}
+
+func TestDefaultPathsRejectsFilesystemRoot(t *testing.T) {
+	t.Setenv("CAB_CONFIG_HOME", string(filepath.Separator))
+	t.Setenv("CAB_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if _, err := DefaultPaths(); err == nil {
+		t.Fatal("expected filesystem root rejection")
+	}
+}
+
+func TestConcurrentUpdatesDoNotLoseAccounts(t *testing.T) {
+	root := t.TempDir()
+	paths := Paths{ConfigDir: filepath.Join(root, "config"), DataDir: filepath.Join(root, "data")}
+	paths.File = filepath.Join(paths.ConfigDir, "config.json")
+	if _, err := UpdateSimple(paths, func(*Config) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	const count = 32
+	errorsFound := make(chan error, count)
+	var wait sync.WaitGroup
+	for index := 0; index < count; index++ {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := UpdateSimple(paths, func(cfg *Config) error {
+				return cfg.Add(Account{Name: fmt.Sprintf("account-%02d", index), Home: filepath.Join(root, "accounts", fmt.Sprintf("%02d", index))})
+			})
+			errorsFound <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Accounts) != count {
+		t.Fatalf("account count = %d, want %d", len(loaded.Accounts), count)
 	}
 }
 

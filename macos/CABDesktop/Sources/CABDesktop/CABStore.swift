@@ -15,6 +15,7 @@ private struct UsageCacheEntry {
 
 @MainActor
 final class CABStore: ObservableObject {
+    private static let maximumOutputCharacters = 500_000
     @Published var target: BridgeTarget = .local
     @Published var status = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
     @Published var sidebarSelection = CABStore.globalSettingsSelection
@@ -249,7 +250,10 @@ final class CABStore: ObservableObject {
     }
 
     func setDefault(_ name: String) { run(["use", name]) }
-    func setRemote(_ name: String) { run(["remote", "use", name]) }
+    func switchRemoteCodex(to name: String) {
+        guard target == .remote else { return }
+        run(["remote", "use", name])
+    }
 
     func setAgentSelection(service: String, account: String) {
         agentSelections[service] = account
@@ -314,22 +318,29 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
-            let fallbackHome = previousDesktopHome(fallback: account.home)
+            var threadIndexBackup: URL?
+            var sessionModeChanged = false
+            var originalSharedSessions = status.sharedSessions
+            var fallbackHome = previousDesktopHome(fallback: account.home)
             let sessionMode = preserveSessionsOnDesktopSwitch ? "保留项目与共享会话" : "保持项目与会话独立"
             output = "正在检查切换条件，准备应用“\(sessionMode)”设置…\n"
             do {
-                if checkProcesses && (preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != status.sharedSessions) {
-                    let conflicts = try await service.runningNonDesktopCodexProcesses(knownHomes: status.accounts.map(\.home))
+                let liveStatus = try await service.loadStatus(target: .local, remoteHost: "")
+                status = liveStatus
+                originalSharedSessions = liveStatus.sharedSessions
+                fallbackHome = previousDesktopHome(fallback: account.home)
+                if checkProcesses && (preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != liveStatus.sharedSessions) {
+                    let conflicts = try await service.runningNonDesktopCodexProcesses(knownHomes: liveStatus.accounts.map(\.home))
                     if !conflicts.isEmpty {
                         pendingDesktopSwitch = DesktopSwitchProcessRequest(account: account, processes: conflicts)
                         isBusy = false
                         return
                     }
                 }
-                output += "预检通过，正在关闭 Codex 桌面客户端并切换账号…\n"
+                appendOutput("预检通过，正在关闭 Codex 桌面客户端并切换账号…\n")
                 try await service.stopCodexDesktop()
                 desktopWasStopped = true
-                let sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded()
+                sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded(currentSharedSessions: originalSharedSessions)
                 if preserveSessionsOnDesktopSwitch {
                     workspaceSync = try service.synchronizeCodexWorkspaceState(
                         sourceHome: fallbackHome,
@@ -338,32 +349,59 @@ final class CABStore: ObservableObject {
                     )
                     if let workspaceSync {
                         let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
-                        output += "已同步 \(workspaceSync.projectCount) 个桌面项目及会话归属\(backupMessage)。\n"
+                        appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目及会话归属\(backupMessage)。\n")
                     }
                 }
                 if preserveSessionsOnDesktopSwitch || sessionModeChanged,
                    let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
-                    output += "已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n"
+                    threadIndexBackup = backup
+                    appendOutput("已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n")
                 }
                 try await service.startCodexDesktop(codexHome: account.home)
                 desktopWasStopped = false
                 lastDesktopAccount = account.name
                 defaults.set(account.name, forKey: lastDesktopAccountKey)
-                output += "已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "项目和会话历史已保留" : "项目和会话保持独立")。\n"
+                appendOutput("已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "项目和会话历史已保留" : "项目和会话保持独立")。\n")
             } catch {
                 var message = error.localizedDescription
                 if desktopWasStopped {
                     if let workspaceSync {
                         do {
                             try service.restoreCodexWorkspaceState(workspaceSync)
-                            output += "切换未完成，已恢复目标账号原有的项目状态。\n"
+                            appendOutput("切换未完成，已恢复目标账号原有的项目状态。\n")
                         } catch {
                             message += "\n同时无法自动恢复目标账号的项目状态：\(error.localizedDescription)"
                         }
                     }
+                    if let threadIndexBackup {
+                        do {
+                            try service.restoreCodexThreadIndex(backupURL: threadIndexBackup, codexHome: account.home)
+                            appendOutput("切换未完成，已恢复目标账号原有的线程索引。\n")
+                        } catch {
+                            message += "\n同时无法自动恢复目标账号的线程索引：\(error.localizedDescription)"
+                        }
+                    }
+                    if sessionModeChanged {
+                        let arguments = originalSharedSessions
+                            ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
+                            : ["sessions", "disable", "--confirm-codex-stopped"]
+                        do {
+                            let result = try await service.execute(arguments, target: .local, remoteHost: "")
+                            if result.exitCode != 0 {
+                                let loaded = try? await service.loadStatus(target: .local, remoteHost: "")
+                                guard loaded?.sharedSessions == originalSharedSessions else {
+                                    throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+                                }
+                            }
+                            if let loaded = try? await service.loadStatus(target: .local, remoteHost: "") { status = loaded }
+                            appendOutput("切换未完成，已恢复原有的项目与会话保留设置。\n")
+                        } catch {
+                            message += "\n同时无法自动恢复会话保留设置：\(error.localizedDescription)"
+                        }
+                    }
                     do {
                         try await service.startCodexDesktop(codexHome: fallbackHome)
-                        output += "切换未完成，已重新启动原 Codex 桌面账号。\n"
+                        appendOutput("切换未完成，已重新启动原 Codex 桌面账号。\n")
                     } catch {
                         message += "\n同时无法自动恢复 Codex 桌面客户端：\(error.localizedDescription)"
                     }
@@ -403,7 +441,7 @@ final class CABStore: ObservableObject {
     private func applySessionSharingChange(_ enabled: Bool) async throws {
         let arguments = enabled ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"] : ["sessions", "disable", "--confirm-codex-stopped"]
         output = "$ cab \(arguments.joined(separator: " "))\n"
-        let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in Task { @MainActor in self?.output += chunk } }
+        let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in Task { @MainActor in self?.appendOutput(chunk) } }
         if result.exitCode != 0 { throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput) }
         await reload()
     }
@@ -485,23 +523,28 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func applyDesktopSessionPreferenceIfNeeded() async throws -> Bool {
-        let modeChanged = preserveSessionsOnDesktopSwitch != status.sharedSessions
-        guard modeChanged || preserveSessionsOnDesktopSwitch else { return false }
+    private func applyDesktopSessionPreferenceIfNeeded(currentSharedSessions: Bool) async throws -> Bool {
+        let modeChanged = preserveSessionsOnDesktopSwitch != currentSharedSessions
+        guard modeChanged else { return false }
         if try await service.hasRunningCodexProcesses(target: .local, remoteHost: "") {
             throw BridgeError.commandFailed("检测到仍在运行的 Codex CLI 或编辑器任务。桌面端已关闭，请结束这些任务后重试，以免迁移中的会话文件被同时写入。")
         }
         let arguments = preserveSessionsOnDesktopSwitch
             ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
             : ["sessions", "disable", "--confirm-codex-stopped"]
-        output += "$ cab \(arguments.joined(separator: " "))\n"
+        appendOutput("$ cab \(arguments.joined(separator: " "))\n")
         let result = try await service.execute(arguments, target: .local, remoteHost: "") { [weak self] chunk in
-            Task { @MainActor in self?.output += chunk }
+            Task { @MainActor in self?.appendOutput(chunk) }
         }
         if result.exitCode != 0 {
+            if let loaded = try? await service.loadStatus(target: .local, remoteHost: ""),
+               loaded.sharedSessions == preserveSessionsOnDesktopSwitch {
+                status = loaded
+                return modeChanged
+            }
             throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
         }
-        status = try await service.loadStatus(target: .local, remoteHost: "")
+        if let loaded = try? await service.loadStatus(target: .local, remoteHost: "") { status = loaded }
         return modeChanged
     }
 
@@ -759,7 +802,7 @@ final class CABStore: ObservableObject {
     private func markLoginStatusConfirmed(accountName: String) {
         guard loginAccountName == accountName else { return }
         if !loginStatusConfirmed {
-            output += "\n已检测到官方 Codex 登录成功，正在完成状态与额度更新…\n"
+            appendOutput("\n已检测到官方 Codex 登录成功，正在完成状态与额度更新…\n")
         }
         loginStatusConfirmed = true
         canManuallyCheckLogin = false
@@ -774,9 +817,12 @@ final class CABStore: ObservableObject {
     }
 
     private func receiveOutput(_ chunk: String, loginBrowser: LoginBrowser?) {
-        output += chunk
+        appendOutput(chunk)
         guard let loginBrowser, !loginBrowserOpened else { return }
         loginOutputBuffer += chunk
+        if loginOutputBuffer.count > 256_000 {
+            loginOutputBuffer = String(loginOutputBuffer.suffix(256_000))
+        }
         guard let url = service.officialLoginURL(in: loginOutputBuffer) else { return }
         do {
             let destination: String
@@ -785,16 +831,23 @@ final class CABStore: ObservableObject {
                 try service.openDefaultBrowser(url: url)
                 destination = "系统默认浏览器"
                 loginBrowserOpened = true
-                output += "\n已在\(destination)打开官方设备登录页面，请输入上方的一次性代码。\n"
+                appendOutput("\n已在\(destination)打开官方设备登录页面，请输入上方的一次性代码。\n")
             case let .selected(browser, privateWindow):
                 try service.openBrowser(browser, url: url, privateWindow: privateWindow)
                 destination = privateWindow ? "\(browser.title) 无痕窗口" : browser.title
                 loginBrowserOpened = true
-                output += "\n已在\(destination)打开官方 ChatGPT 登录页面。\n"
+                appendOutput("\n已在\(destination)打开官方 ChatGPT 登录页面。\n")
             }
         } catch {
             loginBrowserOpened = true
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func appendOutput(_ text: String) {
+        output += text
+        if output.count > Self.maximumOutputCharacters {
+            output = "… 较早的输出已截断 …\n" + String(output.suffix(Self.maximumOutputCharacters))
         }
     }
 
@@ -804,9 +857,9 @@ final class CABStore: ObservableObject {
             output = ""
             do {
                 for arguments in commands {
-                    output += "$ cab \(arguments.joined(separator: " "))\n"
+                    appendOutput("$ cab \(arguments.joined(separator: " "))\n")
                     let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in
-                        Task { @MainActor in self?.output += chunk }
+                        Task { @MainActor in self?.appendOutput(chunk) }
                     }
                     if result.exitCode != 0 {
                         throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)

@@ -1,22 +1,31 @@
-.PHONY: check build macos-app release clean
+.PHONY: check check-go security-check build macos-app release local-release clean
 
 VERSION ?= dev
-LDFLAGS := -s -w -X main.version=$(VERSION)
+BUILD_NUMBER ?= 0
+GO ?= go
 
-check:
-	go test ./...
-	go test -race ./...
-	go vet ./...
+check-go:
+	./scripts/check-go-version.sh "$(GO)"
 
-build:
-	mkdir -p bin
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/cab ./cmd/cab
+check: check-go
+	$(GO) test ./...
+	$(GO) test -race ./...
+	$(GO) vet ./...
+	swift test --package-path macos/CABDesktop
+
+security-check: check-go
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+build: check-go
+	GO="$(GO)" ./scripts/build-cli.sh "$(VERSION)"
 
 macos-app:
-	./scripts/build-macos-app.sh
+	./scripts/build-macos-app.sh "$(if $(filter dev,$(VERSION)),0.0.0,$(VERSION))" "$(BUILD_NUMBER)"
 
-release:
-	./scripts/build-release.sh "$(VERSION)"
+release: check security-check
+	GO="$(GO)" ./scripts/build-release.sh "$(VERSION)"
+
+local-release: release macos-app
 
 clean:
 	rm -rf bin dist

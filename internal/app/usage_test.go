@@ -12,14 +12,14 @@ func TestUsageJSONKeepsPerAccountFailuresIsolated(t *testing.T) {
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")
 	script := `#!/bin/sh
-if [ "$1" = "login" ]; then
-  [ "$(basename "$CODEX_HOME")" != "missing" ]
-  exit $?
-fi
-IFS= read -r initialize
-printf '%s\n' '{"id":1,"result":{}}'
-IFS= read -r initialized
-IFS= read -r account
+	IFS= read -r initialize
+	printf '%s\n' '{"id":1,"result":{}}'
+	IFS= read -r initialized
+	IFS= read -r account
+	if [ "$(basename "$CODEX_HOME")" = "missing" ]; then
+	  printf '%s\n' '{"id":2,"result":{"account":null}}'
+	  exit 0
+	fi
 printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"},"requiresOpenaiAuth":true}}'
 IFS= read -r limits
 printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1788139274},"planType":"plus"},"rateLimitsByLimitId":null,"rateLimitResetCredits":null}}'

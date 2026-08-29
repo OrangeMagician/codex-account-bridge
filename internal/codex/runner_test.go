@@ -69,8 +69,63 @@ func TestFindRealUsesRecoverableShimBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != backup {
-		t.Fatalf("FindReal() = %q, want %q", got, backup)
+	want, err := filepath.EvalSymlinks(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("FindReal() = %q, want %q", got, want)
+	}
+}
+
+func TestFindRealIgnoresRelativePATHEntries(t *testing.T) {
+	root := t.TempDir()
+	fakeDir := filepath.Join(root, "relative-tools")
+	if err := os.MkdirAll(fakeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeDir, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(working) })
+	t.Setenv("PATH", "relative-tools")
+	t.Setenv("CAB_REAL_CODEX", "")
+	if _, err := FindReal("codex"); err == nil {
+		t.Fatal("expected relative PATH entry to be ignored")
+	}
+}
+
+func TestFindRealRejectsExecutableInsideCurrentWorktree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.invalid/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(working) })
+	t.Setenv("PATH", bin)
+	t.Setenv("CAB_REAL_CODEX", "")
+	if _, err := FindReal("codex"); err == nil {
+		t.Fatal("expected worktree executable to be ignored")
 	}
 }
 
@@ -142,6 +197,7 @@ func TestValidateBrowserAuthURLRejectsUntrustedTargets(t *testing.T) {
 		"https://example.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
 		"https://auth.openai.com/oauth/authorize?redirect_uri=https%3A%2F%2Fevil.example%2Fauth%2Fcallback",
 		"https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fwrong",
+		"https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fauth%2Fcallback",
 	} {
 		if err := validateBrowserAuthURL(candidate); err == nil {
 			t.Fatalf("untrusted URL accepted: %s", candidate)

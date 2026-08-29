@@ -18,19 +18,20 @@
 - 不修改项目 trust 配置。
 - 额度只读查询仅用于展示，不因限额、认证失败或运行错误切换账号；用户可以明确配置“每次新启动轮换”。
 - 只有双重确认后才共享 `sessions/`，从不共享 `auth.json`、`config.toml` 或 SQLite/WAL。
-- 配置原子写入、保留上一版 `.backup` 并强制 `0600`；配置与账号目录拒绝符号链接并限制为 `0700`。
+- 配置原子写入、保留上一版 `.backup` 并强制 `0600`；所有配置更新由同一文件锁串行化，配置与账号目录拒绝符号链接并限制为 `0700`。
 - 运行官方 Codex 时不经过 shell，参数保持原样。
 
 详细审计见 [docs/UPSTREAM_AUDIT.md](docs/UPSTREAM_AUDIT.md)，威胁模型见 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)。
 
 ## 安装
 
-需要 Go 1.20+ 和已经安装的官方 Codex CLI：
+需要包含当前标准库安全修复的 Go 1.26.7+ 和已经安装的官方 Codex CLI：
 
 ```bash
 git clone https://github.com/OrangeMagician/codex-account-bridge.git
 cd codex-account-bridge
 make check
+make security-check
 make build
 install -m 0755 bin/cab ~/.local/bin/cab
 ```
@@ -108,7 +109,7 @@ cab run --account work
 cab rotation disable
 ```
 
-同时启动多个 `cab run` 时，轮换位置通过权限为 `0600` 的本地文件锁串行更新。轮换只选择登录身份，不共享历史会话；会话继承仍需单独执行上面的双重确认流程。
+同时启动多个 `cab run` 或配置命令时，所有更新通过权限为 `0600` 的统一本地文件锁串行执行。轮换只选择登录身份，不共享历史会话；会话继承仍需单独执行上面的双重确认流程。
 
 ## 查看官方 Codex 额度
 
@@ -206,16 +207,19 @@ Mac 与 Ubuntu 之间的同一会话优先使用官方 Handoff，不直接同步
 
 ```bash
 cab doctor
+
+# 仅当 doctor 报告上次会话迁移被中断时
+cab doctor --repair
 ```
 
-诊断只检查可执行文件、目录、符号链接和权限，不读取令牌内容。
+诊断只检查可执行文件、目录、符号链接、事务日志和权限，不读取令牌内容。会话共享启用/关闭使用可恢复事务日志；普通命令会自动恢复安全的中断操作，也可显式运行 `cab doctor --repair`。
 
 ## 配置位置
 
 - 配置：`${XDG_CONFIG_HOME:-~/.config}/codex-account-bridge/config.json`
 - 数据：`${XDG_DATA_HOME:-~/.local/share}/codex-account-bridge/`
 - 测试或便携运行可使用 `CAB_CONFIG_HOME`、`CAB_DATA_HOME`。
-- 官方 Codex 路径探测异常时可显式设置 `CAB_REAL_CODEX=/absolute/path/to/codex`。
+- 官方 Codex 路径探测异常时可显式设置 `CAB_REAL_CODEX=/absolute/path/to/codex`。该变量必须是绝对路径；自动 PATH 探测忽略相对目录、当前项目内的候选文件及组/其他用户可写的可执行文件。
 
 ## 不提供的功能
 
@@ -229,7 +233,9 @@ cab doctor
 
 ```bash
 make check
+make security-check
 make release VERSION=0.1.0
+make macos-app VERSION=0.1.0 BUILD_NUMBER=1
 ```
 
 项目不使用 GitHub Actions。发布构建由维护者在本地生成并核对 SHA-256。

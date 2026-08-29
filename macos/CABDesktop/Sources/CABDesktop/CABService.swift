@@ -1,17 +1,37 @@
 import AppKit
 import Foundation
 
-private final class CommandOutputBuffer: @unchecked Sendable {
+final class CommandOutputBuffer: @unchecked Sendable {
+    private static let maximumCharactersPerStream = 2_000_000
+    private static let truncationMarker = "\n… CAB 已截断过长的命令输出 …\n"
     private let lock = NSLock()
     private var standardText = ""
     private var errorText = ""
+    private var standardTruncated = false
+    private var errorTruncated = false
 
     func append(_ data: Data, toStandardOutput: Bool) -> String? {
         guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return nil }
         lock.lock()
-        if toStandardOutput { standardText += chunk } else { errorText += chunk }
+        if toStandardOutput {
+            appendLimited(chunk, text: &standardText, truncated: &standardTruncated)
+        } else {
+            appendLimited(chunk, text: &errorText, truncated: &errorTruncated)
+        }
         lock.unlock()
         return chunk
+    }
+
+    private func appendLimited(_ chunk: String, text: inout String, truncated: inout Bool) {
+        guard !truncated else { return }
+        let remaining = Self.maximumCharactersPerStream - text.count
+        if chunk.count <= remaining {
+            text += chunk
+            return
+        }
+        if remaining > 0 { text += chunk.prefix(remaining) }
+        text += Self.truncationMarker
+        truncated = true
     }
 
     func result(exitCode: Int32) -> CommandResult {
@@ -271,9 +291,32 @@ final class CABService {
                 throw BridgeError.commandFailed("重置 Codex 对话索引水位后完整性检查失败；备份保存在 \(backupURL.path)。")
             }
         } catch {
-            throw BridgeError.commandFailed("无法准备 Codex 对话索引重建；原索引备份保存在 \(backupURL.path)。\n\(error.localizedDescription)")
+            do {
+                try restoreCodexThreadIndex(backupURL: backupURL, codexHome: codexHome)
+            } catch let restoreError {
+                throw BridgeError.commandFailed("无法准备 Codex 对话索引重建，且自动恢复失败。备份保存在 \(backupURL.path)。\n\(error.localizedDescription)\n恢复错误：\(restoreError.localizedDescription)")
+            }
+            throw BridgeError.commandFailed("无法准备 Codex 对话索引重建；已自动恢复原索引。\n\(error.localizedDescription)")
         }
         return backupURL
+    }
+
+    func restoreCodexThreadIndex(backupURL: URL, codexHome: String) throws {
+        let homeURL = URL(fileURLWithPath: codexHome, isDirectory: true).standardizedFileURL
+        let databaseURL = homeURL.appendingPathComponent("state_5.sqlite")
+        let safeBackup = backupURL.standardizedFileURL
+        guard safeBackup.deletingLastPathComponent() == homeURL,
+              safeBackup.lastPathComponent.hasPrefix("state_5.sqlite.cab-backup-") else {
+            throw BridgeError.commandFailed("拒绝从账号目录外的文件恢复 Codex 线程索引。")
+        }
+        let values = try safeBackup.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw BridgeError.commandFailed("Codex 线程索引备份不是安全的普通文件。")
+        }
+        let staged = homeURL.appendingPathComponent(".state_5.sqlite.restore-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: staged) }
+        try fileManager.copyItem(at: safeBackup, to: staged)
+        _ = try fileManager.replaceItemAt(databaseURL, withItemAt: staged)
     }
 
     private func runSQLite(_ databaseURL: URL, sql: String) async throws -> String {
@@ -446,7 +489,8 @@ final class CABService {
                   redirect.scheme?.lowercased() == "http",
                   redirect.host?.lowercased() == "localhost",
                   redirect.path == "/auth/callback",
-                  redirect.port != nil else { continue }
+                  let port = redirect.port,
+                  port == 1455 || port == 1457 else { continue }
             return url
         }
         return nil

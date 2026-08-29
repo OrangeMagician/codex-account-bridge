@@ -32,7 +32,7 @@ type Runner interface {
 type SystemctlRunner struct{}
 
 func (SystemctlRunner) Run(args ...string) ([]byte, error) {
-	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+	cmd := exec.Command("/usr/bin/systemctl", append([]string{"--user"}, args...)...)
 	return cmd.CombinedOutput()
 }
 
@@ -49,6 +49,13 @@ func DefaultManager() (Manager, error) {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		base = filepath.Join(home, ".config")
+	}
+	base, err = filepath.Abs(base)
+	if err != nil {
+		return Manager{}, err
+	}
+	if filepath.Clean(base) == string(filepath.Separator) {
+		return Manager{}, errors.New("XDG_CONFIG_HOME cannot be filesystem root")
 	}
 	return Manager{ConfigHome: base, Runner: SystemctlRunner{}}, nil
 }
@@ -166,26 +173,38 @@ func (m Manager) update(unit string, next []byte, active bool) error {
 	if err := writeState(path, next); err != nil {
 		return err
 	}
-	rollback := func() {
-		_ = writeState(path, func() []byte {
+	rollback := func() error {
+		var result error
+		result = errors.Join(result, writeState(path, func() []byte {
 			if existed {
 				return previous
 			}
 			return nil
-		}())
-		_, _ = m.Runner.Run("daemon-reload")
-		if active {
-			_, _ = m.Runner.Run("restart", unit)
+		}()))
+		if out, err := m.Runner.Run("daemon-reload"); err != nil {
+			result = errors.Join(result, commandError("restore user service configuration", out, err))
 		}
+		if active {
+			if out, err := m.Runner.Run("restart", unit); err != nil {
+				result = errors.Join(result, commandError("restore "+unit, out, err))
+			}
+		}
+		return result
 	}
 	if out, err := m.Runner.Run("daemon-reload"); err != nil {
-		rollback()
-		return commandError("reload user services", out, err)
+		cause := commandError("reload user services", out, err)
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return fmt.Errorf("%w; rollback failed: %v", cause, rollbackErr)
+		}
+		return cause
 	}
 	if active {
 		if out, err := m.Runner.Run("restart", unit); err != nil {
-			rollback()
-			return commandError("restart "+unit, out, err)
+			cause := commandError("restart "+unit, out, err)
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("%w; rollback failed: %v", cause, rollbackErr)
+			}
+			return cause
 		}
 	}
 	return nil
@@ -210,7 +229,7 @@ func writeState(path string, data []byte) error {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
-		return nil
+		return syncDirectory(dir)
 	}
 	if _, err := readSafe(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -236,7 +255,19 @@ func writeState(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
+func syncDirectory(dir string) error {
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func readSafe(path string) ([]byte, error) {

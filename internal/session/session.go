@@ -1,30 +1,39 @@
 package session
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/OrangeMagician/codex-account-bridge/internal/config"
 )
 
-type changedLink struct {
-	target string
-	backup string
-}
-
-type stagedHistory struct {
-	target string
-	stage  string
-	shared string
-}
-
 var historyDirectoryNames = []string{"sessions", "archived_sessions"}
+
+const operationJournalName = "sessions-operation.json"
+
+type operationJournal struct {
+	Version   int               `json:"version"`
+	Operation string            `json:"operation"`
+	Shared    string            `json:"shared"`
+	Items     []operationTarget `json:"items"`
+}
+
+type operationTarget struct {
+	Target string `json:"target"`
+	Shared string `json:"shared"`
+	Backup string `json:"backup,omitempty"`
+	Stage  string `json:"stage,omitempty"`
+}
 
 type LegacyReport struct {
 	SourceHome       string `json:"source_home"`
@@ -102,38 +111,98 @@ func ImportLegacy(paths config.Paths, cfg config.Config, sourceHome string) (Leg
 	return report, nil
 }
 
-func Enable(paths config.Paths, cfg *config.Config) error {
+// Recover completes or rolls back a session operation interrupted between its
+// filesystem phase and the durable configuration save.
+func Recover(paths config.Paths, cfg config.Config) error {
+	journal, err := readJournal(paths)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := validateJournal(journal, cfg); err != nil {
+		return err
+	}
 	unlock, err := lock(paths.DataDir)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+
+	switch journal.Operation {
+	case "enable":
+		if filepath.Clean(cfg.SharedSessionsDir) != filepath.Clean(journal.Shared) {
+			if err := rollbackEnableTargets(journal.Items); err != nil {
+				return fmt.Errorf("recover interrupted session enable: %w", err)
+			}
+		}
+	case "disable":
+		if cfg.SharedSessionsDir != "" {
+			if err := rollbackDisableTargets(journal.Items); err != nil {
+				return fmt.Errorf("recover interrupted session disable: %w", err)
+			}
+		}
+	default:
+		return fmt.Errorf("unknown session operation journal type %q", journal.Operation)
+	}
+	return clearJournal(paths)
+}
+
+// RecoveryStatus validates any durable session journal without changing state.
+func RecoveryStatus(paths config.Paths, cfg config.Config) (bool, error) {
+	journal, err := readJournal(paths)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := validateJournal(journal, cfg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PrepareEnable performs the reversible filesystem part of enabling sharing.
+// The caller must invoke Commit after saving cfg or Rollback on any save error.
+func PrepareEnable(paths config.Paths, cfg *config.Config) (config.Mutation, error) {
+	unlock, err := lock(paths.DataDir)
+	if err != nil {
+		return config.Mutation{}, err
+	}
+	fail := func(err error) (config.Mutation, error) {
+		unlock()
+		return config.Mutation{}, err
+	}
 	sharedSessions := cfg.SharedSessionsDir
 	if sharedSessions == "" {
 		sharedSessions = filepath.Join(paths.DataDir, "shared", "sessions")
 	}
+	if !filepath.IsAbs(sharedSessions) || filepath.Clean(sharedSessions) == string(filepath.Separator) {
+		return fail(fmt.Errorf("unsafe shared sessions directory: %s", sharedSessions))
+	}
 	for _, name := range historyDirectoryNames {
 		shared := sharedHistoryDir(sharedSessions, name)
 		if err := secureDir(shared); err != nil {
-			return err
+			return fail(err)
 		}
 		for _, account := range cfg.Accounts {
-			source := filepath.Join(account.Home, name)
-			if err := mergeTree(source, shared); err != nil {
-				return fmt.Errorf("merge %s: %w", source, err)
+			if err := mergeTree(filepath.Join(account.Home, name), shared); err != nil {
+				return fail(fmt.Errorf("merge %s: %w", filepath.Join(account.Home, name), err))
 			}
 		}
 	}
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	changed := []changedLink{}
+
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	items := []operationTarget{}
 	for _, name := range historyDirectoryNames {
 		shared := sharedHistoryDir(sharedSessions, name)
 		for _, account := range cfg.Accounts {
-			target := filepath.Join(account.Home, name)
-			if err := os.MkdirAll(account.Home, 0o700); err != nil {
-				rollback(changed)
-				return err
+			if err := secureDir(account.Home); err != nil {
+				return fail(err)
 			}
+			target := filepath.Join(account.Home, name)
 			info, err := os.Lstat(target)
 			backup := ""
 			if err == nil {
@@ -141,47 +210,75 @@ func Enable(paths config.Paths, cfg *config.Config) error {
 					if sameResolvedPath(target, shared) {
 						continue
 					}
-					rollback(changed)
-					return fmt.Errorf("refusing existing %s symlink: %s", name, target)
+					return fail(fmt.Errorf("refusing existing %s symlink: %s", name, target))
 				}
 				if !info.IsDir() {
-					rollback(changed)
-					return fmt.Errorf("%s path is not a directory: %s", name, target)
+					return fail(fmt.Errorf("%s path is not a directory: %s", name, target))
 				}
 				backup = target + ".cab-backup-" + stamp
-				if err := os.Rename(target, backup); err != nil {
-					rollback(changed)
-					return err
+				if _, err := os.Lstat(backup); err == nil {
+					return fail(fmt.Errorf("backup path already exists: %s", backup))
+				} else if !errors.Is(err, fs.ErrNotExist) {
+					return fail(err)
 				}
 			} else if !errors.Is(err, fs.ErrNotExist) {
-				rollback(changed)
-				return err
+				return fail(err)
 			}
-			if err := os.Symlink(shared, target); err != nil {
-				if backup != "" {
-					_ = os.Rename(backup, target)
-				}
-				rollback(changed)
-				return err
-			}
-			changed = append(changed, changedLink{target: target, backup: backup})
+			items = append(items, operationTarget{Target: target, Shared: shared, Backup: backup})
 		}
 	}
+	journal := operationJournal{Version: 1, Operation: "enable", Shared: sharedSessions, Items: items}
+	if err := writeJournal(paths, journal); err != nil {
+		return fail(err)
+	}
+	abort := func(cause error) (config.Mutation, error) {
+		return fail(errors.Join(cause, rollbackEnableOperation(paths, items)))
+	}
+	for _, item := range items {
+		if item.Backup != "" {
+			if err := os.Rename(item.Target, item.Backup); err != nil {
+				return abort(err)
+			}
+		}
+		if err := os.Symlink(item.Shared, item.Target); err != nil {
+			return abort(err)
+		}
+	}
+	previous := cfg.SharedSessionsDir
 	cfg.SharedSessionsDir = sharedSessions
-	return nil
+	finished := false
+	finish := func(action func() error) error {
+		if finished {
+			return nil
+		}
+		finished = true
+		defer unlock()
+		return action()
+	}
+	return config.Mutation{
+		Rollback: func() error {
+			cfg.SharedSessionsDir = previous
+			return finish(func() error { return rollbackEnableOperation(paths, items) })
+		},
+		Commit: func() error { return finish(func() error { return clearJournal(paths) }) },
+	}, nil
 }
 
-func Disable(paths config.Paths, cfg *config.Config) error {
+// PrepareDisable performs the reversible filesystem part of disabling sharing.
+func PrepareDisable(paths config.Paths, cfg *config.Config) (config.Mutation, error) {
 	if cfg.SharedSessionsDir == "" {
-		return errors.New("session sharing is not enabled")
+		return config.Mutation{}, errors.New("session sharing is not enabled")
 	}
 	unlock, err := lock(paths.DataDir)
 	if err != nil {
-		return err
+		return config.Mutation{}, err
 	}
-	defer unlock()
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	staging := []stagedHistory{}
+	fail := func(err error) (config.Mutation, error) {
+		unlock()
+		return config.Mutation{}, err
+	}
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	items := []operationTarget{}
 	for _, name := range historyDirectoryNames {
 		shared := sharedHistoryDir(cfg.SharedSessionsDir, name)
 		for _, account := range cfg.Accounts {
@@ -191,69 +288,89 @@ func Disable(paths config.Paths, cfg *config.Config) error {
 				continue
 			}
 			if err != nil {
-				cleanupStaging(staging)
-				return err
+				cleanupOperationStages(items)
+				return fail(err)
 			}
 			if info.Mode()&os.ModeSymlink == 0 {
 				if name == "archived_sessions" && info.IsDir() {
-					continue // Compatibility with sharing enabled before archived history support.
+					continue
 				}
-				cleanupStaging(staging)
-				return fmt.Errorf("refusing unexpected non-symlink: %s", target)
+				cleanupOperationStages(items)
+				return fail(fmt.Errorf("refusing unexpected non-symlink: %s", target))
 			}
 			if !sameResolvedPath(target, shared) {
-				cleanupStaging(staging)
-				return fmt.Errorf("refusing unexpected %s target: %s", name, target)
+				cleanupOperationStages(items)
+				return fail(fmt.Errorf("refusing unexpected %s target: %s", name, target))
 			}
 			stage := filepath.Join(account.Home, ".cab-"+name+"-disable-"+stamp)
 			if _, err := os.Lstat(stage); err == nil {
-				cleanupStaging(staging)
-				return fmt.Errorf("staging path already exists: %s", stage)
+				cleanupOperationStages(items)
+				return fail(fmt.Errorf("staging path already exists: %s", stage))
 			} else if !errors.Is(err, fs.ErrNotExist) {
-				cleanupStaging(staging)
-				return err
+				cleanupOperationStages(items)
+				return fail(err)
 			}
 			if err := secureDir(stage); err != nil {
-				cleanupStaging(staging)
-				return err
+				cleanupOperationStages(items)
+				return fail(err)
 			}
 			if err := mergeTree(shared, stage); err != nil {
-				cleanupStaging(staging)
-				return err
+				cleanupOperationStages(items)
+				return fail(err)
 			}
-			staging = append(staging, stagedHistory{target: target, stage: stage, shared: shared})
+			items = append(items, operationTarget{Target: target, Stage: stage, Shared: shared})
 		}
 	}
-	changed := []stagedHistory{}
-	for _, item := range staging {
-		if err := os.Remove(item.target); err != nil {
-			rollbackDisable(changed)
-			cleanupStaging(staging)
-			return err
-		}
-		if err := os.Rename(item.stage, item.target); err != nil {
-			_ = os.Symlink(item.shared, item.target)
-			rollbackDisable(changed)
-			cleanupStaging(staging)
-			return err
-		}
-		changed = append(changed, item)
+	journal := operationJournal{Version: 1, Operation: "disable", Shared: cfg.SharedSessionsDir, Items: items}
+	if err := writeJournal(paths, journal); err != nil {
+		cleanupOperationStages(items)
+		return fail(err)
 	}
+	abort := func(cause error) (config.Mutation, error) {
+		return fail(errors.Join(cause, rollbackDisableOperation(paths, items)))
+	}
+	for _, item := range items {
+		if err := os.Remove(item.Target); err != nil {
+			return abort(err)
+		}
+		if err := os.Rename(item.Stage, item.Target); err != nil {
+			return abort(err)
+		}
+	}
+	previous := cfg.SharedSessionsDir
 	cfg.SharedSessionsDir = ""
-	return nil
+	finished := false
+	finish := func(action func() error) error {
+		if finished {
+			return nil
+		}
+		finished = true
+		defer unlock()
+		return action()
+	}
+	return config.Mutation{
+		Rollback: func() error {
+			cfg.SharedSessionsDir = previous
+			return finish(func() error { return rollbackDisableOperation(paths, items) })
+		},
+		Commit: func() error { return finish(func() error { return clearJournal(paths) }) },
+	}, nil
 }
 
-func cleanupStaging(staging []stagedHistory) {
-	for _, item := range staging {
-		_ = os.RemoveAll(item.stage)
+func Enable(paths config.Paths, cfg *config.Config) error {
+	mutation, err := PrepareEnable(paths, cfg)
+	if err != nil {
+		return err
 	}
+	return mutation.Commit()
 }
 
-func rollbackDisable(items []stagedHistory) {
-	for index := len(items) - 1; index >= 0; index-- {
-		_ = os.RemoveAll(items[index].target)
-		_ = os.Symlink(items[index].shared, items[index].target)
+func Disable(paths config.Paths, cfg *config.Config) error {
+	mutation, err := PrepareDisable(paths, cfg)
+	if err != nil {
+		return err
 	}
+	return mutation.Commit()
 }
 
 func sharedHistoryDir(sharedSessions, name string) string {
@@ -372,35 +489,317 @@ func sameFile(left, right string) (bool, error) {
 }
 
 func secureDir(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) == string(filepath.Separator) {
+		return fmt.Errorf("refusing unsafe directory: %s", path)
+	}
+	if err := rejectSymlinkComponents(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	if err := rejectSymlinkComponents(path); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o700)
 }
 
+func rejectSymlinkComponents(path string) error {
+	info, err := os.Lstat(filepath.Clean(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("refusing unsafe directory: %s", path)
+	}
+	return nil
+}
+
 func lock(dataDir string) (func(), error) {
+	return lockWithMode(dataDir, syscall.LOCK_EX)
+}
+
+// AcquireRunLease prevents a session-layout transaction from starting while a
+// CAB-launched Codex process may be reading or writing session history.
+func AcquireRunLease(paths config.Paths) (func(), error) {
+	return lockWithMode(paths.DataDir, syscall.LOCK_SH)
+}
+
+func lockWithMode(dataDir string, mode int) (func(), error) {
 	if err := secureDir(dataDir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, "sessions.lock")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("another session operation is active; remove stale lock only after checking processes: %s", path)
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refusing unsafe session lock: %s", path)
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
-	_ = file.Close()
-	return func() { _ = os.Remove(path) }, nil
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	fail := func(err error) (func(), error) {
+		_ = file.Close()
+		return nil, err
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(fd, &stat); err != nil {
+		return fail(err)
+	}
+	if stat.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		return fail(fmt.Errorf("session lock is not a regular file: %s", path))
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return fail(err)
+	}
+	if err := syscall.Flock(fd, mode); err != nil {
+		return fail(err)
+	}
+	if err := file.Truncate(0); err == nil {
+		_, _ = file.WriteAt([]byte(fmt.Sprintf("%d\n", os.Getpid())), 0)
+		_ = file.Sync()
+	}
+	return func() {
+		_ = syscall.Flock(fd, syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
 
-func rollback(changes []changedLink) {
-	for index := len(changes) - 1; index >= 0; index-- {
-		change := changes[index]
-		_ = os.Remove(change.target)
-		if change.backup != "" {
-			_ = os.Rename(change.backup, change.target)
+func journalPath(paths config.Paths) string {
+	return filepath.Join(paths.DataDir, operationJournalName)
+}
+
+func writeJournal(paths config.Paths, journal operationJournal) error {
+	if err := secureDir(paths.DataDir); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	target := journalPath(paths)
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing unsafe session journal: %s", target)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	tmp, err := os.CreateTemp(paths.DataDir, ".sessions-operation-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, target); err != nil {
+		return err
+	}
+	if err := os.Chmod(target, 0o600); err != nil {
+		return err
+	}
+	return syncDirectory(paths.DataDir)
+}
+
+func readJournal(paths config.Paths) (operationJournal, error) {
+	path := journalPath(paths)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return operationJournal{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > 1_048_576 {
+		return operationJournal{}, fmt.Errorf("refusing unsafe session journal: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return operationJournal{}, err
+	}
+	var journal operationJournal
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&journal); err != nil {
+		return operationJournal{}, fmt.Errorf("parse session journal: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return operationJournal{}, errors.New("parse session journal: unexpected trailing data")
+		}
+		return operationJournal{}, fmt.Errorf("parse session journal: %w", err)
+	}
+	return journal, nil
+}
+
+func clearJournal(paths config.Paths) error {
+	path := journalPath(paths)
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing unsafe session journal: %s", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDirectory(paths.DataDir)
+}
+
+func validateJournal(journal operationJournal, cfg config.Config) error {
+	if journal.Version != 1 || (journal.Operation != "enable" && journal.Operation != "disable") {
+		return errors.New("invalid session operation journal")
+	}
+	if !filepath.IsAbs(journal.Shared) || filepath.Clean(journal.Shared) == string(filepath.Separator) {
+		return errors.New("session operation journal contains unsafe shared path")
+	}
+	validTargets := make(map[string]bool)
+	for _, account := range cfg.Accounts {
+		for _, name := range historyDirectoryNames {
+			validTargets[filepath.Clean(filepath.Join(account.Home, name))] = true
+		}
+	}
+	seenTargets := make(map[string]bool)
+	for _, item := range journal.Items {
+		target := filepath.Clean(item.Target)
+		if item.Target != target || !filepath.IsAbs(target) || !validTargets[target] || seenTargets[target] {
+			return fmt.Errorf("session operation journal contains unexpected target: %s", item.Target)
+		}
+		seenTargets[target] = true
+		expectedShared := filepath.Clean(sharedHistoryDir(journal.Shared, filepath.Base(target)))
+		if !filepath.IsAbs(item.Shared) || filepath.Clean(item.Shared) != expectedShared {
+			return fmt.Errorf("session operation journal contains unexpected shared path: %s", item.Shared)
+		}
+		if item.Backup != "" && (journal.Operation != "enable" || filepath.Dir(item.Backup) != filepath.Dir(target) || !strings.HasPrefix(filepath.Base(item.Backup), filepath.Base(target)+".cab-backup-")) {
+			return fmt.Errorf("session operation journal contains unexpected backup: %s", item.Backup)
+		}
+		if item.Stage != "" {
+			parent := filepath.Dir(target)
+			expectedPrefix := ".cab-" + filepath.Base(target) + "-disable-"
+			if journal.Operation != "disable" || filepath.Dir(item.Stage) != parent || !strings.HasPrefix(filepath.Base(item.Stage), expectedPrefix) {
+				return fmt.Errorf("session operation journal contains unexpected stage: %s", item.Stage)
+			}
+		}
+		if journal.Operation == "enable" && item.Stage != "" {
+			return fmt.Errorf("session enable journal contains a disable stage: %s", item.Stage)
+		}
+		if journal.Operation == "disable" && (item.Backup != "" || item.Stage == "") {
+			return fmt.Errorf("session disable journal contains incomplete target: %s", item.Target)
+		}
+	}
+	return nil
+}
+
+func rollbackEnableTargets(items []operationTarget) error {
+	var result error
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		if info, err := os.Lstat(item.Target); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 && sameResolvedPath(item.Target, item.Shared) {
+				if err := os.Remove(item.Target); err != nil {
+					result = errors.Join(result, err)
+					continue
+				}
+			} else if item.Backup != "" {
+				if _, backupErr := os.Lstat(item.Backup); backupErr == nil {
+					result = errors.Join(result, fmt.Errorf("cannot restore %s while unexpected target exists", item.Target))
+					continue
+				}
+			} else {
+				continue
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			result = errors.Join(result, err)
+			continue
+		}
+		if item.Backup != "" {
+			if _, err := os.Lstat(item.Backup); err == nil {
+				result = errors.Join(result, os.Rename(item.Backup, item.Target))
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				result = errors.Join(result, err)
+			}
+		}
+	}
+	return result
+}
+
+func rollbackEnableOperation(paths config.Paths, items []operationTarget) error {
+	if err := rollbackEnableTargets(items); err != nil {
+		return err
+	}
+	return clearJournal(paths)
+}
+
+func rollbackDisableTargets(items []operationTarget) error {
+	var result error
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		info, err := os.Lstat(item.Target)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 && sameResolvedPath(item.Target, item.Shared) {
+				// Already restored.
+			} else if info.IsDir() {
+				if err := os.RemoveAll(item.Target); err != nil {
+					result = errors.Join(result, err)
+					continue
+				}
+				if err := os.Symlink(item.Shared, item.Target); err != nil {
+					result = errors.Join(result, err)
+				}
+			} else {
+				result = errors.Join(result, fmt.Errorf("unexpected disable target during rollback: %s", item.Target))
+			}
+		} else if errors.Is(err, fs.ErrNotExist) {
+			if err := os.Symlink(item.Shared, item.Target); err != nil {
+				result = errors.Join(result, err)
+			}
+		} else {
+			result = errors.Join(result, err)
+		}
+		if item.Stage != "" {
+			if err := os.RemoveAll(item.Stage); err != nil {
+				result = errors.Join(result, err)
+			}
+		}
+	}
+	return result
+}
+
+func rollbackDisableOperation(paths config.Paths, items []operationTarget) error {
+	if err := rollbackDisableTargets(items); err != nil {
+		return err
+	}
+	return clearJournal(paths)
+}
+
+func cleanupOperationStages(items []operationTarget) {
+	for _, item := range items {
+		if item.Stage != "" {
+			_ = os.RemoveAll(item.Stage)
 		}
 	}
 }
@@ -415,4 +814,13 @@ func sameResolvedPath(left, right string) bool {
 		return false
 	}
 	return filepath.Clean(resolvedLeft) == filepath.Clean(resolvedRight)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

@@ -6,8 +6,26 @@ PACKAGE="$ROOT/macos/CABDesktop"
 OUTPUT="$ROOT/dist/CodexAccountBridge.app"
 EXECUTABLE="$PACKAGE/.build/release/CABDesktop"
 ICON_SOURCE="$PACKAGE/Resources/AppIcon.png"
+VERSION=${1:-0.0.0}
+BUILD_NUMBER=${2:-0}
+
+case "$VERSION" in
+  *[!0-9.]*|''|.*|*.|*..*)
+    printf 'invalid macOS app version: %s\n' "$VERSION" >&2
+    exit 2
+    ;;
+esac
+case "$BUILD_NUMBER" in
+  ''|*[!0-9]*)
+    printf 'invalid macOS build number: %s\n' "$BUILD_NUMBER" >&2
+    exit 2
+    ;;
+esac
 
 swift build -c release --package-path "$PACKAGE"
+if [ -e "$OUTPUT" ]; then
+    rm -rf -- "$OUTPUT"
+fi
 mkdir -p "$OUTPUT/Contents/MacOS" "$OUTPUT/Contents/Resources"
 install -m 0755 "$EXECUTABLE" "$OUTPUT/Contents/MacOS/CABDesktop"
 ditto "$PACKAGE/Resources" "$OUTPUT/Contents/Resources"
@@ -37,8 +55,8 @@ plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$PLIST"
 plutil -insert CFBundleName -string "CodexAccountBridge" "$PLIST"
 plutil -insert CFBundlePackageType -string "APPL" "$PLIST"
 plutil -insert CFBundleIconFile -string "AppIcon" "$PLIST"
-plutil -insert CFBundleShortVersionString -string "0.6.13" "$PLIST"
-plutil -insert CFBundleVersion -string "23" "$PLIST"
+plutil -insert CFBundleShortVersionString -string "$VERSION" "$PLIST"
+plutil -insert CFBundleVersion -string "$BUILD_NUMBER" "$PLIST"
 plutil -insert CFBundleDevelopmentRegion -string "en" "$PLIST"
 plutil -insert CFBundleLocalizations -json '["en","zh-Hans"]' "$PLIST"
 plutil -insert LSMinimumSystemVersion -string "13.0" "$PLIST"

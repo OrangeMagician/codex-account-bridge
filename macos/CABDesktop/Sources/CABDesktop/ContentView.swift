@@ -205,11 +205,11 @@ struct ContentView: View {
                                             .help("默认 CLI 账号")
                                             .accessibilityLabel("默认 CLI 账号")
                                     }
-                                    if account.remote {
+                                    if store.target == .remote && account.remote {
                                         Image(systemName: "server.rack")
                                             .foregroundStyle(.secondary)
-                                            .help("远程服务器默认账号")
-                                            .accessibilityLabel("远程服务器默认账号")
+                                            .help("当前远程 Codex 账号")
+                                            .accessibilityLabel("当前远程 Codex 账号")
                                     }
                                 }
                                 sidebarUsage(account)
@@ -331,8 +331,10 @@ struct ContentView: View {
         GroupBox {
             HStack(spacing: 28) {
                 summaryValue("账号", value: "\(store.status.accounts.count)")
-                summaryValue("默认 CLI", value: store.status.defaultAccount ?? "未设置")
-                summaryValue("远程默认", value: store.status.remoteAccount ?? "未设置")
+                summaryValue("CLI 默认", value: store.status.defaultAccount ?? "未设置")
+                if store.target == .remote {
+                    summaryValue("远程 Codex", value: store.status.remoteAccount ?? "未设置")
+                }
                 summaryValue("会话", value: store.status.sharedSessions ? "共享" : "独立")
                 Spacer()
             }
@@ -659,7 +661,18 @@ struct ContentView: View {
                                 Button("切换 Codex 桌面端") { pendingDesktopSwitchConfirmation = account }
                                     .buttonStyle(.borderedProminent)
                                     .disabled(store.isUsageRefreshing || store.isBusy)
+                            } else if account.remote {
+                                Label("当前远程 Codex 账号", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            } else {
+                                Button("切换远程 Codex") { store.switchRemoteCodex(to: account.name) }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(store.isUsageRefreshing || store.isBusy)
                             }
+                        }
+                        if store.target == .remote {
+                            Text("切换后，之后通过 SSH 或远程项目启动的 Codex 将使用此账号；Hermes 和 OpenClaw 的账号仍在“智能体账号绑定”中独立管理。")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         if store.usesDefaultCodexHome(account) {
                             Text("此账号直接使用 ~/.codex。完成重新登录会替换 Codex 桌面端使用的认证，请仅在确实需要更换该账号身份时操作。")
@@ -677,8 +690,7 @@ struct ContentView: View {
                     }
                     HStack {
                         Spacer()
-                        Button("设为默认") { store.setDefault(account.name) }.disabled(account.default)
-                        Button("设为远程") { store.setRemote(account.name) }.disabled(account.remote)
+                        Button("设为 CLI 默认") { store.setDefault(account.name) }.disabled(account.default)
                         Button("移除登记", role: .destructive) { store.remove(account.name) }
                     }
                 }

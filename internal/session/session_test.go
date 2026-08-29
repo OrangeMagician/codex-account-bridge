@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -169,6 +170,158 @@ func TestEnableRejectsNestedSymlink(t *testing.T) {
 	cfg.Accounts = []config.Account{{Name: "one", Home: one}, {Name: "two", Home: two}}
 	if err := Enable(config.Paths{DataDir: filepath.Join(root, "data")}, &cfg); err == nil {
 		t.Fatal("expected nested symlink rejection")
+	}
+}
+
+func TestConfigSaveFailureRollsBackSessionEnable(t *testing.T) {
+	root := t.TempDir()
+	paths := config.Paths{ConfigDir: filepath.Join(root, "config"), DataDir: filepath.Join(root, "data")}
+	paths.File = filepath.Join(paths.ConfigDir, "config.json")
+	one := filepath.Join(paths.DataDir, "accounts", "one")
+	two := filepath.Join(paths.DataDir, "accounts", "two")
+	for _, home := range []string{one, two} {
+		if err := os.MkdirAll(filepath.Join(home, "sessions"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Empty()
+	cfg.Accounts = []config.Account{{Name: "one", Home: one}, {Name: "two", Home: two}}
+	cfg.DefaultAccount = "one"
+	if err := config.Save(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := config.Update(paths, func(latest *config.Config) (config.Mutation, error) {
+		mutation, err := PrepareEnable(paths, latest)
+		if err != nil {
+			return config.Mutation{}, err
+		}
+		saved := paths.File + ".test-saved"
+		if err := os.Rename(paths.File, saved); err != nil {
+			_ = mutation.Rollback()
+			return config.Mutation{}, err
+		}
+		if err := os.Symlink(saved, paths.File); err != nil {
+			_ = os.Rename(saved, paths.File)
+			_ = mutation.Rollback()
+			return config.Mutation{}, err
+		}
+		return config.Mutation{
+			Rollback: func() error {
+				removeErr := os.Remove(paths.File)
+				restoreErr := os.Rename(saved, paths.File)
+				return errors.Join(removeErr, restoreErr, mutation.Rollback())
+			},
+			Commit: mutation.Commit,
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("expected configuration save failure")
+	}
+	loaded, loadErr := config.Load(paths)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if loaded.SharedSessionsDir != "" {
+		t.Fatalf("shared sessions persisted after rollback: %s", loaded.SharedSessionsDir)
+	}
+	for _, home := range []string{one, two} {
+		info, statErr := os.Lstat(filepath.Join(home, "sessions"))
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("session directory was not restored for %s: info=%v err=%v", home, info, statErr)
+		}
+	}
+	if _, statErr := os.Lstat(journalPath(paths)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("session journal remains after rollback: %v", statErr)
+	}
+}
+
+func TestSecureDirRejectsFinalSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	link := filepath.Join(root, "shared")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureDir(link); err == nil {
+		t.Fatal("expected symlink directory rejection")
+	}
+}
+
+func TestRecoverRollsBackInterruptedEnableBeforeConfigSave(t *testing.T) {
+	root := t.TempDir()
+	paths := config.Paths{DataDir: filepath.Join(root, "data")}
+	home := filepath.Join(root, "one")
+	target := filepath.Join(home, "sessions")
+	shared := filepath.Join(paths.DataDir, "shared", "sessions")
+	backup := target + ".cab-backup-test"
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(target, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shared, target); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Empty()
+	cfg.Accounts = []config.Account{{Name: "one", Home: home}}
+	journal := operationJournal{Version: 1, Operation: "enable", Shared: shared, Items: []operationTarget{{Target: target, Shared: shared, Backup: backup}}}
+	if err := writeJournal(paths, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Recover(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("original sessions directory was not restored: info=%v err=%v", info, err)
+	}
+	if _, err := os.Lstat(backup); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup remains after recovery: %v", err)
+	}
+	if _, err := os.Lstat(journalPath(paths)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal remains after recovery: %v", err)
+	}
+}
+
+func TestRecoverRollsBackInterruptedDisableBeforeConfigSave(t *testing.T) {
+	root := t.TempDir()
+	paths := config.Paths{DataDir: filepath.Join(root, "data")}
+	home := filepath.Join(root, "one")
+	target := filepath.Join(home, "sessions")
+	shared := filepath.Join(paths.DataDir, "shared", "sessions")
+	stage := filepath.Join(home, ".cab-sessions-disable-test")
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Empty()
+	cfg.SharedSessionsDir = shared
+	cfg.Accounts = []config.Account{{Name: "one", Home: home}}
+	journal := operationJournal{Version: 1, Operation: "disable", Shared: shared, Items: []operationTarget{{Target: target, Shared: shared, Stage: stage}}}
+	if err := writeJournal(paths, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Recover(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 || !sameResolvedPath(target, shared) {
+		t.Fatalf("shared sessions link was not restored: info=%v err=%v", info, err)
+	}
+	if _, err := os.Lstat(journalPath(paths)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal remains after recovery: %v", err)
 	}
 }
 
