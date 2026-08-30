@@ -252,8 +252,6 @@ struct ContentView: View {
                 Text(store.targetTitle).font(.largeTitle.bold())
                 if store.target == .remote {
                     Text(store.remoteHost).foregroundStyle(.secondary)
-                } else {
-                    Text("账号凭据保持独立，CAB 不读取令牌内容。") .foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -275,8 +273,6 @@ struct ContentView: View {
     private var agentBindingsCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Text("为 Hermes 或 OpenClaw 的 systemd 用户服务选择明确的 Codex 账号。绑定仅写入 CAB 管理的 CODEX_HOME 覆盖，不复制授权文件。")
-                    .font(.callout).foregroundStyle(.secondary)
                 if let error = store.agentBindingError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
@@ -336,6 +332,7 @@ struct ContentView: View {
             }.padding(8)
         } label: {
             Label("智能体账号绑定", systemImage: "person.2.badge.gearshape")
+                .help("为 Hermes 或 OpenClaw 服务选择明确的 Codex 账号。CAB 只设置 CODEX_HOME，不复制授权文件。")
         }
     }
 
@@ -359,11 +356,7 @@ struct ContentView: View {
     private var desktopSwitcherCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("切换 Codex 桌面端账号").font(.headline)
-                    Text("“设为默认”只影响 cab run 和终端，不会切换已运行的桌面端。这里会以所选账号的 CODEX_HOME 重启官方桌面客户端。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
+                Text("切换 Codex 桌面端账号").font(.headline)
                 if let name = store.defaultDesktopAccount {
                     Label("系统默认 ~/.codex 当前登记为 \(name)", systemImage: "house")
                         .font(.callout)
@@ -412,6 +405,7 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label("Codex 桌面端", systemImage: "macwindow")
+                .help("“设为默认”只影响 cab run 和终端；这里会用所选账号的 CODEX_HOME 重启官方桌面客户端。")
         }
     }
 
@@ -464,31 +458,27 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(store.usageAutomaticRefreshPauses) { pause in
                             Label(
-                                "\(pause.accountName) 额度已用完，自动刷新暂停至 \(pause.until.formatted(date: .abbreviated, time: .shortened))；手动刷新仍可使用。",
+                                "\(pause.accountName) 自动刷新已暂停",
                                 systemImage: "pause.circle"
                             )
+                            .help("额度已用完，自动刷新暂停至 \(pause.until.formatted(date: .abbreviated, time: .standard))；手动刷新仍可使用。")
                         }
                     }
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.orange)
                 }
                 Divider()
                 HStack(alignment: .center, spacing: 12) {
                     Label("额度重置通知", systemImage: "bell.badge")
                         .fontWeight(.medium)
-                    VStack(alignment: .leading, spacing: 2) {
-                        if let error = store.usageResetNotificationError {
-                            Text(error).foregroundStyle(.orange)
-                        } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
-                            Text("已安排 \(store.scheduledUsageResetNotificationCount) 个通知，额度刷新后会自动更新。")
-                        } else if store.usageResetNotificationsEnabled {
-                            Text("已开启，额度刷新后会同步未来重置时间通知。")
-                        } else {
-                            Text("关闭时不会申请系统权限，也不会安排通知。")
-                        }
+                    if let error = store.usageResetNotificationError {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .help(error)
+                            .accessibilityLabel(error)
+                    } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
+                        statusBadge("\(store.scheduledUsageResetNotificationCount) 个已安排", color: .blue)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                     Spacer()
                     if store.isUsageResetNotificationUpdating {
                         ProgressView().controlSize(.small)
@@ -503,14 +493,12 @@ struct ContentView: View {
                     .help("在官方额度周期到达重置时间时发送 macOS 通知")
                 }
                 HStack {
-                    Text("额度来自当前账号的官方 Codex app-server；订阅续费或会员到期日不在该接口中。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
                     if let fetchedAt = store.usageFetchedAt {
                         Text("更新于 \(fetchedAt, style: .relative)")
                             .font(.caption).foregroundStyle(.secondary)
                             .help(fetchedAt.formatted(date: .abbreviated, time: .standard))
                     }
+                    Spacer()
                     Picker("刷新间隔", selection: Binding(get: { store.usageRefreshInterval }, set: store.setUsageRefreshInterval)) {
                         ForEach(UsageRefreshInterval.allCases) { interval in
                             Text(interval.title).tag(interval)
@@ -530,6 +518,7 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label("额度概览", systemImage: "gauge.with.dots.needle.50percent")
+                .help("额度来自官方 Codex app-server；重置时间不是 ChatGPT 订阅续费或会员到期日。")
         }
     }
 
@@ -582,13 +571,7 @@ struct ContentView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(store.target == .local ? "跨账号项目与会话" : "跨账号会话历史").font(.headline)
-                        Text(sessionSharingDescription)
-                            .font(.callout).foregroundStyle(.secondary)
-                        Text(store.target == .local ? "设置会在下次切换 Codex 桌面账号时应用；不会共享登录凭据。" : "这是服务器级隐私策略，修改前必须退出该服务器上的所有 Codex 进程。")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
+                    Text(store.target == .local ? "跨账号项目与会话" : "跨账号会话历史").font(.headline)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 8) {
                         if store.target == .local && store.preserveSessionsOnDesktopSwitch != store.status.sharedSessions {
@@ -616,6 +599,7 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label(store.target == .local ? "项目与会话" : "会话共享", systemImage: "rectangle.2.swap")
+                .help(sessionSharingDescription)
         }
     }
 
@@ -710,12 +694,8 @@ struct ContentView: View {
                                 Button("立即检查状态", action: store.checkPendingLoginStatus)
                             }
                         }
-                        Text("无需手动刷新额度。若浏览器已显示完成但这里尚未变化，可以立即检查官方登录状态。")
-                            .font(.caption).foregroundStyle(.secondary)
                     } else if account.isLoggedIn {
                         HStack {
-                            Label("账号已登录，正常切换无需重新认证", systemImage: "checkmark.shield")
-                                .foregroundStyle(.secondary)
                             Spacer()
                             reauthenticationMenu(account)
                             if store.target == .local {
@@ -729,15 +709,8 @@ struct ContentView: View {
                                 Button("切换远程 Codex") { store.switchRemoteCodex(to: account.name) }
                                     .buttonStyle(.borderedProminent)
                                     .disabled(store.isUsageRefreshing || store.isBusy)
+                                    .help("之后通过 SSH 或远程项目启动的 Codex 使用此账号；智能体账号仍独立管理。")
                             }
-                        }
-                        if store.target == .remote {
-                            Text("切换后，之后通过 SSH 或远程项目启动的 Codex 将使用此账号；Hermes 和 OpenClaw 的账号仍在“智能体账号绑定”中独立管理。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if store.usesDefaultCodexHome(account) {
-                            Text("此账号直接使用 ~/.codex。完成重新登录会替换 Codex 桌面端使用的认证，请仅在确实需要更换该账号身份时操作。")
-                                .font(.caption).foregroundStyle(.orange)
                         }
                     } else if account.isLoginUnknown {
                         HStack {
@@ -779,14 +752,9 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
                 } else if let report = store.usage(for: account.name), let usage = report.usage {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Codex 使用额度").font(.headline)
-                            Text("官方账号接口返回的额度周期，与 API 的 RPM/TPM 限额不同。")
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if let plan = usage.planType ?? usage.rateLimits.planType {
+                    if let plan = usage.planType ?? usage.rateLimits.planType {
+                        HStack {
+                            Spacer()
                             statusBadge(plan.uppercased(), color: .blue)
                         }
                     }
@@ -838,8 +806,6 @@ struct ContentView: View {
                     }
                     Divider()
                     HStack {
-                        Label("只读查询；CAB 不直接读取 auth.json、钥匙串令牌或浏览器 Cookie。", systemImage: "lock.shield")
-                            .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         if let fetchedAt = store.usageFetchedAt {
                             Text(fetchedAt.formatted(date: .abbreviated, time: .shortened))
@@ -848,8 +814,6 @@ struct ContentView: View {
                         Button("刷新额度", action: store.refreshUsage)
                             .disabled(store.isUsageRefreshing)
                     }
-                    Text("“重置时间”是额度周期刷新时间，不是 ChatGPT Plus/Pro 的订阅续费或会员到期日。")
-                        .font(.caption).foregroundStyle(.secondary)
                 } else if let message = store.usage(for: account.name)?.error {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("无法读取此账号额度", systemImage: "exclamationmark.triangle")
@@ -890,6 +854,7 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label("额度与周期", systemImage: "chart.bar.xaxis")
+                .help("官方账号额度，与 API 的 RPM/TPM 限额不同。CAB 只读查询，不直接读取 auth.json、钥匙串令牌或浏览器 Cookie。")
         }
     }
 
@@ -1000,10 +965,9 @@ struct ContentView: View {
             }
             .disabled(store.availablePrivateBrowsers.isEmpty)
             Button("设备码登录") { store.loginWithDeviceCode(account.name) }
+                .help("用于无浏览器环境")
             Spacer()
         }
-        Text("前三种方式均使用普通 ChatGPT OAuth；设备码仅用于无浏览器环境。")
-            .font(.caption).foregroundStyle(.secondary)
     }
 
     private func reauthenticationMenu(_ account: AccountStatus) -> some View {
@@ -1061,8 +1025,6 @@ struct ContentView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("检测到现有 Codex 登录").font(.headline)
-                        Text("可以直接登记默认 ~/.codex，无需再次登录。凭据不会被读取或复制。")
-                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                     statusBadge("已登录", color: .green)
@@ -1074,6 +1036,7 @@ struct ContentView: View {
                         .onSubmit(store.importCurrentLogin)
                     Button("登记现有登录", action: store.importCurrentLogin)
                         .buttonStyle(.borderedProminent)
+                        .help("直接登记默认 ~/.codex，无需再次登录；CAB 不读取或复制凭据。")
                     Spacer()
                     if let home = store.status.currentLogin?.home {
                         Text(home).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -1102,16 +1065,13 @@ struct ContentView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("新启动轮换").font(.headline)
-                        Text("每次执行 cab run 前选择下一个账号；限额、认证失败和异常不会触发切换。")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+                    Text("新启动轮换").font(.headline)
                     Spacer()
                     Toggle("", isOn: Binding(get: { store.status.rotation.enabled }, set: store.setRotationEnabled))
                         .toggleStyle(.switch)
                         .labelsHidden()
                         .accessibilityLabel("启用新启动轮换")
+                        .help("仅影响未指定 --account 的 cab run；限额、认证失败和异常不会触发切换。")
                 }
 
                 if store.rotationOrder.isEmpty {
@@ -1144,14 +1104,13 @@ struct ContentView: View {
                         Button("保存顺序", action: store.saveRotation)
                         Button("从第一个重新开始", action: store.resetRotation)
                         Spacer()
-                        Text("仅影响未指定 --account 的 cab run")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
             .padding(8)
         } label: {
             Label("自动轮换", systemImage: "arrow.triangle.2.circlepath")
+                .help("每次执行未指定账号的 cab run 前选择下一个账号。")
         }
     }
 
@@ -1268,9 +1227,9 @@ private struct ServerManagerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("远程服务器").font(.title2.bold())
-                Text("连接信息只保存在这台 Mac 的 UserDefaults 中，不会写入项目或上传 Git。")
-                    .foregroundStyle(.secondary)
+                Text("远程服务器")
+                    .font(.title2.bold())
+                    .help("连接信息只保存在这台 Mac，不会写入项目或上传 Git。")
                 if let importResult {
                     Text(importResult).font(.callout).foregroundStyle(.green)
                 }
@@ -1280,8 +1239,6 @@ private struct ServerManagerView: View {
                 VStack(spacing: 10) {
                     Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(.secondary)
                     Text("尚未添加服务器").font(.headline)
-                    Text("可以添加 SSH 配置别名、主机名、IP 或 user@host。")
-                        .font(.callout).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 180)
             } else {
