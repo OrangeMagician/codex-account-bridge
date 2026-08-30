@@ -267,7 +267,7 @@ enum BridgeTarget: String, CaseIterable, Identifiable {
     case remote
 
     var id: String { rawValue }
-    var title: String { self == .local ? "这台 Mac" : "远程服务器" }
+    var title: String { self == .local ? cabLocalized("这台 Mac") : cabLocalized("远程服务器") }
     var icon: String { self == .local ? "laptopcomputer" : "server.rack" }
 }
 
@@ -281,11 +281,11 @@ enum UsageRefreshInterval: Int, CaseIterable, Identifiable {
     var id: Int { rawValue }
     var title: String {
         switch self {
-        case .fiveMinutes: return "5 分钟"
-        case .fifteenMinutes: return "15 分钟"
-        case .thirtyMinutes: return "30 分钟"
-        case .oneHour: return "1 小时"
-        case .manual: return "仅手动"
+        case .fiveMinutes: return "5 \(cabLocalized("分钟"))"
+        case .fifteenMinutes: return "15 \(cabLocalized("分钟"))"
+        case .thirtyMinutes: return "30 \(cabLocalized("分钟"))"
+        case .oneHour: return "1 \(cabLocalized("小时"))"
+        case .manual: return cabLocalized("仅手动")
         }
     }
 

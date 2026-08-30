@@ -24,8 +24,9 @@ struct CABDesktopApp: App {
             }
             Button("启动 Codex") { store.launchCodex() }
             Divider()
-            Text(store.status.rotation.enabled ? "轮换：已开启" : "轮换：已关闭")
+            Text(cabLocalized(store.status.rotation.enabled ? "轮换：已开启" : "轮换：已关闭"))
             Button("退出") { NSApp.terminate(nil) }
         }
+        .environment(\.locale, Locale(identifier: store.interfaceLanguage.localeIdentifier))
     }
 }

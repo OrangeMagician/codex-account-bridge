@@ -36,12 +36,15 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 620)
+        .environment(\.locale, Locale(identifier: store.interfaceLanguage.localeIdentifier))
         .toolbar {
             ToolbarItemGroup {
                 Button(action: store.refresh) { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(store.isBusy)
+                    .help("刷新当前目标的状态、账号和额度")
                 Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
                     .keyboardShortcut("r", modifiers: [.command])
+                    .help("在终端启动当前目标的 Codex")
             }
         }
         .overlay {
@@ -213,7 +216,7 @@ struct ContentView: View {
                                     Text(account.name)
                                     if account.default {
                                         Image(systemName: "star.fill")
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(.orange)
                                             .help("默认 CLI 账号")
                                             .accessibilityLabel("默认 CLI 账号")
                                     }
@@ -255,7 +258,7 @@ struct ContentView: View {
                 }
             }
             Spacer()
-            statusBadge(store.status.sharedSessions ? "会话共享已开启" : "会话独立", color: store.status.sharedSessions ? .orange : .green)
+            statusBadge(cabLocalized(store.status.sharedSessions ? "会话共享已开启" : "会话独立"), color: store.status.sharedSessions ? .orange : .green)
         }
     }
 
@@ -311,7 +314,7 @@ struct ContentView: View {
                                 Text(agent.service).font(.caption.monospaced()).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            statusBadge(agent.active ? "运行中" : "未运行", color: agent.active ? .green : .gray)
+                            statusBadge(cabLocalized(agent.active ? "运行中" : "未运行"), color: agent.active ? .green : .gray)
                             Picker("账号", selection: Binding(
                                 get: { store.agentSelections[agent.service] ?? "" },
                                 set: { store.setAgentSelection(service: agent.service, account: $0) }
@@ -344,8 +347,14 @@ struct ContentView: View {
                 if store.target == .remote {
                     summaryValue("远程 Codex", value: store.status.remoteAccount ?? "未设置")
                 }
-                summaryValue("会话", value: store.status.sharedSessions ? "共享" : "独立")
+                summaryValue("会话", value: cabLocalized(store.status.sharedSessions ? "共享" : "独立"))
                 Spacer()
+                Picker("语言", selection: Binding(get: { store.interfaceLanguage }, set: store.setInterfaceLanguage)) {
+                    ForEach(InterfaceLanguage.allCases) { language in
+                        Text(language.title).tag(language)
+                    }
+                }
+                .fixedSize()
             }
             .padding(8)
         } label: {
@@ -368,7 +377,7 @@ struct ContentView: View {
                 HStack {
                     Label("切换策略", systemImage: "rectangle.2.swap")
                     Spacer()
-                    statusBadge(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话" : "项目与会话独立", color: store.preserveSessionsOnDesktopSwitch ? .orange : .green)
+                    statusBadge(cabLocalized(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话" : "项目与会话独立"), color: store.preserveSessionsOnDesktopSwitch ? .orange : .green)
                 }
                 if loggedInAccounts.isEmpty {
                     VStack(spacing: 8) {
@@ -477,7 +486,7 @@ struct ContentView: View {
                             .help(error)
                             .accessibilityLabel(error)
                     } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
-                        statusBadge("\(store.scheduledUsageResetNotificationCount) 个已安排", color: .blue)
+                        statusBadge("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))", color: .blue)
                     }
                     Spacer()
                     if store.isUsageResetNotificationUpdating {
@@ -570,14 +579,14 @@ struct ContentView: View {
     private var sessionSharingCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 16) {
+                HStack(alignment: .center, spacing: 16) {
                     Text(store.target == .local ? "跨账号项目与会话" : "跨账号会话历史").font(.headline)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 8) {
                         if store.target == .local && store.preserveSessionsOnDesktopSwitch != store.status.sharedSessions {
-                            statusBadge(store.preserveSessionsOnDesktopSwitch ? "下次切换时开启" : "下次切换时关闭", color: .blue)
+                            statusBadge(cabLocalized(store.preserveSessionsOnDesktopSwitch ? "下次切换时开启" : "下次切换时关闭"), color: .blue)
                         } else {
-                            statusBadge(store.status.sharedSessions ? "当前已共享" : "当前独立", color: store.status.sharedSessions ? .orange : .green)
+                            statusBadge(cabLocalized(store.status.sharedSessions ? "当前已共享" : "当前独立"), color: store.status.sharedSessions ? .orange : .green)
                         }
                         Toggle(store.target == .local ? "切换时保留" : "共享", isOn: Binding(
                             get: { store.target == .local ? store.preserveSessionsOnDesktopSwitch : store.status.sharedSessions },
@@ -653,7 +662,7 @@ struct ContentView: View {
 
     private func summaryValue(_ title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(cabLocalized(title)).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.headline)
         }
     }
@@ -672,9 +681,9 @@ struct ContentView: View {
                     }
                     Spacer()
                     if store.isLoginInProgress(account.name) {
-                        statusBadge(store.loginStatusConfirmed ? "登录成功" : "登录中", color: store.loginStatusConfirmed ? .green : .blue)
+                        statusBadge(cabLocalized(store.loginStatusConfirmed ? "登录成功" : "登录中"), color: store.loginStatusConfirmed ? .green : .blue)
                     } else {
-                        statusBadge(account.isLoggedIn ? "已登录" : (account.isLoginUnknown ? "状态未知" : "未登录"), color: account.isLoggedIn ? .green : (account.isLoginUnknown ? .gray : .orange))
+                        statusBadge(cabLocalized(account.isLoggedIn ? "已登录" : (account.isLoginUnknown ? "状态未知" : "未登录")), color: account.isLoggedIn ? .green : (account.isLoginUnknown ? .gray : .orange))
                     }
                 }
                 Divider()
@@ -782,11 +791,11 @@ struct ContentView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("个人消费上限").fontWeight(.medium)
-                                Text("已用 \(individual.used) / \(individual.limit)")
+                                Text("\(cabLocalized("已用")) \(individual.used) / \(individual.limit)")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text("剩余 \(percentText(individual.remainingPercent))")
+                            Text("\(cabLocalized("剩余")) \(percentText(individual.remainingPercent))")
                                 .foregroundStyle(usageColor(individual.remainingPercent))
                             resetDateLabel(individual.resetDate)
                         }
@@ -798,7 +807,7 @@ struct ContentView: View {
                             Spacer()
                             Text("\(resetCredits.availableCount)").fontWeight(.semibold)
                             if let expiry = resetCredits.credits?.compactMap(\.expiresAt).min() {
-                                Text("最早到期")
+                                Text(cabLocalized("最早到期"))
                                     .font(.caption).foregroundStyle(.secondary)
                                 resetDateLabel(Date(timeIntervalSince1970: TimeInterval(expiry)))
                             }
@@ -862,16 +871,16 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).fontWeight(.medium)
+                    Text(cabLocalized(title)).fontWeight(.medium)
                     if let duration = window.windowDurationMins {
-                        Text("\(durationText(duration))周期")
+                        Text("\(durationText(duration)) \(cabLocalized("周期"))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
-                Text("已用 \(percentText(window.usedPercent))")
+                Text("\(cabLocalized("已用")) \(percentText(window.usedPercent))")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("剩余 \(percentText(window.remainingPercent))")
+                Text("\(cabLocalized("剩余")) \(percentText(window.remainingPercent))")
                     .font(.headline).foregroundStyle(usageColor(window.remainingPercent))
             }
             ProgressView(value: window.remainingPercent, total: 100)
@@ -892,7 +901,7 @@ struct ContentView: View {
                 ProgressView(value: window.remainingPercent, total: 100)
                     .tint(usageColor(window.remainingPercent))
                     .frame(width: 52)
-                Text("剩余 \(percentText(window.remainingPercent))")
+                Text("\(cabLocalized("剩余")) \(percentText(window.remainingPercent))")
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -905,14 +914,14 @@ struct ContentView: View {
         Group {
             if let date = window.resetDate {
                 HStack(spacing: 4) {
-                    Text("重置")
+                    Text(cabLocalized("重置"))
                     Text(date, style: .relative)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .help(date.formatted(date: .complete, time: .standard))
             } else {
-                Text("重置时间未知").font(.caption).foregroundStyle(.secondary)
+                Text(cabLocalized("重置时间未知")).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -929,10 +938,10 @@ struct ContentView: View {
     }
 
     private func durationText(_ minutes: Int64) -> String {
-        if minutes % 10_080 == 0 { return "\(minutes / 10_080)周" }
-        if minutes % 1_440 == 0 { return "\(minutes / 1_440)天" }
-        if minutes % 60 == 0 { return "\(minutes / 60)小时" }
-        return "\(minutes)分钟"
+        if minutes % 10_080 == 0 { return "\(minutes / 10_080) \(cabLocalized("周"))" }
+        if minutes % 1_440 == 0 { return "\(minutes / 1_440) \(cabLocalized("天"))" }
+        if minutes % 60 == 0 { return "\(minutes / 60) \(cabLocalized("小时"))" }
+        return "\(minutes) \(cabLocalized("分钟"))"
     }
 
     private func usageColor(_ remaining: Double) -> Color {
@@ -971,7 +980,7 @@ struct ContentView: View {
     }
 
     private func reauthenticationMenu(_ account: AccountStatus) -> some View {
-        Menu("重新登录…") {
+        Menu {
             Button("默认浏览器") {
                 pendingReauthentication = ReauthenticationRequest(account: account, method: .defaultBrowser)
             }
@@ -993,7 +1002,10 @@ struct ContentView: View {
             Button("设备码") {
                 pendingReauthentication = ReauthenticationRequest(account: account, method: .deviceCode)
             }
+        } label: {
+            Label("已登录，账号有效", systemImage: "checkmark.shield")
         }
+        .help("展开可重新登录")
     }
 
     private var reauthenticationWarning: String {

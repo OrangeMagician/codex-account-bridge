@@ -252,7 +252,7 @@ final class CABService {
         } else {
             let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
-            command = "ssh -- \(shellQuote(host)) cab run"
+            command = "ssh -tt -- \(shellQuote(host)) cab run"
         }
         let script = "tell application \"Terminal\" to do script \(appleScriptQuote(command))"
         let process = Process()

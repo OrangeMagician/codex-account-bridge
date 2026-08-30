@@ -22,6 +22,12 @@ struct SSHConfigDiscoveryTests {
         #expect(UsageRefreshInterval.manual.duration == nil)
     }
 
+    @Test func interfaceLanguageProvidesSystemEnglishAndChineseModes() {
+        #expect(InterfaceLanguage.english.localeIdentifier == "en")
+        #expect(InterfaceLanguage.simplifiedChinese.localeIdentifier == "zh-Hans")
+        #expect(InterfaceLanguage.system.localeIdentifier == "en" || InterfaceLanguage.system.localeIdentifier == "zh-Hans")
+    }
+
     @Test func classifiesEditorCodexProcessesAndExcludesDesktopChildren() {
         let vscode = "/Users/test/.vscode/extensions/openai.chatgpt/bin/codex"
         let desktop = "/Applications/ChatGPT.app/Contents/Resources/codex"

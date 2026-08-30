@@ -37,6 +37,7 @@ final class CABStore: ObservableObject {
     @Published var showServerManager = false
     @Published var lastDesktopAccount: String?
     @Published var preserveSessionsOnDesktopSwitch = false
+    @Published var interfaceLanguage: InterfaceLanguage = .system
     @Published var usageRefreshInterval: UsageRefreshInterval = .fifteenMinutes
     @Published var usageResetNotificationsEnabled = false
     @Published var isUsageResetNotificationUpdating = false
@@ -66,6 +67,7 @@ final class CABStore: ObservableObject {
     private let selectedRemoteKey = "selectedRemoteServer.v1"
     private let lastDesktopAccountKey = "lastDesktopAccount.v1"
     private let preserveSessionsKey = "preserveSessionsOnDesktopSwitch.v1"
+    private let interfaceLanguageKey = "interfaceLanguage.v1"
     private let usageRefreshIntervalKey = "usageRefreshInterval.v1"
     private let usageResetNotificationsKey = "usageResetNotifications.v1"
     private var hasSavedDesktopSessionPreference = false
@@ -79,6 +81,10 @@ final class CABStore: ObservableObject {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
         hasSavedDesktopSessionPreference = defaults.object(forKey: preserveSessionsKey) != nil
         preserveSessionsOnDesktopSwitch = defaults.bool(forKey: preserveSessionsKey)
+        if let savedLanguage = defaults.string(forKey: interfaceLanguageKey),
+           let language = InterfaceLanguage(rawValue: savedLanguage) {
+            interfaceLanguage = language
+        }
         usageResetNotificationsEnabled = defaults.bool(forKey: usageResetNotificationsKey)
         if let savedInterval = UsageRefreshInterval(rawValue: defaults.integer(forKey: usageRefreshIntervalKey)),
            defaults.object(forKey: usageRefreshIntervalKey) != nil {
@@ -211,6 +217,11 @@ final class CABStore: ObservableObject {
         preserveSessionsOnDesktopSwitch = enabled
         hasSavedDesktopSessionPreference = true
         defaults.set(enabled, forKey: preserveSessionsKey)
+    }
+
+    func setInterfaceLanguage(_ language: InterfaceLanguage) {
+        interfaceLanguage = language
+        defaults.set(language.rawValue, forKey: interfaceLanguageKey)
     }
 
     func changeTarget(_ next: BridgeTarget) {
