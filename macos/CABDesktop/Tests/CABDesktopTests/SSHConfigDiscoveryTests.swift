@@ -80,6 +80,19 @@ struct SSHConfigDiscoveryTests {
         #expect(environment["CAB_REAL_CODEX"] == "/custom/codex")
     }
 
+    @Test func desktopBundledCodexTakesPriorityOverOlderCommandLineInstall() {
+        let environment = localCABEnvironment(
+            baseEnvironment: ["PATH": "/opt/homebrew/bin:/usr/bin"],
+            homeDirectory: URL(fileURLWithPath: "/Users/test"),
+            executableCheck: {
+                $0 == "/Applications/ChatGPT.app/Contents/Resources/codex" ||
+                    $0 == "/opt/homebrew/bin/codex"
+            }
+        )
+
+        #expect(environment["CAB_REAL_CODEX"] == "/Applications/ChatGPT.app/Contents/Resources/codex")
+    }
+
     @Test func preparesOfficialThreadCatalogRebuildWithBackup() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

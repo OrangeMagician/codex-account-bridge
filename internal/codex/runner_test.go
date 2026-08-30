@@ -154,6 +154,26 @@ func TestLoggedInUsesOfficialStatusWithoutReadingCredentials(t *testing.T) {
 	}
 }
 
+func TestLoggedInDistinguishesMissingLoginFromConfigurationFailure(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	script := "#!/bin/sh\nif [ \"$CAB_TEST_LOGIN_RESULT\" = missing ]; then\n  printf 'Not logged in\\n'\nelse\n  printf 'Error loading configuration' >&2\nfi\nexit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_LOGIN_RESULT", "missing")
+	loggedIn, err := LoggedIn(filepath.Join(root, "missing"))
+	if err != nil || loggedIn {
+		t.Fatalf("missing login: loggedIn=%t err=%v", loggedIn, err)
+	}
+	t.Setenv("CAB_TEST_LOGIN_RESULT", "configuration-error")
+	loggedIn, err = LoggedIn(filepath.Join(root, "broken-config"))
+	if err == nil || loggedIn {
+		t.Fatalf("configuration error: loggedIn=%t err=%v", loggedIn, err)
+	}
+}
+
 func TestRunBrowserLoginUsesOfficialAppServerFlow(t *testing.T) {
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")

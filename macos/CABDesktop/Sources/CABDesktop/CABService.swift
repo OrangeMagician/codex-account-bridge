@@ -216,7 +216,13 @@ final class CABService {
         let command: String
         if target == .local {
             guard let executable = cabExecutable() else { throw BridgeError.executableMissing }
-            command = "\(shellQuote(executable.path)) run"
+            let environment = localCABEnvironment(
+                baseEnvironment: ProcessInfo.processInfo.environment,
+                homeDirectory: fileManager.homeDirectoryForCurrentUser,
+                executableCheck: fileManager.isExecutableFile(atPath:)
+            )
+            let codexPrefix = environment["CAB_REAL_CODEX"].map { "CAB_REAL_CODEX=\(shellQuote($0)) " } ?? ""
+            command = "\(codexPrefix)\(shellQuote(executable.path)) run"
         } else {
             let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
@@ -622,10 +628,10 @@ func localCABEnvironment(
         .joined(separator: ":")
 
     if baseEnvironment["CAB_REAL_CODEX"]?.isEmpty != false {
-        let candidates = searchDirectories.map { URL(fileURLWithPath: $0).appendingPathComponent("codex").path } + [
+        let candidates = [
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "/Applications/Codex.app/Contents/Resources/codex",
-        ]
+        ] + searchDirectories.map { URL(fileURLWithPath: $0).appendingPathComponent("codex").path }
         if let executable = candidates.first(where: executableCheck) {
             environment["CAB_REAL_CODEX"] = executable
         }

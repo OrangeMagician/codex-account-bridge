@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,25 @@ import (
 )
 
 const loginStatusTimeout = 10 * time.Second
+const loginStatusOutputLimit = 4096
+
+type cappedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (buffer *cappedBuffer) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.limit - buffer.Len()
+	if remaining <= 0 {
+		return written, nil
+	}
+	if len(value) > remaining {
+		value = value[:remaining]
+	}
+	_, err := buffer.Buffer.Write(value)
+	return written, err
+}
 
 func FindReal(binary string) (string, error) {
 	if configured := os.Getenv("CAB_REAL_CODEX"); configured != "" {
@@ -197,7 +217,8 @@ func LoggedIn(home string) (bool, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "login", "status")
 	cmd.Env = environment(home)
-	cmd.Stdout = nil
+	stdout := cappedBuffer{limit: loginStatusOutputLimit}
+	cmd.Stdout = &stdout
 	cmd.Stderr = nil
 	err = cmd.Run()
 	if err == nil {
@@ -208,7 +229,10 @@ func LoggedIn(home string) (bool, error) {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return false, nil
+		if strings.TrimSpace(stdout.String()) == "Not logged in" {
+			return false, nil
+		}
+		return false, fmt.Errorf("official Codex login status failed with exit code %d", exitErr.ExitCode())
 	}
 	return false, err
 }
