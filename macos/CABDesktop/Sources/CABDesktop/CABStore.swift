@@ -291,29 +291,20 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             defer { isBusy = false }
             do {
-                do {
-                    try await service.stopCodexProcesses(
-                        request.processes.map(\.pid),
-                        target: .remote,
-                        remoteHost: request.remoteHost
-                    )
-                } catch {
-                    let remaining = try await service.loadRemoteSwitchCodexProcesses(remoteHost: request.remoteHost)
-                    if remaining.contains(where: { request.processes.map(\.pid).contains($0.pid) }) {
-                        throw error
-                    }
+                try await stopRemoteCodexSnapshot(request.processes, remoteHost: request.remoteHost)
+                try await selectRemoteCodexAccount(request.accountName, remoteHost: request.remoteHost)
+
+                // Remote projects reconnect automatically. Snapshot everything that is alive
+                // after the account selection, restart that snapshot once, and allow later
+                // reconnects to stay up because they inherit the newly selected account.
+                let reconnected = try await service.loadRemoteSwitchCodexProcesses(remoteHost: request.remoteHost)
+                if !reconnected.isEmpty {
+                    appendOutput("检测到远程项目自动重连，正在用新账号重启 \(reconnected.count) 个 Codex 进程…\n")
+                    try await stopRemoteCodexSnapshot(reconnected, remoteHost: request.remoteHost)
                 }
-                let remaining = try await service.loadRemoteSwitchCodexProcesses(remoteHost: request.remoteHost)
-                if remaining.isEmpty {
-                    pendingRemoteCodexSwitch = nil
-                    try await applyRemoteCodexSwitch(request.accountName, remoteHost: request.remoteHost)
-                } else {
-                    pendingRemoteCodexSwitch = RemoteCodexSwitchRequest(
-                        remoteHost: request.remoteHost,
-                        accountName: request.accountName,
-                        processes: remaining
-                    )
-                }
+                pendingRemoteCodexSwitch = nil
+                appendOutput("远程 Codex 已切换到 \(request.accountName)；自动重连的新进程会继续运行。\n")
+                await reload()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -321,6 +312,11 @@ final class CABStore: ObservableObject {
     }
 
     private func applyRemoteCodexSwitch(_ name: String, remoteHost: String) async throws {
+        try await selectRemoteCodexAccount(name, remoteHost: remoteHost)
+        await reload()
+    }
+
+    private func selectRemoteCodexAccount(_ name: String, remoteHost: String) async throws {
         let arguments = ["remote", "use", name]
         output = "$ cab \(arguments.joined(separator: " "))\n"
         let result = try await service.execute(arguments, target: .remote, remoteHost: remoteHost) { [weak self] chunk in
@@ -329,7 +325,26 @@ final class CABStore: ObservableObject {
         guard result.exitCode == 0 else {
             throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
         }
-        await reload()
+    }
+
+    private func stopRemoteCodexSnapshot(_ processes: [CodexProcessStatus], remoteHost: String) async throws {
+        guard !processes.isEmpty else { return }
+        var stopError: Error?
+        do {
+            try await service.stopCodexProcesses(
+                processes.map(\.pid),
+                target: .remote,
+                remoteHost: remoteHost
+            )
+        } catch {
+            stopError = error
+        }
+        let current = try await service.loadRemoteSwitchCodexProcesses(remoteHost: remoteHost)
+        let remaining = codexProcesses(current, matchingPIDsFrom: processes)
+        guard remaining.isEmpty else {
+            if let stopError { throw stopError }
+            throw BridgeError.commandFailed("部分远程 Codex 进程仍未退出：\(remaining.map { String($0.pid) }.joined(separator: ", "))。")
+        }
     }
 
     func setAgentSelection(service: String, account: String) {

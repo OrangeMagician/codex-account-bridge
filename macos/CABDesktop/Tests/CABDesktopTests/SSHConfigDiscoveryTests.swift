@@ -59,6 +59,22 @@ struct SSHConfigDiscoveryTests {
         #expect(parsed["openclaw.service"] == 922_674)
     }
 
+    @Test func remoteSwitchChecksOnlyTheStoppedSnapshotAfterAutomaticReconnect() {
+        let stoppedSnapshot = [
+            CodexProcessStatus(pid: 101, parentPID: 1, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
+            CodexProcessStatus(pid: 102, parentPID: 2, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
+        ]
+        let afterReconnect = [
+            CodexProcessStatus(pid: 102, parentPID: 2, elapsed: "1:01", tty: "?", state: "Sl", executable: "codex"),
+            CodexProcessStatus(pid: 201, parentPID: 3, elapsed: "0:01", tty: "?", state: "Sl", executable: "codex"),
+        ]
+
+        let remainingOriginals = codexProcesses(afterReconnect, matchingPIDsFrom: stoppedSnapshot)
+
+        #expect(remainingOriginals.map(\.pid) == [102])
+        #expect(!remainingOriginals.contains(where: { $0.pid == 201 }))
+    }
+
     @Test func finderLaunchEnvironmentCanResolveHomebrewCodex() {
         let environment = localCABEnvironment(
             baseEnvironment: ["PATH": "/usr/bin:/bin"],

@@ -682,6 +682,11 @@ func remoteUserCodexProcesses(_ processes: [CodexProcessStatus], excludingParent
     processes.filter { !agentMainPIDs.contains($0.parentPID) }
 }
 
+func codexProcesses(_ current: [CodexProcessStatus], matchingPIDsFrom snapshot: [CodexProcessStatus]) -> [CodexProcessStatus] {
+    let targetPIDs = Set(snapshot.map(\.pid))
+    return current.filter { targetPIDs.contains($0.pid) }
+}
+
 private extension String {
     var nonEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)

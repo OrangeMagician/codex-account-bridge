@@ -608,7 +608,7 @@ struct ContentView: View {
         let details = request.processes.map { process in
             "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
         }.joined(separator: "\n")
-        return "以下远程 Codex CLI、SSH 远程项目或 app-server 仍在运行：\n\(details)\n\nHermes、OpenClaw 等智能体进程已排除。确认后只会请求以上进程正常退出；全部退出后才会切换到 \(request.accountName)。未保存的任务可能中断。"
+        return "以下远程 Codex CLI、SSH 远程项目或 app-server 仍在运行：\n\(details)\n\nHermes、OpenClaw 等智能体进程已排除。确认后会关闭以上进程、切换到 \(request.accountName)，并自动处理远程项目的即时重连；切换完成后的新连接不会被反复关闭。未保存的任务可能中断。"
     }
 
     private func legacyImportProcessMessage(_ processes: [CodexProcessStatus]) -> String {
