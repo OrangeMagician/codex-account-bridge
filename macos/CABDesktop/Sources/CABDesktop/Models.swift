@@ -114,6 +114,13 @@ struct RemoteSessionProcessRequest: Identifiable {
     let processes: [CodexProcessStatus]
 }
 
+struct RemoteCodexSwitchRequest: Identifiable {
+    var id: String { "\(remoteHost):\(accountName):\(processes.map(\.pid))" }
+    let remoteHost: String
+    let accountName: String
+    let processes: [CodexProcessStatus]
+}
+
 struct LegacySessionReport: Codable, Equatable {
     let sourceHome: String
     let sessions: Int

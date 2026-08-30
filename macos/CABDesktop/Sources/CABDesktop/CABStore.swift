@@ -44,6 +44,7 @@ final class CABStore: ObservableObject {
     @Published var agentBindingError: String?
     @Published var bulkAgentAccount = ""
     @Published var pendingRemoteSessionChange: RemoteSessionProcessRequest?
+    @Published var pendingRemoteCodexSwitch: RemoteCodexSwitchRequest?
     @Published var legacySessions: LegacySessionReport?
     @Published var pendingLegacyProcesses: [CodexProcessStatus]?
     @Published var pendingDesktopSwitch: DesktopSwitchProcessRequest?
@@ -251,8 +252,84 @@ final class CABStore: ObservableObject {
 
     func setDefault(_ name: String) { run(["use", name]) }
     func switchRemoteCodex(to name: String) {
-        guard target == .remote else { return }
-        run(["remote", "use", name])
+        guard target == .remote, !isBusy else { return }
+        guard status.accounts.first(where: { $0.name == name })?.isLoggedIn == true else {
+            errorMessage = "只能切换到远程服务器上已登录的账号。"
+            return
+        }
+        let capturedHost = remoteHost
+        Task {
+            isBusy = true
+            errorMessage = nil
+            defer { isBusy = false }
+            do {
+                let processes = try await service.loadRemoteSwitchCodexProcesses(remoteHost: capturedHost)
+                if processes.isEmpty {
+                    try await applyRemoteCodexSwitch(name, remoteHost: capturedHost)
+                } else {
+                    pendingRemoteCodexSwitch = RemoteCodexSwitchRequest(
+                        remoteHost: capturedHost,
+                        accountName: name,
+                        processes: processes
+                    )
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func stopProcessesAndSwitchRemoteCodex(_ request: RemoteCodexSwitchRequest) {
+        guard target == .remote, !isBusy else { return }
+        guard remoteHost == request.remoteHost else {
+            pendingRemoteCodexSwitch = nil
+            errorMessage = "远程服务器已变更，请在当前服务器上重新发起切换。"
+            return
+        }
+        Task {
+            isBusy = true
+            errorMessage = nil
+            defer { isBusy = false }
+            do {
+                do {
+                    try await service.stopCodexProcesses(
+                        request.processes.map(\.pid),
+                        target: .remote,
+                        remoteHost: request.remoteHost
+                    )
+                } catch {
+                    let remaining = try await service.loadRemoteSwitchCodexProcesses(remoteHost: request.remoteHost)
+                    if remaining.contains(where: { request.processes.map(\.pid).contains($0.pid) }) {
+                        throw error
+                    }
+                }
+                let remaining = try await service.loadRemoteSwitchCodexProcesses(remoteHost: request.remoteHost)
+                if remaining.isEmpty {
+                    pendingRemoteCodexSwitch = nil
+                    try await applyRemoteCodexSwitch(request.accountName, remoteHost: request.remoteHost)
+                } else {
+                    pendingRemoteCodexSwitch = RemoteCodexSwitchRequest(
+                        remoteHost: request.remoteHost,
+                        accountName: request.accountName,
+                        processes: remaining
+                    )
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func applyRemoteCodexSwitch(_ name: String, remoteHost: String) async throws {
+        let arguments = ["remote", "use", name]
+        output = "$ cab \(arguments.joined(separator: " "))\n"
+        let result = try await service.execute(arguments, target: .remote, remoteHost: remoteHost) { [weak self] chunk in
+            Task { @MainActor in self?.appendOutput(chunk) }
+        }
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+        }
+        await reload()
     }
 
     func setAgentSelection(service: String, account: String) {

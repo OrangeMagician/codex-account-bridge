@@ -31,6 +31,34 @@ struct SSHConfigDiscoveryTests {
         #expect(codexProcessLabel(executablePath: "/opt/homebrew/bin/codex") == "Codex CLI 或 app-server")
     }
 
+    @Test func remoteSwitchExcludesCodexOwnedByAgentServices() {
+        let processes = [
+            CodexProcessStatus(pid: 101, parentPID: 11, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
+            CodexProcessStatus(pid: 102, parentPID: 22, elapsed: "2:00", tty: "pts/1", state: "Sl", executable: "codex"),
+            CodexProcessStatus(pid: 103, parentPID: 1, elapsed: "3:00", tty: "?", state: "Sl", executable: "codex"),
+        ]
+
+        let filtered = remoteUserCodexProcesses(processes, excludingParentPIDs: [11, 22])
+
+        #expect(filtered.map(\.pid) == [103])
+    }
+
+    @Test func parsesSystemdMainPIDsForAgentExclusion() {
+        let output = """
+        MainPID=3611804
+        Names=hermes-gateway.service
+
+        MainPID=922674
+        Names=openclaw-gateway.service openclaw.service
+        """
+
+        let parsed = systemdMainPIDsByService(from: output)
+
+        #expect(parsed["hermes-gateway.service"] == 3_611_804)
+        #expect(parsed["openclaw-gateway.service"] == 922_674)
+        #expect(parsed["openclaw.service"] == 922_674)
+    }
+
     @Test func finderLaunchEnvironmentCanResolveHomebrewCodex() {
         let environment = localCABEnvironment(
             baseEnvironment: ["PATH": "/usr/bin:/bin"],

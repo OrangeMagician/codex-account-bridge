@@ -97,6 +97,37 @@ final class CABService {
         catch { throw BridgeError.commandFailed("无法解析 Codex 进程信息：\(error.localizedDescription)") }
     }
 
+    func loadRemoteSwitchCodexProcesses(remoteHost: String) async throws -> [CodexProcessStatus] {
+        let bindings = try await loadAgentBindings(remoteHost: remoteHost)
+        let activeServices = bindings.agents.filter(\.active).map(\.service)
+        let invalidService = activeServices.first {
+            $0.range(of: #"^[A-Za-z0-9_.@-]+\.service$"#, options: .regularExpression) == nil
+        }
+        guard invalidService == nil else {
+            throw BridgeError.commandFailed("远程智能体返回了无效的 systemd 服务名，已取消切换以避免误关进程。")
+        }
+
+        let agentMainPIDs: Set<Int>
+        if activeServices.isEmpty {
+            agentMainPIDs = []
+        } else {
+            let result = try await executeRemoteProgram(
+                "/usr/bin/systemctl",
+                arguments: ["--user", "show"] + activeServices + ["--property=Names", "--property=MainPID"],
+                remoteHost: remoteHost
+            )
+            guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+            let mainPIDs = systemdMainPIDsByService(from: result.output)
+            guard activeServices.allSatisfy({ (mainPIDs[$0] ?? 0) > 0 }) else {
+                throw BridgeError.commandFailed("无法确认全部远程智能体的进程归属，已取消切换以避免误关智能体。")
+            }
+            agentMainPIDs = Set(activeServices.compactMap { mainPIDs[$0] })
+        }
+
+        let report = try await loadCodexProcesses(target: .remote, remoteHost: remoteHost)
+        return remoteUserCodexProcesses(report.processes, excludingParentPIDs: agentMainPIDs)
+    }
+
     func stopCodexProcesses(_ pids: [Int], target: BridgeTarget, remoteHost: String) async throws {
         guard !pids.isEmpty else { return }
         let result = try await execute(["processes", "stop", "--pids", pids.map(String.init).joined(separator: ","), "--confirm-stop-codex"], target: target, remoteHost: remoteHost)
@@ -170,6 +201,15 @@ final class CABService {
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    private func executeRemoteProgram(_ executable: String, arguments: [String], remoteHost: String) async throws -> CommandResult {
+        let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
+        return try await runLocalProcess(
+            "/usr/bin/ssh",
+            arguments: ["--", host, executable] + arguments
+        )
     }
 
     func launchCodexInTerminal(target: BridgeTarget, remoteHost: String) throws {
@@ -612,6 +652,28 @@ func codexProcessLabel(executablePath: String) -> String {
         return "JetBrains 的 Codex 插件"
     }
     return "Codex CLI 或 app-server"
+}
+
+func systemdMainPIDsByService(from output: String) -> [String: Int] {
+    var result: [String: Int] = [:]
+    for block in output.components(separatedBy: "\n\n") {
+        var names: [String] = []
+        var mainPID: Int?
+        for line in block.split(separator: "\n") {
+            if line.hasPrefix("Names=") {
+                names = line.dropFirst("Names=".count).split(separator: " ").map(String.init)
+            } else if line.hasPrefix("MainPID=") {
+                mainPID = Int(line.dropFirst("MainPID=".count))
+            }
+        }
+        guard let mainPID else { continue }
+        for name in names { result[name] = mainPID }
+    }
+    return result
+}
+
+func remoteUserCodexProcesses(_ processes: [CodexProcessStatus], excludingParentPIDs agentMainPIDs: Set<Int>) -> [CodexProcessStatus] {
+    processes.filter { !agentMainPIDs.contains($0.parentPID) }
 }
 
 private extension String {

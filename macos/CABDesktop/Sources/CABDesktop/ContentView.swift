@@ -76,6 +76,18 @@ struct ContentView: View {
                 onContinue: { store.closeProcessesAndContinueDesktopSwitch(request) }
             )
         }
+        .confirmationDialog("检测到正在运行的远程 Codex", isPresented: Binding(get: { store.pendingRemoteCodexSwitch != nil }, set: { if !$0 { store.pendingRemoteCodexSwitch = nil } }), titleVisibility: .visible) {
+            if let request = store.pendingRemoteCodexSwitch {
+                Button("关闭这些进程并切换到 \(request.accountName)", role: .destructive) {
+                    store.stopProcessesAndSwitchRemoteCodex(request)
+                }
+            }
+            Button("取消", role: .cancel) { store.pendingRemoteCodexSwitch = nil }
+        } message: {
+            if let request = store.pendingRemoteCodexSwitch {
+                Text(remoteCodexSwitchProcessMessage(request))
+            }
+        }
         .confirmationDialog(store.target == .local ? "更改项目与会话保留？" : "更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
             Button(store.target == .local ? (pendingSessionSharing == true ? "确认切换时保留" : "确认保持独立") : (pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立")) {
                 if let enabled = pendingSessionSharing {
@@ -590,6 +602,13 @@ struct ContentView: View {
             "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
         }.joined(separator: "\n")
         return "以下 Codex 仍在运行：\n\(details)\n\n确认后只会请求这些进程正常退出；全部退出后才会\(request.enabled ? "开启" : "关闭")会话共享。未保存的任务可能中断。"
+    }
+
+    private func remoteCodexSwitchProcessMessage(_ request: RemoteCodexSwitchRequest) -> String {
+        let details = request.processes.map { process in
+            "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
+        }.joined(separator: "\n")
+        return "以下远程 Codex CLI、SSH 远程项目或 app-server 仍在运行：\n\(details)\n\nHermes、OpenClaw 等智能体进程已排除。确认后只会请求以上进程正常退出；全部退出后才会切换到 \(request.accountName)。未保存的任务可能中断。"
     }
 
     private func legacyImportProcessMessage(_ processes: [CodexProcessStatus]) -> String {
