@@ -112,6 +112,8 @@ Depending on the official response, the report can include the ChatGPT plan type
 
 The macOS app includes an optional usage-reset notification switch in Global Settings. It is off by default and requests system notification permission only when enabled. CAB replaces its scheduled notifications whenever usage data is refreshed and removes them when the switch is turned off. A notification indicates that the reported reset time has arrived; refresh CAB to confirm the latest server-side quota.
 
+Automatic refresh is evaluated per account. An account with exhausted usage and a known future reset time is skipped until that reset, while other accounts continue to refresh normally. Manual refresh still queries every account.
+
 Usage information never triggers an automatic account change.
 
 ## Native macOS app

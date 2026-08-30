@@ -460,6 +460,18 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 }
+                if !store.usageAutomaticRefreshPauses.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(store.usageAutomaticRefreshPauses) { pause in
+                            Label(
+                                "\(pause.accountName) 额度已用完，自动刷新暂停至 \(pause.until.formatted(date: .abbreviated, time: .shortened))；手动刷新仍可使用。",
+                                systemImage: "pause.circle"
+                            )
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
                 Divider()
                 HStack(alignment: .center, spacing: 12) {
                     Label("额度重置通知", systemImage: "bell.badge")

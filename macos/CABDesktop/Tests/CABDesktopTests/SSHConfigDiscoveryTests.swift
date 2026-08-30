@@ -279,6 +279,125 @@ struct SSHConfigDiscoveryTests {
         #expect(!all.contains("unrelated.notification"))
     }
 
+    @Test func pausesEachExhaustedAccountUntilItsOwnReset() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let work = usageReportForRefreshPolicy(
+            name: "work",
+            primaryRemaining: 0,
+            primaryReset: 2_000_000_600,
+            secondaryRemaining: 0,
+            secondaryReset: 2_000_000_900
+        )
+        let personal = usageReportForRefreshPolicy(
+            name: "personal",
+            primaryRemaining: 0,
+            primaryReset: 2_000_000_700
+        )
+
+        let workDecision = usageAutomaticRefreshDecision(
+            report: work,
+            cacheCheckedAt: now,
+            interval: .fifteenMinutes,
+            now: now
+        )
+        let personalDecision = usageAutomaticRefreshDecision(
+            report: personal,
+            cacheCheckedAt: now,
+            interval: .fifteenMinutes,
+            now: now
+        )
+
+        #expect(workDecision == .pause(until: Date(timeIntervalSince1970: 2_000_000_900)))
+        #expect(personalDecision == .pause(until: Date(timeIntervalSince1970: 2_000_000_700)))
+    }
+
+    @Test func refreshesOnlyAccountsThatAreNotWaitingForReset() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let reports = [
+            "work": usageReportForRefreshPolicy(
+                name: "work",
+                primaryRemaining: 0,
+                primaryReset: 2_000_000_600
+            ),
+            "personal": usageReportForRefreshPolicy(
+                name: "personal",
+                primaryRemaining: 25,
+                primaryReset: 2_000_000_700
+            ),
+        ]
+
+        let accountNames = usageAccountNamesToRefresh(
+            accountNames: ["work", "personal"],
+            reports: reports,
+            checkedAtByAccount: [
+                "work": now.addingTimeInterval(-901),
+                "personal": now.addingTimeInterval(-901),
+            ],
+            interval: .fifteenMinutes,
+            now: now
+        )
+
+        #expect(accountNames == ["personal"])
+    }
+
+    @Test func refreshesOnceImmediatelyAfterExhaustedUsageResets() {
+        let resetDate = Date(timeIntervalSince1970: 2_000_000_000)
+        let report = usageReportForRefreshPolicy(
+            name: "work",
+            primaryRemaining: 0,
+            primaryReset: Int64(resetDate.timeIntervalSince1970)
+        )
+
+        let decision = usageAutomaticRefreshDecision(
+            report: report,
+            cacheCheckedAt: resetDate.addingTimeInterval(-300),
+            interval: .oneHour,
+            now: resetDate.addingTimeInterval(1)
+        )
+
+        #expect(decision == .refresh)
+    }
+
+    private func usageReportForRefreshPolicy(
+        name: String,
+        primaryRemaining: Double,
+        primaryReset: Int64,
+        secondaryRemaining: Double? = nil,
+        secondaryReset: Int64? = nil
+    ) -> AccountUsageReport {
+        let limits = UsageRateLimitSnapshot(
+            limitID: nil,
+            limitName: nil,
+            primary: UsageWindow(
+                usedPercent: 100 - primaryRemaining,
+                windowDurationMins: 300,
+                resetsAt: primaryReset
+            ),
+            secondary: secondaryRemaining.map { remaining in
+                UsageWindow(
+                    usedPercent: 100 - remaining,
+                    windowDurationMins: 10_080,
+                    resetsAt: secondaryReset
+                )
+            },
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        return AccountUsageReport(
+            name: name,
+            usage: CodexUsageSnapshot(
+                planType: nil,
+                rateLimits: limits,
+                rateLimitsByLimitID: nil,
+                resetCredits: nil
+            ),
+            error: nil
+        )
+    }
+
     @Test func discoversConcreteAliasesAndIncludesWithoutReadingIdentityFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let ssh = root.appendingPathComponent(".ssh")

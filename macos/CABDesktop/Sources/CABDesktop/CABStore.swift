@@ -9,8 +9,14 @@ private enum LoginBrowser {
 private struct UsageCacheEntry {
     let reports: [String: AccountUsageReport]
     let fetchedAt: Date?
-    let checkedAt: Date
+    let checkedAtByAccount: [String: Date]
     let error: String?
+}
+
+struct UsageRefreshPause: Identifiable, Equatable {
+    var id: String { accountName }
+    let accountName: String
+    let until: Date
 }
 
 @MainActor
@@ -97,6 +103,19 @@ final class CABStore: ObservableObject {
     var targetTitle: String {
         if target == .local { return target.title }
         return selectedRemoteServer?.name.nonEmpty ?? "远程服务器"
+    }
+
+    var usageAutomaticRefreshPauses: [UsageRefreshPause] {
+        guard let cached = usageCacheByKey[currentUsageCacheKey] else { return [] }
+        let now = Date()
+        return status.accounts.filter(\.isLoggedIn).compactMap { account in
+            guard let report = cached.reports[account.name],
+                  let until = exhaustedUsageResumeDate(report: report),
+                  until > now else {
+                return nil
+            }
+            return UsageRefreshPause(accountName: account.name, until: until)
+        }.sorted { $0.until < $1.until }
     }
 
     var selectedAccountStatus: AccountStatus? {
@@ -753,11 +772,17 @@ final class CABStore: ObservableObject {
 
     private func reloadUsage(force: Bool) async {
         let key = currentUsageCacheKey
+        var requestedAccountNames: [String]?
         if let cached = usageCacheByKey[key] {
             applyUsageCache(cached)
             if !force {
-                guard let duration = usageRefreshInterval.duration else { return }
-                if Date().timeIntervalSince(cached.checkedAt) < duration { return }
+                requestedAccountNames = usageAccountNamesToRefresh(
+                    accountNames: status.accounts.filter(\.isLoggedIn).map(\.name),
+                    reports: cached.reports,
+                    checkedAtByAccount: cached.checkedAtByAccount,
+                    interval: usageRefreshInterval
+                )
+                if requestedAccountNames?.isEmpty == true { return }
             }
         } else if !force && usageRefreshInterval == .manual {
             applyUsageCache(nil)
@@ -772,12 +797,27 @@ final class CABStore: ObservableObject {
         }
         let capturedTarget = target
         let capturedHost = remoteHost
+        let capturedAccountNames = Set(status.accounts.map(\.name))
+        let attemptedAccountNames = requestedAccountNames ?? Array(capturedAccountNames)
         do {
-            let report = try await service.loadUsage(target: capturedTarget, remoteHost: capturedHost)
+            let report = try await service.loadUsage(
+                target: capturedTarget,
+                remoteHost: capturedHost,
+                accountNames: requestedAccountNames
+            )
+            let checkedAt = Date()
+            var reports = usageCacheByKey[key]?.reports ?? [:]
+            var checkedAtByAccount = usageCacheByKey[key]?.checkedAtByAccount ?? [:]
+            for accountReport in report.accounts {
+                reports[accountReport.name] = accountReport
+                checkedAtByAccount[accountReport.name] = checkedAt
+            }
+            reports = reports.filter { capturedAccountNames.contains($0.key) }
+            checkedAtByAccount = checkedAtByAccount.filter { capturedAccountNames.contains($0.key) }
             let entry = UsageCacheEntry(
-                reports: Dictionary(uniqueKeysWithValues: report.accounts.map { ($0.name, $0) }),
+                reports: reports,
                 fetchedAt: report.fetchedAt,
-                checkedAt: Date(),
+                checkedAtByAccount: checkedAtByAccount,
                 error: nil
             )
             usageCacheByKey[key] = entry
@@ -785,10 +825,15 @@ final class CABStore: ObservableObject {
             await refreshUsageResetNotificationsIfNeeded(replacingCacheKeys: [key])
         } catch {
             let previous = usageCacheByKey[key]
+            let checkedAt = Date()
+            var checkedAtByAccount = previous?.checkedAtByAccount ?? [:]
+            for accountName in attemptedAccountNames {
+                checkedAtByAccount[accountName] = checkedAt
+            }
             let entry = UsageCacheEntry(
                 reports: previous?.reports ?? [:],
                 fetchedAt: previous?.fetchedAt,
-                checkedAt: Date(),
+                checkedAtByAccount: checkedAtByAccount,
                 error: error.localizedDescription
             )
             usageCacheByKey[key] = entry

@@ -59,8 +59,34 @@ final class CABService {
         }
     }
 
-    func loadUsage(target: BridgeTarget, remoteHost: String) async throws -> UsageReport {
-        let result = try await execute(["usage", "--json"], target: target, remoteHost: remoteHost)
+    func loadUsage(
+        target: BridgeTarget,
+        remoteHost: String,
+        accountNames: [String]? = nil
+    ) async throws -> UsageReport {
+        guard let accountNames else {
+            return try await loadUsage(arguments: ["usage", "--json"], target: target, remoteHost: remoteHost)
+        }
+        var reports: [AccountUsageReport] = []
+        var fetchedAt = Date.distantPast
+        for accountName in accountNames.sorted() {
+            let report = try await loadUsage(
+                arguments: ["usage", "--account", accountName, "--json"],
+                target: target,
+                remoteHost: remoteHost
+            )
+            reports.append(contentsOf: report.accounts)
+            fetchedAt = max(fetchedAt, report.fetchedAt)
+        }
+        return UsageReport(fetchedAt: fetchedAt, accounts: reports)
+    }
+
+    private func loadUsage(
+        arguments: [String],
+        target: BridgeTarget,
+        remoteHost: String
+    ) async throws -> UsageReport {
+        let result = try await execute(arguments, target: target, remoteHost: remoteHost)
         guard result.exitCode == 0 else {
             throw BridgeError.commandFailed(preferredMessage(result))
         }
