@@ -197,6 +197,88 @@ struct SSHConfigDiscoveryTests {
         #expect(report.accounts[0].usage?.resetCredits?.availableCount == 1)
     }
 
+    @Test func plansOnlyFutureUsageResetNotificationsInTimeOrder() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let limits = UsageRateLimitSnapshot(
+            limitID: "codex",
+            limitName: nil,
+            primary: UsageWindow(usedPercent: 90, windowDurationMins: 300, resetsAt: 2_000_000_600),
+            secondary: UsageWindow(usedPercent: 30, windowDurationMins: 10_080, resetsAt: 1_999_999_999),
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: "plus",
+            rateLimitReachedType: nil
+        )
+        let report = AccountUsageReport(
+            name: "work",
+            usage: CodexUsageSnapshot(planType: "plus", rateLimits: limits, rateLimitsByLimitID: nil, resetCredits: nil),
+            error: nil
+        )
+
+        let plans = usageResetNotificationPlans(
+            sources: [UsageNotificationSource(key: "local", title: "这台 Mac", reports: [report])],
+            now: now
+        )
+
+        #expect(plans.count == 1)
+        #expect(plans[0].date == Date(timeIntervalSince1970: 2_000_000_600))
+        #expect(plans[0].body.contains("work"))
+        #expect(plans[0].body.contains("主要周期"))
+    }
+
+    @Test func capsUsageResetNotificationsToSystemSafeCount() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let reports = (0..<70).map { index -> AccountUsageReport in
+            let limits = UsageRateLimitSnapshot(
+                limitID: nil,
+                limitName: nil,
+                primary: UsageWindow(usedPercent: 50, windowDurationMins: 300, resetsAt: Int64(2_000_000_100 + index)),
+                secondary: nil,
+                credits: nil,
+                individualLimit: nil,
+                spendControlReached: nil,
+                planType: nil,
+                rateLimitReachedType: nil
+            )
+            return AccountUsageReport(
+                name: "account-\(index)",
+                usage: CodexUsageSnapshot(planType: nil, rateLimits: limits, rateLimitsByLimitID: nil, resetCredits: nil),
+                error: nil
+            )
+        }
+
+        let plans = usageResetNotificationPlans(
+            sources: [UsageNotificationSource(key: "local", title: "这台 Mac", reports: reports)],
+            now: now
+        )
+
+        #expect(plans.count == 60)
+        #expect(plans.first?.date == Date(timeIntervalSince1970: 2_000_000_100))
+        #expect(plans.last?.date == Date(timeIntervalSince1970: 2_000_000_159))
+    }
+
+    @Test func replacesOnlyUsageNotificationsForRefreshedSource() {
+        let identifiers = [
+            "cab.usage-reset.local.work.primary.1",
+            "cab.usage-reset.remote:server-a.work.primary.2",
+            "cab.usage-reset.remote:server-b.work.primary.3",
+            "unrelated.notification",
+        ]
+
+        let local = usageResetNotificationIdentifiersToReplace(identifiers, sourceKeys: ["local"])
+        let serverA = usageResetNotificationIdentifiersToReplace(
+            identifiers,
+            sourceKeys: ["remote:server-a"]
+        )
+        let all = usageResetNotificationIdentifiersToReplace(identifiers, sourceKeys: nil)
+
+        #expect(local == ["cab.usage-reset.local.work.primary.1"])
+        #expect(serverA == ["cab.usage-reset.remote:server-a.work.primary.2"])
+        #expect(all.count == 3)
+        #expect(!all.contains("unrelated.notification"))
+    }
+
     @Test func discoversConcreteAliasesAndIncludesWithoutReadingIdentityFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let ssh = root.appendingPathComponent(".ssh")

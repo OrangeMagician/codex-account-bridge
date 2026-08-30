@@ -460,6 +460,36 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 }
+                Divider()
+                HStack(alignment: .center, spacing: 12) {
+                    Label("额度重置通知", systemImage: "bell.badge")
+                        .fontWeight(.medium)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let error = store.usageResetNotificationError {
+                            Text(error).foregroundStyle(.orange)
+                        } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
+                            Text("已安排 \(store.scheduledUsageResetNotificationCount) 个通知，额度刷新后会自动更新。")
+                        } else if store.usageResetNotificationsEnabled {
+                            Text("已开启，额度刷新后会同步未来重置时间通知。")
+                        } else {
+                            Text("关闭时不会申请系统权限，也不会安排通知。")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Spacer()
+                    if store.isUsageResetNotificationUpdating {
+                        ProgressView().controlSize(.small)
+                    }
+                    Toggle("额度重置通知", isOn: Binding(
+                        get: { store.usageResetNotificationsEnabled },
+                        set: store.setUsageResetNotificationsEnabled
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(store.isUsageResetNotificationUpdating)
+                    .help("在官方额度周期到达重置时间时发送 macOS 通知")
+                }
                 HStack {
                     Text("额度来自当前账号的官方 Codex app-server；订阅续费或会员到期日不在该接口中。")
                         .font(.caption).foregroundStyle(.secondary)

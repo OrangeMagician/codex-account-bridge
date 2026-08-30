@@ -32,6 +32,10 @@ final class CABStore: ObservableObject {
     @Published var lastDesktopAccount: String?
     @Published var preserveSessionsOnDesktopSwitch = false
     @Published var usageRefreshInterval: UsageRefreshInterval = .fifteenMinutes
+    @Published var usageResetNotificationsEnabled = false
+    @Published var isUsageResetNotificationUpdating = false
+    @Published var scheduledUsageResetNotificationCount = 0
+    @Published var usageResetNotificationError: String?
     @Published var usageByAccount: [String: AccountUsageReport] = [:]
     @Published var usageFetchedAt: Date?
     @Published var usageLoadError: String?
@@ -50,12 +54,14 @@ final class CABStore: ObservableObject {
     @Published var pendingDesktopSwitch: DesktopSwitchProcessRequest?
 
     private let service = CABService()
+    private lazy var usageResetNotificationService = UsageResetNotificationService()
     private let defaults = UserDefaults.standard
     private let remoteServersKey = "remoteServers.v1"
     private let selectedRemoteKey = "selectedRemoteServer.v1"
     private let lastDesktopAccountKey = "lastDesktopAccount.v1"
     private let preserveSessionsKey = "preserveSessionsOnDesktopSwitch.v1"
     private let usageRefreshIntervalKey = "usageRefreshInterval.v1"
+    private let usageResetNotificationsKey = "usageResetNotifications.v1"
     private var hasSavedDesktopSessionPreference = false
     private var loginOutputBuffer = ""
     private var loginBrowserOpened = false
@@ -67,6 +73,7 @@ final class CABStore: ObservableObject {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
         hasSavedDesktopSessionPreference = defaults.object(forKey: preserveSessionsKey) != nil
         preserveSessionsOnDesktopSwitch = defaults.bool(forKey: preserveSessionsKey)
+        usageResetNotificationsEnabled = defaults.bool(forKey: usageResetNotificationsKey)
         if let savedInterval = UsageRefreshInterval(rawValue: defaults.integer(forKey: usageRefreshIntervalKey)),
            defaults.object(forKey: usageRefreshIntervalKey) != nil {
             usageRefreshInterval = savedInterval
@@ -149,6 +156,38 @@ final class CABStore: ObservableObject {
         Task { await reloadUsage(force: false) }
     }
 
+    func setUsageResetNotificationsEnabled(_ enabled: Bool) {
+        guard !isUsageResetNotificationUpdating else { return }
+        Task {
+            isUsageResetNotificationUpdating = true
+            defer { isUsageResetNotificationUpdating = false }
+            if enabled {
+                do {
+                    guard try await usageResetNotificationService.requestAuthorization() else {
+                        throw UsageResetNotificationError.permissionDenied
+                    }
+                    let count = try await scheduleUsageResetNotifications()
+                    usageResetNotificationsEnabled = true
+                    defaults.set(true, forKey: usageResetNotificationsKey)
+                    scheduledUsageResetNotificationCount = count
+                    usageResetNotificationError = nil
+                } catch {
+                    usageResetNotificationsEnabled = false
+                    defaults.set(false, forKey: usageResetNotificationsKey)
+                    scheduledUsageResetNotificationCount = 0
+                    usageResetNotificationError = error.localizedDescription
+                    errorMessage = error.localizedDescription
+                }
+            } else {
+                await usageResetNotificationService.cancelScheduledNotifications()
+                usageResetNotificationsEnabled = false
+                defaults.set(false, forKey: usageResetNotificationsKey)
+                scheduledUsageResetNotificationCount = 0
+                usageResetNotificationError = nil
+            }
+        }
+    }
+
     func setPreserveSessionsOnDesktopSwitch(_ enabled: Bool) {
         preserveSessionsOnDesktopSwitch = enabled
         hasSavedDesktopSessionPreference = true
@@ -195,6 +234,9 @@ final class CABStore: ObservableObject {
             selectedRemoteID = remoteServers.first?.id
         }
         persistRemoteServers()
+        if usageResetNotificationsEnabled {
+            Task { await refreshUsageResetNotificationsIfNeeded() }
+        }
         if target == .remote { refresh() }
         return true
     }
@@ -740,6 +782,7 @@ final class CABStore: ObservableObject {
             )
             usageCacheByKey[key] = entry
             if key == currentUsageCacheKey { applyUsageCache(entry) }
+            await refreshUsageResetNotificationsIfNeeded(replacingCacheKeys: [key])
         } catch {
             let previous = usageCacheByKey[key]
             let entry = UsageCacheEntry(
@@ -770,6 +813,46 @@ final class CABStore: ObservableObject {
         usageByAccount = entry?.reports ?? [:]
         usageFetchedAt = entry?.fetchedAt
         usageLoadError = entry?.error
+    }
+
+    private func refreshUsageResetNotificationsIfNeeded(replacingCacheKeys: Set<String>? = nil) async {
+        guard usageResetNotificationsEnabled else { return }
+        do {
+            scheduledUsageResetNotificationCount = try await scheduleUsageResetNotifications(
+                replacingCacheKeys: replacingCacheKeys
+            )
+            usageResetNotificationError = nil
+        } catch {
+            scheduledUsageResetNotificationCount = 0
+            usageResetNotificationError = error.localizedDescription
+        }
+    }
+
+    private func scheduleUsageResetNotifications(replacingCacheKeys: Set<String>? = nil) async throws -> Int {
+        let sources = usageCacheByKey.compactMap { key, entry -> UsageNotificationSource? in
+            if let replacingCacheKeys, !replacingCacheKeys.contains(key) { return nil }
+            let title: String
+            if key == "local" {
+                title = "这台 Mac"
+            } else if key.hasPrefix("remote:"),
+                      let value = key.split(separator: ":", maxSplits: 1).last,
+                      let id = UUID(uuidString: String(value)),
+                      let server = remoteServers.first(where: { $0.id == id }) {
+                title = server.name
+            } else {
+                return nil
+            }
+            return UsageNotificationSource(
+                key: key,
+                title: title,
+                reports: Array(entry.reports.values)
+            )
+        }
+        let plans = usageResetNotificationPlans(sources: sources)
+        return try await usageResetNotificationService.replaceScheduledNotifications(
+            with: plans,
+            replacingSourceKeys: replacingCacheKeys
+        )
     }
 
     private func persistRemoteServers() {

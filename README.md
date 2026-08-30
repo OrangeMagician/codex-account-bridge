@@ -17,6 +17,7 @@ CAB keeps every login in an independent `CODEX_HOME` and delegates authenticatio
 - Manage multiple official Codex logins without merging their credentials.
 - Select an account explicitly for a CLI launch, the Codex desktop app, or a remote Codex app-server.
 - View official Codex usage limits and reset windows for each account.
+- Optionally receive local macOS notifications when a reported usage window reaches its reset time.
 - Manage accounts on multiple SSH servers from the native macOS app.
 - Preserve or isolate project and session history during deliberate account changes.
 - Opt in to cross-account session sharing with explicit disclosure and process checks.
@@ -108,6 +109,8 @@ cab usage --json
 ```
 
 Depending on the official response, the report can include the ChatGPT plan type, primary and secondary Codex usage windows, reset times, credits, spend controls, and available rate-limit resets. Account identity, email addresses, token contents, and reset credential identifiers are not exposed.
+
+The macOS app includes an optional usage-reset notification switch in Global Settings. It is off by default and requests system notification permission only when enabled. CAB replaces its scheduled notifications whenever usage data is refreshed and removes them when the switch is turned off. A notification indicates that the reported reset time has arrived; refresh CAB to confirm the latest server-side quota.
 
 Usage information never triggers an automatic account change.
 
