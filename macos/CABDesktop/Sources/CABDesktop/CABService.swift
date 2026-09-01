@@ -1,4 +1,5 @@
 import AppKit
+import CABContinuity
 import Foundation
 
 final class CommandOutputBuffer: @unchecked Sendable {
@@ -328,6 +329,22 @@ final class CABService {
 
     func restoreCodexWorkspaceState(_ result: CodexWorkspaceSyncResult) throws {
         try CodexWorkspaceState.restore(result)
+    }
+
+    func synchronizeCodexContinuityState(
+        sourceHome: String,
+        targetHome: String,
+        knownHomes: [String]
+    ) throws -> CodexContinuitySyncResult {
+        try CodexContinuityState.synchronize(
+            sourceHome: sourceHome,
+            targetHome: targetHome,
+            knownHomes: knownHomes
+        )
+    }
+
+    func restoreCodexContinuityState(_ result: CodexContinuitySyncResult) throws {
+        try CodexContinuityState.restore(result)
     }
 
     func synchronizeCodexThreadCatalogState(

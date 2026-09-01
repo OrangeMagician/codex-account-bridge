@@ -1,3 +1,4 @@
+import CABContinuity
 import Foundation
 import SwiftUI
 
@@ -495,6 +496,7 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
+            var continuitySync: CodexContinuitySyncResult?
             var threadCatalogSync: CodexThreadCatalogSyncResult?
             var threadIndexBackup: URL?
             var sessionModeChanged = false
@@ -530,6 +532,14 @@ final class CABStore: ObservableObject {
                         let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
                         appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目、会话归属及未发送草稿\(backupMessage)。\n")
                     }
+                    continuitySync = try service.synchronizeCodexContinuityState(
+                        sourceHome: fallbackHome,
+                        targetHome: account.home,
+                        knownHomes: status.accounts.map(\.home)
+                    )
+                    if let continuitySync {
+                        appendOutput("已同步完整消息投影、目标、记忆及 \(continuitySync.fileCount) 个工作区文件（\(continuitySync.databaseCount) 个本地索引已安全合并）。\n")
+                    }
                     threadCatalogSync = try service.synchronizeCodexThreadCatalogState(
                         sourceHome: fallbackHome,
                         targetHome: account.home,
@@ -552,6 +562,14 @@ final class CABStore: ObservableObject {
             } catch {
                 var message = error.localizedDescription
                 if desktopWasStopped {
+                    if let threadIndexBackup {
+                        do {
+                            try service.restoreCodexThreadIndex(backupURL: threadIndexBackup, codexHome: account.home)
+                            appendOutput("切换未完成，已恢复目标账号原有的线程索引。\n")
+                        } catch {
+                            message += "\n同时无法自动恢复目标账号的线程索引：\(error.localizedDescription)"
+                        }
+                    }
                     if let threadCatalogSync {
                         do {
                             try service.restoreCodexThreadCatalogState(threadCatalogSync)
@@ -560,20 +578,20 @@ final class CABStore: ObservableObject {
                             message += "\n同时无法自动恢复目标账号的桌面会话目录：\(error.localizedDescription)"
                         }
                     }
+                    if let continuitySync {
+                        do {
+                            try service.restoreCodexContinuityState(continuitySync)
+                            appendOutput("切换未完成，已恢复目标账号原有的消息、记忆、目标和工作区文件。\n")
+                        } catch {
+                            message += "\n同时无法自动恢复目标账号的完整工作区状态：\(error.localizedDescription)"
+                        }
+                    }
                     if let workspaceSync {
                         do {
                             try service.restoreCodexWorkspaceState(workspaceSync)
                             appendOutput("切换未完成，已恢复目标账号原有的项目状态。\n")
                         } catch {
                             message += "\n同时无法自动恢复目标账号的项目状态：\(error.localizedDescription)"
-                        }
-                    }
-                    if let threadIndexBackup {
-                        do {
-                            try service.restoreCodexThreadIndex(backupURL: threadIndexBackup, codexHome: account.home)
-                            appendOutput("切换未完成，已恢复目标账号原有的线程索引。\n")
-                        } catch {
-                            message += "\n同时无法自动恢复目标账号的线程索引：\(error.localizedDescription)"
                         }
                     }
                     if sessionModeChanged {

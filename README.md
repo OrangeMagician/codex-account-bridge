@@ -132,7 +132,7 @@ The app can:
 - Display quota summaries and detailed official usage periods.
 - Launch the Codex desktop app with a selected local account.
 - Select the account used by new remote Codex connections.
-- Preserve approved projects, complete chat catalog/sidebar state, prompt history, and unsent drafts during deliberate desktop account changes.
+- Preserve approved projects, complete chat content and catalog state, goals, memories, personal skills, attachments, prompt history, and unsent drafts during deliberate desktop account changes.
 - Manage session-sharing policy, launch rotation, and supported agent bindings.
 
 Saved server labels and SSH host strings remain in local macOS `UserDefaults`. SSH identity files and private-key contents are not imported into CAB.

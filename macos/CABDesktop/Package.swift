@@ -8,7 +8,8 @@ let package = Package(
         .executable(name: "CABDesktop", targets: ["CABDesktop"]),
     ],
     targets: [
-        .executableTarget(name: "CABDesktop"),
-        .testTarget(name: "CABDesktopTests", dependencies: ["CABDesktop"]),
+        .target(name: "CABContinuity"),
+        .executableTarget(name: "CABDesktop", dependencies: ["CABContinuity"]),
+        .testTarget(name: "CABDesktopTests", dependencies: ["CABDesktop", "CABContinuity"]),
     ]
 )

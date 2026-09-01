@@ -1,4 +1,5 @@
 import Foundation
+import CABContinuity
 import Testing
 @testable import CABDesktop
 
@@ -221,6 +222,46 @@ struct SSHConfigDiscoveryTests {
         try CodexThreadCatalogState.restore(result)
         #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT count(*) FROM local_thread_catalog;") == "2")
         #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT display_title FROM local_thread_catalog WHERE thread_id='shared';") == "Target title")
+    }
+
+    @Test func synchronizesAndRestoresCompletePortableContinuityState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("skills/source-skill"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target.appendingPathComponent("skills/target-skill"), withIntermediateDirectories: true)
+        try "source".write(to: source.appendingPathComponent("skills/source-skill/SKILL.md"), atomically: true, encoding: .utf8)
+        try "target".write(to: target.appendingPathComponent("skills/target-skill/SKILL.md"), atomically: true, encoding: .utf8)
+        try #"{"display":"source"}"#.write(to: source.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
+        try #"{"display":"target"}"#.write(to: target.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
+        try "source-config".write(to: source.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+        try "target-config".write(to: target.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+        let sourceGoals = source.appendingPathComponent("goals_1.sqlite")
+        let targetGoals = target.appendingPathComponent("goals_1.sqlite")
+        try createGoalsDatabaseForTest(sourceGoals)
+        try createGoalsDatabaseForTest(targetGoals)
+        try runSQLiteForTest(sourceGoals, sql: "INSERT INTO thread_goals VALUES ('source-thread','source-goal','Source objective','active',NULL,1,2,3,4);")
+        try runSQLiteForTest(targetGoals, sql: "INSERT INTO thread_goals VALUES ('target-thread','target-goal','Target objective','complete',NULL,5,6,7,8);")
+
+        let result = try CodexContinuityState.synchronize(
+            sourceHome: source.path,
+            targetHome: target.path,
+            knownHomes: [source.path, target.path]
+        )
+
+        #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("skills/source-skill/SKILL.md").path))
+        #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("skills/target-skill/SKILL.md").path))
+        #expect(try sqliteScalarForTest(targetGoals, sql: "SELECT count(*) FROM thread_goals;") == "2")
+        let mergedHistory = try String(contentsOf: target.appendingPathComponent("history.jsonl"), encoding: .utf8)
+        #expect(mergedHistory.contains("source"))
+        #expect(mergedHistory.contains("target"))
+        #expect(try String(contentsOf: target.appendingPathComponent("config.toml"), encoding: .utf8) == "target-config")
+
+        try CodexContinuityState.restore(result)
+        #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent("skills/source-skill/SKILL.md").path))
+        #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("skills/target-skill/SKILL.md").path))
+        #expect(try sqliteScalarForTest(targetGoals, sql: "SELECT count(*) FROM thread_goals;") == "1")
+        #expect(try String(contentsOf: target.appendingPathComponent("history.jsonl"), encoding: .utf8) == #"{"display":"target"}"#)
     }
 
     @Test func restoresWorkspaceCatalogAfterFailedDesktopSwitch() throws {
@@ -531,6 +572,20 @@ private func createThreadCatalogForTest(_ database: URL) throws {
       conversation_origin TEXT, PRIMARY KEY (host_id, thread_id)
     );
     CREATE TABLE unrelated_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+    """)
+}
+
+private func createGoalsDatabaseForTest(_ database: URL) throws {
+    try runSQLiteForTest(database, sql: """
+    CREATE TABLE thread_goals (
+      thread_id TEXT PRIMARY KEY NOT NULL, goal_id TEXT NOT NULL, objective TEXT NOT NULL,
+      status TEXT NOT NULL, token_budget INTEGER, tokens_used INTEGER NOT NULL DEFAULT 0,
+      time_used_seconds INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE thread_goal_continuation_deferrals (
+      thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE
+    );
     """)
 }
 
