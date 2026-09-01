@@ -619,7 +619,7 @@ struct ContentView: View {
     private var sessionSharingDescription: String {
         if store.target == .local {
             return store.preserveSessionsOnDesktopSwitch
-                ? "切换桌面账号时同步项目列表、会话归属和任务历史，新账号仍能看到原来的项目与对话。"
+                ? "切换桌面账号时同步项目、会话、侧栏状态和未发送草稿，新账号会延续当前工作区。"
                 : "切换桌面账号时保持各账号自己的项目列表和任务历史。"
         }
         return store.status.sharedSessions
@@ -630,7 +630,7 @@ struct ContentView: View {
     private var sessionSharingWarning: String {
         if store.target == .local {
             return pendingSessionSharing == true
-                ? "开启后，下次切换桌面账号前 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再同步项目列表、会话归属并合并历史。其他账号可能看到项目路径和已有对话，但登录凭据始终独立。"
+                ? "开启后，下次切换桌面账号前 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再同步项目、会话目录、侧栏状态、提示历史和未发送草稿。其他账号可能看到这些内容，但登录凭据、插件授权和安全权限始终独立。"
                 : "关闭后，下次切换桌面账号时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。"
         }
         return "操作前必须退出服务器上的所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。"
@@ -659,7 +659,7 @@ struct ContentView: View {
 
     private var desktopSwitchWarning: String {
         let sessionEffect = store.preserveSessionsOnDesktopSwitch
-            ? "会先检查 CLI 和编辑器扩展，再安全同步项目列表、会话归属并合并历史；预检不通过时不会关闭桌面端。"
+            ? "会先检查 CLI 和编辑器扩展，再安全同步项目、完整会话目录、侧栏状态和未发送草稿；预检不通过时不会关闭桌面端。"
             : "如果当前正在共享，会先恢复各账号独立的会话副本；项目列表也保持账号独立。"
         return "这会关闭正在运行的 Codex 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。\(sessionEffect)请先保存正在进行的工作。"
     }

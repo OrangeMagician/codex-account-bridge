@@ -11,17 +11,21 @@ enum CodexWorkspaceState {
     private static let stateFileName = ".codex-global-state.json"
     private static let maximumStateFileSize = 16 * 1_024 * 1_024
 
-    // These are the workspace catalog fields used by the official desktop app.
-    // Account identity, plugin state, prompts, UI experiments, and other global
-    // preferences are deliberately excluded.
+    // These are portable workspace fields used by the official desktop app.
+    // Account identity, plugin/OAuth state, device identifiers, and security
+    // preferences remain account-local.
     private static let mergedObjectKeys = [
         "local-projects",
+        "app-server-project-id-by-legacy-project-id-by-host",
+        "app-server-projects-migration-by-host",
         "remote-connection-analytics-id-by-host-id",
         "remote-connection-auto-connect-by-host-id",
         "thread-project-assignments",
         "thread-workspace-root-hints",
         "thread-projectless-output-directories",
         "thread-writable-roots",
+        "sidebar-project-thread-orders",
+        "queued-follow-ups",
     ]
     private static let orderedArrayKeys = [
         "electron-saved-workspace-roots",
@@ -41,6 +45,31 @@ enum CodexWorkspaceState {
         "remote-project-connection-backfill-completed",
         "selected-project",
         "selected-remote-host-id",
+    ]
+    private static let portableAtomKeys = Set([
+        "chatgpt-sidebar-state-v1",
+        "client-thread-bindings-v1",
+        "composer-auto-context-enabled",
+        "composer-prompt-drafts-v1",
+        "composer-prompt-drafts-v2",
+        "composer-retained-documents-v1",
+        "flat-project-sidebar-preferences-v1",
+        "home-composer-mode-v1",
+        "prompt-history",
+        "remote-hosted-pip-hidden-thread-ids",
+        "sidebar-custom-sections-v3",
+        "sidebar-project-list-expanded-v1",
+        "thread-descriptions-v1",
+        "unread-thread-ids-by-host-v1",
+    ])
+    private static let portableAtomPrefixes = [
+        "codex-writing-block-deleted-thread-v1:",
+        "sidebar-project-expanded-v1-codex:",
+        "thread-browser-tabs-v1:",
+        "thread-client-id-v1:",
+        "thread-reference-capability:",
+        "thread-summary-panel-section-expanded-environment-",
+        "thread-tab-routes-v1:",
     ]
 
     static func synchronize(
@@ -109,6 +138,17 @@ enum CodexWorkspaceState {
             if let value = states.compactMap({ meaningfulValue($0[key]) }).first {
                 targetState[key] = value
             }
+        }
+
+        var targetAtoms = targetState["electron-persisted-atom-state"] as? [String: Any] ?? [:]
+        for state in states.reversed() {
+            guard let atoms = state["electron-persisted-atom-state"] as? [String: Any] else { continue }
+            for (key, value) in atoms where isPortableAtomKey(key) {
+                targetAtoms[key] = mergePortableValue(current: targetAtoms[key], preferred: value)
+            }
+        }
+        if !targetAtoms.isEmpty || targetState["electron-persisted-atom-state"] != nil {
+            targetState["electron-persisted-atom-state"] = targetAtoms
         }
 
         guard JSONSerialization.isValidJSONObject(targetState) else {
@@ -183,6 +223,33 @@ enum CodexWorkspaceState {
         case let number as NSNumber: return number
         default: return nil
         }
+    }
+
+    private static func isPortableAtomKey(_ key: String) -> Bool {
+        portableAtomKeys.contains(key) || portableAtomPrefixes.contains { key.hasPrefix($0) }
+    }
+
+    private static func mergePortableValue(current: Any?, preferred: Any) -> Any {
+        guard let current else { return preferred }
+        if let currentObject = current as? [String: Any], let preferredObject = preferred as? [String: Any] {
+            var merged = currentObject
+            for (key, value) in preferredObject {
+                merged[key] = mergePortableValue(current: merged[key], preferred: value)
+            }
+            return merged
+        }
+        if let currentArray = current as? [Any], let preferredArray = preferred as? [Any] {
+            var merged: [Any] = []
+            var fingerprints = Set<Data>()
+            for value in preferredArray + currentArray {
+                guard let fingerprint = try? JSONSerialization.data(withJSONObject: [value], options: [.sortedKeys]) else {
+                    continue
+                }
+                if fingerprints.insert(fingerprint).inserted { merged.append(value) }
+            }
+            return merged
+        }
+        return preferred
     }
 
     private static func uniqueHomes(_ homes: [String]) -> [String] {

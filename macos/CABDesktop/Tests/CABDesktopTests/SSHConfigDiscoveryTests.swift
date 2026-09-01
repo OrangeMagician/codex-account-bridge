@@ -146,16 +146,16 @@ struct SSHConfigDiscoveryTests {
         }
     }
 
-    @Test func synchronizesOnlyAllowlistedWorkspaceCatalogFields() throws {
+    @Test func synchronizesPortableWorkspaceStateWithoutAccountOrSecurityState() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("source")
         let target = root.appendingPathComponent("target")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-        try #"{"local-projects":{"project-a":{"id":"project-a"}},"project-order":["project-a"],"thread-project-assignments":{"thread-a":{"projectId":"remote-a"}},"selected-project":{"projectId":"remote-a","type":"remote"},"codex-managed-remote-connections":[{"hostId":"host-a","alias":"oraclearm","identity":null}],"remote-projects":[{"id":"remote-a","hostId":"host-a","remotePath":"/srv/app","label":"app"}],"remote-connection-auto-connect-by-host-id":{"host-a":true},"remote-connection-analytics-id-by-host-id":{"host-a":"analytics-a"},"selected-remote-host-id":"host-a","remote-project-connection-backfill-completed":true,"account-token":"must-not-copy","electron-persisted-atom-state":{"prompt-history":["private"]}}"#.write(
+        try #"{"local-projects":{"project-a":{"id":"project-a"}},"project-order":["project-a"],"thread-project-assignments":{"thread-a":{"projectId":"remote-a"}},"selected-project":{"projectId":"remote-a","type":"remote"},"codex-managed-remote-connections":[{"hostId":"host-a","alias":"oraclearm","identity":null}],"remote-projects":[{"id":"remote-a","hostId":"host-a","remotePath":"/srv/app","label":"app"}],"remote-connection-auto-connect-by-host-id":{"host-a":true},"remote-connection-analytics-id-by-host-id":{"host-a":"analytics-a"},"selected-remote-host-id":"host-a","remote-project-connection-backfill-completed":true,"account-token":"must-not-copy","electron-persisted-atom-state":{"prompt-history":["source-prompt"],"composer-prompt-drafts-v2":{"thread-a":"source-draft"},"client-thread-bindings-v1":{"client-a":"thread-a"},"thread-descriptions-v1":{"thread-a":"Source title"},"thread-client-id-v1:thread-a":"client-a","permission-selection-by-host-id:host-a":"danger-full-access","plugin-oauth-state":{"secret":"must-not-copy"}}}"#.write(
             to: source.appendingPathComponent(".codex-global-state.json"), atomically: true, encoding: .utf8
         )
-        try #"{"local-projects":{"project-b":{"id":"project-b"}},"project-order":["project-b"],"account-token":"target-only","window-preference":42}"#.write(
+        try #"{"local-projects":{"project-b":{"id":"project-b"}},"project-order":["project-b"],"account-token":"target-only","window-preference":42,"electron-persisted-atom-state":{"prompt-history":["target-prompt"],"composer-prompt-drafts-v2":{"thread-b":"target-draft"},"permission-selection-by-host-id:host-b":"workspace-write","plugin-oauth-state":{"secret":"target-only"}}}"#.write(
             to: target.appendingPathComponent(".codex-global-state.json"), atomically: true, encoding: .utf8
         )
 
@@ -173,8 +173,15 @@ struct SSHConfigDiscoveryTests {
         #expect(Set(projects.keys) == ["project-a", "project-b"])
         #expect(state["project-order"] as? [String] == ["project-a", "project-b"])
         #expect(state["account-token"] as? String == "target-only")
-        #expect(state["electron-persisted-atom-state"] == nil)
         #expect(state["window-preference"] as? Int == 42)
+        let atoms = try #require(state["electron-persisted-atom-state"] as? [String: Any])
+        #expect(atoms["prompt-history"] as? [String] == ["source-prompt", "target-prompt"])
+        let drafts = try #require(atoms["composer-prompt-drafts-v2"] as? [String: String])
+        #expect(drafts == ["thread-a": "source-draft", "thread-b": "target-draft"])
+        #expect(atoms["thread-client-id-v1:thread-a"] as? String == "client-a")
+        #expect(atoms["permission-selection-by-host-id:host-a"] == nil)
+        #expect(atoms["permission-selection-by-host-id:host-b"] as? String == "workspace-write")
+        #expect((atoms["plugin-oauth-state"] as? [String: String])?["secret"] == "target-only")
         let connections = try #require(state["codex-managed-remote-connections"] as? [[String: Any]])
         let remoteProjects = try #require(state["remote-projects"] as? [[String: Any]])
         #expect(connections.count == 1)
@@ -184,6 +191,36 @@ struct SSHConfigDiscoveryTests {
         #expect(remoteProjects[0]["remotePath"] as? String == "/srv/app")
         #expect((state["remote-connection-auto-connect-by-host-id"] as? [String: Bool])?["host-a"] == true)
         #expect(state["selected-remote-host-id"] as? String == "host-a")
+    }
+
+    @Test func mergesAndRestoresDesktopThreadCatalogWithoutReplacingUnrelatedState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        let sourceSQLite = source.appendingPathComponent("sqlite")
+        let targetSQLite = target.appendingPathComponent("sqlite")
+        try FileManager.default.createDirectory(at: sourceSQLite, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: targetSQLite, withIntermediateDirectories: true)
+        let sourceDatabase = sourceSQLite.appendingPathComponent("codex-dev.db")
+        let targetDatabase = targetSQLite.appendingPathComponent("codex-dev.db")
+        try createThreadCatalogForTest(sourceDatabase)
+        try createThreadCatalogForTest(targetDatabase)
+        try runSQLiteForTest(sourceDatabase, sql: "INSERT INTO local_thread_catalog_hosts VALUES ('host-a','local'); INSERT INTO local_thread_catalog (host_id,thread_id,display_title) VALUES ('host-a','shared','Source title'),('host-a','source-only','Source only');")
+        try runSQLiteForTest(targetDatabase, sql: "INSERT INTO local_thread_catalog_hosts VALUES ('host-a','local'); INSERT INTO local_thread_catalog (host_id,thread_id,display_title) VALUES ('host-a','shared','Target title'),('host-a','target-only','Target only'); INSERT INTO unrelated_state VALUES (1,'keep-me');")
+
+        let synchronized = try CodexThreadCatalogState.synchronize(
+            sourceHome: source.path,
+            targetHome: target.path,
+            knownHomes: [source.path, target.path]
+        )
+        let result = try #require(synchronized)
+
+        #expect(result.rowCount == 3)
+        #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT display_title FROM local_thread_catalog WHERE thread_id='shared';") == "Source title")
+        #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT value FROM unrelated_state WHERE id=1;") == "keep-me")
+        try CodexThreadCatalogState.restore(result)
+        #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT count(*) FROM local_thread_catalog;") == "2")
+        #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT display_title FROM local_thread_catalog WHERE thread_id='shared';") == "Target title")
     }
 
     @Test func restoresWorkspaceCatalogAfterFailedDesktopSwitch() throws {
@@ -478,6 +515,23 @@ private func runSQLiteForTest(_ database: URL, sql: String) throws {
         let message = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "sqlite3 failed"
         throw NSError(domain: "CABDesktopTests", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
     }
+}
+
+private func createThreadCatalogForTest(_ database: URL) throws {
+    try runSQLiteForTest(database, sql: """
+    CREATE TABLE local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL);
+    CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL);
+    INSERT INTO local_thread_catalog_metadata VALUES (1, 1);
+    CREATE TABLE local_thread_catalog (
+      host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT,
+      source_created_at INTEGER, source_updated_at INTEGER, cwd TEXT,
+      source_kind TEXT, source_detail TEXT, model_provider TEXT, git_branch TEXT,
+      observation_sequence INTEGER, missing_candidate INTEGER, thread_source TEXT,
+      source_recency_at INTEGER, pending_observed_title TEXT, project_id TEXT,
+      conversation_origin TEXT, PRIMARY KEY (host_id, thread_id)
+    );
+    CREATE TABLE unrelated_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+    """)
 }
 
 private func sqliteScalarForTest(_ database: URL, sql: String) throws -> String {

@@ -495,6 +495,7 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
+            var threadCatalogSync: CodexThreadCatalogSyncResult?
             var threadIndexBackup: URL?
             var sessionModeChanged = false
             var originalSharedSessions = status.sharedSessions
@@ -527,7 +528,15 @@ final class CABStore: ObservableObject {
                     )
                     if let workspaceSync {
                         let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
-                        appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目及会话归属\(backupMessage)。\n")
+                        appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目、会话归属及未发送草稿\(backupMessage)。\n")
+                    }
+                    threadCatalogSync = try service.synchronizeCodexThreadCatalogState(
+                        sourceHome: fallbackHome,
+                        targetHome: account.home,
+                        knownHomes: status.accounts.map(\.home)
+                    )
+                    if let threadCatalogSync {
+                        appendOutput("已合并 \(threadCatalogSync.rowCount) 条桌面会话目录记录，原目录已备份为 \(threadCatalogSync.backupURL.lastPathComponent)。\n")
                     }
                 }
                 if preserveSessionsOnDesktopSwitch || sessionModeChanged,
@@ -543,6 +552,14 @@ final class CABStore: ObservableObject {
             } catch {
                 var message = error.localizedDescription
                 if desktopWasStopped {
+                    if let threadCatalogSync {
+                        do {
+                            try service.restoreCodexThreadCatalogState(threadCatalogSync)
+                            appendOutput("切换未完成，已恢复目标账号原有的桌面会话目录。\n")
+                        } catch {
+                            message += "\n同时无法自动恢复目标账号的桌面会话目录：\(error.localizedDescription)"
+                        }
+                    }
                     if let workspaceSync {
                         do {
                             try service.restoreCodexWorkspaceState(workspaceSync)
