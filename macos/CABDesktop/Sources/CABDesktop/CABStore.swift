@@ -59,6 +59,7 @@ final class CABStore: ObservableObject {
     @Published var legacySessions: LegacySessionReport?
     @Published var pendingLegacyProcesses: [CodexProcessStatus]?
     @Published var pendingDesktopSwitch: DesktopSwitchProcessRequest?
+    @Published var pendingDesktopSwitchError: String?
 
     private let service = CABService()
     private lazy var usageResetNotificationService = UsageResetNotificationService()
@@ -406,7 +407,8 @@ final class CABStore: ObservableObject {
             try await service.stopCodexProcesses(
                 processes.map(\.pid),
                 target: .remote,
-                remoteHost: remoteHost
+                remoteHost: remoteHost,
+                forceAfterTimeout: true
             )
         } catch {
             stopError = error
@@ -458,19 +460,30 @@ final class CABStore: ObservableObject {
         Task {
             isBusy = true
             errorMessage = nil
+            pendingDesktopSwitchError = nil
+            var stopError: Error?
             do {
                 try await service.stopLocalCodexProcesses(request.processes.map(\.pid))
+            } catch {
+                stopError = error
+            }
+            do {
                 let remaining = try await service.runningNonDesktopCodexProcesses(knownHomes: status.accounts.map(\.home))
                 isBusy = false
                 if remaining.isEmpty {
                     pendingDesktopSwitch = nil
+                    pendingDesktopSwitchError = nil
                     performDesktopSwitch(to: request.account, checkProcesses: true)
                 } else {
                     pendingDesktopSwitch = DesktopSwitchProcessRequest(account: request.account, processes: remaining)
+                    pendingDesktopSwitchError = desktopSwitchStopFailureMessage(
+                        stopError: stopError,
+                        remaining: remaining
+                    )
                 }
             } catch {
                 isBusy = false
-                errorMessage = error.localizedDescription
+                pendingDesktopSwitchError = "无法重新检查 Codex 进程：\(error.localizedDescription)"
             }
         }
     }
@@ -496,6 +509,7 @@ final class CABStore: ObservableObject {
                 if checkProcesses && (preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != liveStatus.sharedSessions) {
                     let conflicts = try await service.runningNonDesktopCodexProcesses(knownHomes: liveStatus.accounts.map(\.home))
                     if !conflicts.isEmpty {
+                        pendingDesktopSwitchError = nil
                         pendingDesktopSwitch = DesktopSwitchProcessRequest(account: account, processes: conflicts)
                         isBusy = false
                         return
@@ -596,7 +610,12 @@ final class CABStore: ObservableObject {
         Task {
             isBusy = true; defer { isBusy = false }
             do {
-                try await service.stopCodexProcesses(request.processes.map(\.pid), target: target, remoteHost: remoteHost)
+                try await service.stopCodexProcesses(
+                    request.processes.map(\.pid),
+                    target: target,
+                    remoteHost: remoteHost,
+                    forceAfterTimeout: true
+                )
                 try await applySessionSharingChange(request.enabled)
             } catch { errorMessage = error.localizedDescription }
         }
@@ -621,7 +640,12 @@ final class CABStore: ObservableObject {
     func stopProcessesAndImportLegacy(_ processes: [CodexProcessStatus]) {
         guard !isBusy else { return }
         Task { isBusy = true; defer { isBusy = false }; do {
-            try await service.stopCodexProcesses(processes.map(\.pid), target: target, remoteHost: remoteHost)
+            try await service.stopCodexProcesses(
+                processes.map(\.pid),
+                target: target,
+                remoteHost: remoteHost,
+                forceAfterTimeout: true
+            )
             try await applyLegacyImport()
         } catch { errorMessage = error.localizedDescription } }
     }
@@ -1103,6 +1127,22 @@ final class CABStore: ObservableObject {
             isBusy = false
         }
     }
+}
+
+func desktopSwitchStopFailureMessage(
+    stopError: Error?,
+    remaining: [CodexProcessConflict]
+) -> String {
+    let pids = remaining.map { String($0.pid) }.joined(separator: ", ")
+    if remaining.contains(where: { $0.label == "VS Code 的 Codex 扩展" }) {
+        return String(
+            format: cabLocalized("VS Code 的 Codex 扩展仍在运行（PID %@）。它可能拒绝退出或被 VS Code 自动重新启动；请先在 VS Code 中停止该扩展或退出 VS Code，然后重试。"),
+            pids
+        )
+    }
+    let detail = stopError.map { " \($0.localizedDescription)" } ?? ""
+    return (String(format: cabLocalized("仍有 Codex 进程未退出（PID %@）。"), pids) + detail)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 private extension String {

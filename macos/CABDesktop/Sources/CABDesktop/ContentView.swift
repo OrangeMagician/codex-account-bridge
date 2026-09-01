@@ -75,7 +75,11 @@ struct ContentView: View {
             DesktopSwitchProcessSheet(
                 request: request,
                 isBusy: store.isBusy,
-                onCancel: { store.pendingDesktopSwitch = nil },
+                errorMessage: store.pendingDesktopSwitchError,
+                onCancel: {
+                    store.pendingDesktopSwitch = nil
+                    store.pendingDesktopSwitchError = nil
+                },
                 onContinue: { store.closeProcessesAndContinueDesktopSwitch(request) }
             )
         }
@@ -1151,6 +1155,7 @@ struct ContentView: View {
 private struct DesktopSwitchProcessSheet: View {
     let request: DesktopSwitchProcessRequest
     let isBusy: Bool
+    let errorMessage: String?
     let onCancel: () -> Void
     let onContinue: () -> Void
 
@@ -1192,9 +1197,17 @@ private struct DesktopSwitchProcessSheet: View {
             }
             .frame(maxHeight: 260)
 
-            Text("“关闭这些会话并切换”只会向上面列出的进程发送正常退出请求。请先确认任务内容已经保存。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("CAB 会先请求正常退出；超时后只会强制结束身份未变化的上述 Codex 进程。请先保存任务内容。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             HStack {
                 Spacer()

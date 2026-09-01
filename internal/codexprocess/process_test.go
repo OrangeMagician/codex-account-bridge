@@ -2,6 +2,8 @@ package codexprocess
 
 import "testing"
 
+import "time"
+
 func TestParsePSAcceptsOnlyLiveExactCodex(t *testing.T) {
 	process, ok := parsePS(42, "7 05:12 pts/3 Sl+ /opt/codex\n")
 	if !ok || process.PID != 42 || process.ParentPID != 7 || process.Elapsed != "05:12" || process.TTY != "pts/3" {
@@ -33,5 +35,12 @@ func TestSameIdentityIncludesProcessFingerprint(t *testing.T) {
 	changed.StartedAt = "Sat Aug 29 12:00:01 2026"
 	if sameIdentity(base, changed) {
 		t.Fatal("reused PID should not match the original process identity")
+	}
+}
+
+func TestWaitForExitReturnsImmediatelyWithoutTargets(t *testing.T) {
+	exited, err := waitForExit(map[int]Process{}, time.Second)
+	if err != nil || !exited {
+		t.Fatalf("waitForExit() = %t, %v; want true, nil", exited, err)
 	}
 }

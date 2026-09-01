@@ -37,6 +37,18 @@ struct SSHConfigDiscoveryTests {
         #expect(codexProcessLabel(executablePath: "/opt/homebrew/bin/codex") == "Codex CLI 或 app-server")
     }
 
+    @Test func explainsWhenVSCodeKeepsItsCodexExtensionAlive() {
+        let remaining = [
+            CodexProcessConflict(pid: 42, label: "VS Code 的 Codex 扩展", title: nil),
+        ]
+
+        let message = desktopSwitchStopFailureMessage(stopError: nil, remaining: remaining)
+
+        #expect(message.contains("PID 42"))
+        #expect(message.contains("VS Code"))
+        #expect(message.contains("自动重新启动"))
+    }
+
     @Test func remoteSwitchExcludesCodexOwnedByAgentServices() {
         let processes = [
             CodexProcessStatus(pid: 101, parentPID: 11, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),

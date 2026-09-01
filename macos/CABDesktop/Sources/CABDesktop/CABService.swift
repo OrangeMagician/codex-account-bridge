@@ -154,9 +154,11 @@ final class CABService {
         return remoteUserCodexProcesses(report.processes, excludingParentPIDs: agentMainPIDs)
     }
 
-    func stopCodexProcesses(_ pids: [Int], target: BridgeTarget, remoteHost: String) async throws {
+    func stopCodexProcesses(_ pids: [Int], target: BridgeTarget, remoteHost: String, forceAfterTimeout: Bool = false) async throws {
         guard !pids.isEmpty else { return }
-        let result = try await execute(["processes", "stop", "--pids", pids.map(String.init).joined(separator: ","), "--confirm-stop-codex"], target: target, remoteHost: remoteHost)
+        var arguments = ["processes", "stop", "--pids", pids.map(String.init).joined(separator: ","), "--confirm-stop-codex"]
+        if forceAfterTimeout { arguments.append("--force-after-timeout") }
+        let result = try await execute(arguments, target: target, remoteHost: remoteHost)
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
     }
 
@@ -475,8 +477,14 @@ final class CABService {
 
     func stopLocalCodexProcesses(_ pids: [Int32]) async throws {
         guard !pids.isEmpty else { return }
+        let arguments = [
+            "processes", "stop",
+            "--pids", pids.map(String.init).joined(separator: ","),
+            "--confirm-stop-codex",
+            "--force-after-timeout",
+        ]
         let result = try await execute(
-            ["processes", "stop", "--pids", pids.map(String.init).joined(separator: ","), "--confirm-stop-codex"],
+            arguments,
             target: .local,
             remoteHost: ""
         )

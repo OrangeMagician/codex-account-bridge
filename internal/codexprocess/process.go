@@ -52,6 +52,14 @@ func List() ([]Process, error) {
 }
 
 func Stop(pids []int) error {
+	return StopWithOptions(pids, StopOptions{})
+}
+
+type StopOptions struct {
+	ForceAfterTimeout bool
+}
+
+func StopWithOptions(pids []int, options StopOptions) error {
 	current, err := List()
 	if err != nil {
 		return err
@@ -82,11 +90,56 @@ func Stop(pids []int) error {
 			return fmt.Errorf("stop Codex PID %d: %w", pid, err)
 		}
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	exited, err := waitForExit(targets, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	if exited {
+		return nil
+	}
+	if !options.ForceAfterTimeout {
+		return errors.New("one or more Codex processes did not exit after a normal stop request")
+	}
+	remaining, err := List()
+	if err != nil {
+		return err
+	}
+	for _, process := range remaining {
+		original, ok := targets[process.PID]
+		if !ok || !sameIdentity(original, process) {
+			continue
+		}
+		latest, ok := inspect(process.PID)
+		if !ok {
+			continue
+		}
+		if !sameSignalTarget(original, latest) {
+			return fmt.Errorf("PID %d changed identity before it could be force stopped", process.PID)
+		}
+		target, err := os.FindProcess(process.PID)
+		if err != nil {
+			return err
+		}
+		if err := target.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("force stop Codex PID %d: %w", process.PID, err)
+		}
+	}
+	exited, err = waitForExit(targets, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	if exited {
+		return nil
+	}
+	return errors.New("one or more Codex processes did not exit after normal and forced stop requests")
+}
+
+func waitForExit(targets map[int]Process, timeout time.Duration) (bool, error) {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		remaining, err := List()
 		if err != nil {
-			return err
+			return false, err
 		}
 		alive := false
 		for _, process := range remaining {
@@ -96,11 +149,11 @@ func Stop(pids []int) error {
 			}
 		}
 		if !alive {
-			return nil
+			return true, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return errors.New("one or more Codex processes did not exit after a normal stop request")
+	return false, nil
 }
 
 func sameIdentity(left, right Process) bool {

@@ -102,3 +102,8 @@
 "从 SSH 配置导入" = "Import from SSH config";
 "取消" = "Cancel";
 "保存" = "Save";
+"还有 Codex 会话正在运行" = "Codex sessions are still running";
+"关闭这些会话并切换" = "Close sessions and switch";
+"CAB 会先请求正常退出；超时后只会强制结束身份未变化的上述 Codex 进程。请先保存任务内容。" = "CAB first requests a normal exit. After the timeout, it force stops only the unchanged Codex processes listed above. Save your work first.";
+"VS Code 的 Codex 扩展仍在运行（PID %@）。它可能拒绝退出或被 VS Code 自动重新启动；请先在 VS Code 中停止该扩展或退出 VS Code，然后重试。" = "The Codex extension in VS Code is still running (PID %@). It may have refused to exit or been restarted by VS Code. Stop the extension or quit VS Code, then try again.";
+"仍有 Codex 进程未退出（PID %@）。" = "Codex processes are still running (PID %@).";

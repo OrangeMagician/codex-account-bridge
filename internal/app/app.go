@@ -148,7 +148,7 @@ Commands:
   cab agent bind-all --account NAME --confirm-restart-agent
   cab agent unbind --service UNIT --confirm-restart-agent
   cab processes list [--json]
-  cab processes stop --pids PID,PID --confirm-stop-codex
+  cab processes stop --pids PID,PID --confirm-stop-codex [--force-after-timeout]
   cab rotation status [--json]
   cab rotation configure --accounts NAME,NAME
   cab rotation enable|disable|reset
@@ -203,6 +203,7 @@ func processesCommand(args []string) (int, error) {
 		flags := newFlags("processes stop")
 		values := flags.String("pids", "", "comma-separated PIDs from processes list")
 		confirm := flags.Bool("confirm-stop-codex", false, "confirm normal termination of listed Codex processes")
+		forceAfterTimeout := flags.Bool("force-after-timeout", false, "force stop unchanged Codex processes after the normal stop timeout")
 		if err := flags.Parse(args[1:]); err != nil {
 			return 2, err
 		}
@@ -217,7 +218,7 @@ func processesCommand(args []string) (int, error) {
 			}
 			pids = append(pids, pid)
 		}
-		if err := codexprocess.Stop(pids); err != nil {
+		if err := codexprocess.StopWithOptions(pids, codexprocess.StopOptions{ForceAfterTimeout: *forceAfterTimeout}); err != nil {
 			return 1, err
 		}
 		fmt.Printf("stopped %d requested Codex process(es)\n", len(pids))
