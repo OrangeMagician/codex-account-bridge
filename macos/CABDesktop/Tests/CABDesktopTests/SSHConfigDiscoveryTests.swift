@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CABContinuity
 import Testing
 @testable import CABDesktop
@@ -262,6 +263,58 @@ struct SSHConfigDiscoveryTests {
         #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("skills/target-skill/SKILL.md").path))
         #expect(try sqliteScalarForTest(targetGoals, sql: "SELECT count(*) FROM thread_goals;") == "1")
         #expect(try String(contentsOf: target.appendingPathComponent("history.jsonl"), encoding: .utf8) == #"{"display":"target"}"#)
+    }
+
+    @Test func ignoresGitFsmonitorSocketDuringContinuitySync() throws {
+        let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("cab-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        let sourceSkills = source.appendingPathComponent("vendor_imports/skills")
+        try FileManager.default.createDirectory(at: sourceSkills.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try "portable skill".write(to: sourceSkills.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let socketURL = sourceSkills.appendingPathComponent(".git/fsmonitor--daemon.ipc")
+        let socketDescriptor = try createUnixDomainSocketForTest(at: socketURL)
+        defer {
+            close(socketDescriptor)
+            unlink(socketURL.path)
+        }
+
+        let result = try CodexContinuityState.synchronize(
+            sourceHome: source.path,
+            targetHome: target.path,
+            knownHomes: [source.path, target.path]
+        )
+
+        #expect(result.fileCount == 1)
+        #expect(try String(contentsOf: target.appendingPathComponent("vendor_imports/skills/SKILL.md"), encoding: .utf8) == "portable skill")
+        #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent("vendor_imports/skills/.git/fsmonitor--daemon.ipc").path))
+    }
+
+    @Test func stillRejectsUnknownSpecialFilesDuringContinuitySync() throws {
+        let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("cab-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let sourceSkills = source.appendingPathComponent("vendor_imports/skills")
+        try FileManager.default.createDirectory(at: sourceSkills, withIntermediateDirectories: true)
+
+        let fifoURL = sourceSkills.appendingPathComponent("unsupported.fifo")
+        guard mkfifo(fifoURL.path, mode_t(0o600)) == 0 else { throw testPOSIXError("mkfifo") }
+        defer { unlink(fifoURL.path) }
+
+        do {
+            _ = try CodexContinuityState.synchronize(
+                sourceHome: source.path,
+                targetHome: root.appendingPathComponent("target").path,
+                knownHomes: [source.path]
+            )
+            Issue.record("Unknown special files must still stop continuity synchronization")
+        } catch {
+            #expect(error.localizedDescription.contains("unsupported.fifo"))
+        }
     }
 
     @Test func restoresWorkspaceCatalogAfterFailedDesktopSwitch() throws {
@@ -748,4 +801,44 @@ private func sqliteScalarForTest(_ database: URL, sql: String) throws -> String 
     }
     return (String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func createUnixDomainSocketForTest(at url: URL) throws -> Int32 {
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { throw testPOSIXError("socket") }
+
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(url.path.utf8) + [0]
+    let pathCapacity = MemoryLayout.size(ofValue: address.sun_path)
+    guard pathBytes.count <= pathCapacity else {
+        close(descriptor)
+        throw NSError(domain: "CABDesktopTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unix socket path is too long"])
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { destination in
+        for (index, byte) in pathBytes.enumerated() {
+            destination[index] = byte
+        }
+    }
+
+    let result = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard result == 0 else {
+        let error = testPOSIXError("bind")
+        close(descriptor)
+        throw error
+    }
+    return descriptor
+}
+
+private func testPOSIXError(_ operation: String) -> NSError {
+    let code = errno
+    return NSError(
+        domain: "CABDesktopTests",
+        code: Int(code),
+        userInfo: [NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(code)))"]
+    )
 }

@@ -34,6 +34,11 @@ public enum CodexContinuityState {
     ]
     private static let portableFiles = ["AGENTS.md"]
     private static let mergedLineFiles = ["history.jsonl", "session_index.jsonl", "transcription-history.jsonl"]
+    // Git's fsmonitor daemon creates this Unix-domain socket inside a
+    // repository. It is a process-local endpoint, not portable workspace
+    // state, and attempting to copy it would make an otherwise valid switch
+    // fail (or revive a stale socket for another process).
+    private static let transientSocketNames = Set(["fsmonitor--daemon.ipc"])
     private static let maximumFileCount = 100_000
     private static let maximumTotalBytes: Int64 = 1_024 * 1_024 * 1_024
     private static let maximumDatabaseSize = 1_024 * 1_024 * 1_024
@@ -364,6 +369,9 @@ public enum CodexContinuityState {
             options: []
         ) else { return }
         while let item = enumerator.nextObject() as? URL {
+            if shouldSkipTransientSocket(item, fileManager: fileManager) {
+                continue
+            }
             let itemValues = try item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             guard itemValues.isSymbolicLink != true else {
                 throw CodexContinuityError.failure("工作区内容包含符号链接，已停止切换：\(item.lastPathComponent)")
@@ -390,6 +398,15 @@ public enum CodexContinuityState {
                 throw CodexContinuityError.failure("工作区内容包含不支持的特殊文件，已停止切换：\(item.lastPathComponent)")
             }
         }
+    }
+
+    private static func shouldSkipTransientSocket(_ url: URL, fileManager: FileManager) -> Bool {
+        guard transientSocketNames.contains(url.lastPathComponent) else { return false }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let type = attributes[.type] as? FileAttributeType else {
+            return false
+        }
+        return type == .typeSocket
     }
 
     private static func mergeLineFiles(_ sources: [URL], into targetURL: URL, fileManager: FileManager) throws {
