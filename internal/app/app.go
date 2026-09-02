@@ -143,6 +143,7 @@ Commands:
   cab app-server [--account NAME] -- [app-server arguments]
   cab status [--json]
   cab usage [--account NAME] [--json]
+  cab usage probe --account NAME [--model MODEL] [--json]
   cab agent list [--json]
   cab agent bind --service UNIT --account NAME --confirm-restart-agent
   cab agent bind-all --account NAME --confirm-restart-agent
@@ -391,6 +392,9 @@ type usageOutput struct {
 }
 
 func usageCommand(cfg config.Config, args []string) (int, error) {
+	if len(args) > 0 && args[0] == "probe" {
+		return usageProbeCommand(cfg, args[1:])
+	}
 	flags := newFlags("usage")
 	accountName := flags.String("account", "", "configured account name")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
@@ -457,6 +461,32 @@ func usageCommand(cfg config.Config, args []string) (int, error) {
 		}
 		fmt.Printf("%s\t%s\t%.1f%% remaining\tresets %s\n", item.Name, item.Usage.PlanType, remaining, reset)
 	}
+	return 0, nil
+}
+
+func usageProbeCommand(cfg config.Config, args []string) (int, error) {
+	flags := newFlags("usage probe")
+	accountName := flags.String("account", "", "configured account name")
+	model := flags.String("model", codex.DefaultUsageProbeModel, "lowest-consumption Codex model to use")
+	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *accountName == "" {
+		return 2, errors.New("usage: cab usage probe --account NAME [--model MODEL] [--json]")
+	}
+	account, ok := cfg.Find(*accountName)
+	if !ok {
+		return 2, fmt.Errorf("unknown account %q", *accountName)
+	}
+	if err := codex.ProbeUsage(account.Home, *model); err != nil {
+		return 1, err
+	}
+	if *jsonOutput {
+		return printJSON(map[string]any{
+			"account": account.Name,
+			"model":   *model,
+			"probed":  true,
+		})
+	}
+	fmt.Printf("usage probe completed for %s\n", account.Name)
 	return 0, nil
 }
 

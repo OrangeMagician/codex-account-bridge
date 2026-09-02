@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,6 +16,9 @@ import (
 )
 
 const usageReadTimeout = 20 * time.Second
+const usageProbeTimeout = 45 * time.Second
+
+const DefaultUsageProbeModel = "gpt-5.6-luna"
 
 type synchronizedBuffer struct {
 	mu      sync.Mutex
@@ -229,6 +234,64 @@ func ReadUsage(home string) (UsageSnapshot, error) {
 		result.RateLimits.PlanType = result.PlanType
 	}
 	return result, nil
+}
+
+// ProbeUsage sends one deliberately tiny, ephemeral request through the
+// official Codex executable. It is opt-in at the caller and never persists a
+// session or returns the model response. The account's auth state is selected
+// only through CODEX_HOME; CAB never reads auth storage itself.
+func ProbeUsage(home, model string) error {
+	binary, err := FindReal("codex")
+	if err != nil {
+		return err
+	}
+	if model == "" {
+		model = DefaultUsageProbeModel
+	}
+	tmp, err := os.MkdirTemp("", "cab-usage-probe-")
+	if err != nil {
+		return fmt.Errorf("create temporary usage probe workspace: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	if err := initProbeRepository(tmp); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), usageProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary,
+		"exec",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--sandbox", "read-only",
+		"--model", model,
+		"--cd", tmp,
+		"Reply exactly OK.",
+	)
+	cmd.Dir = tmp
+	cmd.Env = environment(home)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("codex usage probe timed out")
+		}
+		return fmt.Errorf("codex usage probe failed")
+	}
+	return nil
+}
+
+func initProbeRepository(path string) error {
+	cmd := exec.Command("/usr/bin/git", "init", "--quiet", path)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("create temporary usage probe repository: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+		return fmt.Errorf("temporary usage probe repository is unavailable: %w", err)
+	}
+	return nil
 }
 
 func stopUsageAppServer(cmd *exec.Cmd, stdin io.Closer) {

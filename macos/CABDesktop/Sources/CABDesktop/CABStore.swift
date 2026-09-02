@@ -14,12 +14,6 @@ private struct UsageCacheEntry {
     let error: String?
 }
 
-struct UsageRefreshPause: Identifiable, Equatable {
-    var id: String { accountName }
-    let accountName: String
-    let until: Date
-}
-
 @MainActor
 final class CABStore: ObservableObject {
     private static let maximumOutputCharacters = 500_000
@@ -40,6 +34,7 @@ final class CABStore: ObservableObject {
     @Published var preserveSessionsOnDesktopSwitch = false
     @Published var interfaceLanguage: InterfaceLanguage = .system
     @Published var usageRefreshInterval: UsageRefreshInterval = .fifteenMinutes
+    @Published var usageWakeSettings = UsageWakeSettings()
     @Published var usageResetNotificationsEnabled = false
     @Published var isUsageResetNotificationUpdating = false
     @Published var scheduledUsageResetNotificationCount = 0
@@ -71,6 +66,8 @@ final class CABStore: ObservableObject {
     private let preserveSessionsKey = "preserveSessionsOnDesktopSwitch.v1"
     private let interfaceLanguageKey = "interfaceLanguage.v1"
     private let usageRefreshIntervalKey = "usageRefreshInterval.v1"
+    private let usageWakeSettingsKey = "usageWakeSettings.v1"
+    private let usageWakeStateKey = "usageWakeState.v1"
     private let usageResetNotificationsKey = "usageResetNotifications.v1"
     private var hasSavedDesktopSessionPreference = false
     private var loginOutputBuffer = ""
@@ -78,6 +75,9 @@ final class CABStore: ObservableObject {
     private var loginStatusMonitor: Task<Void, Never>?
     private var usageCacheByKey: [String: UsageCacheEntry] = [:]
     private var usageRefreshingKeys: Set<String> = []
+    private var usageWakeState = UsageWakeState()
+    private var usageWakeInFlightKeys: Set<String> = []
+    private var usageSchedulerTask: Task<Void, Never>?
 
     init() {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
@@ -91,6 +91,15 @@ final class CABStore: ObservableObject {
         if let savedInterval = UsageRefreshInterval(rawValue: defaults.integer(forKey: usageRefreshIntervalKey)),
            defaults.object(forKey: usageRefreshIntervalKey) != nil {
             usageRefreshInterval = savedInterval
+        }
+        if let data = defaults.data(forKey: usageWakeSettingsKey),
+           var decoded = try? JSONDecoder().decode(UsageWakeSettings.self, from: data) {
+            decoded.normalize()
+            usageWakeSettings = decoded
+        }
+        if let data = defaults.data(forKey: usageWakeStateKey),
+           let decoded = try? JSONDecoder().decode(UsageWakeState.self, from: data) {
+            usageWakeState = decoded
         }
         if let data = defaults.data(forKey: remoteServersKey),
            let decoded = try? JSONDecoder().decode([RemoteServer].self, from: data) {
@@ -111,19 +120,6 @@ final class CABStore: ObservableObject {
     var targetTitle: String {
         if target == .local { return target.title }
         return selectedRemoteServer?.name.nonEmpty ?? "远程服务器"
-    }
-
-    var usageAutomaticRefreshPauses: [UsageRefreshPause] {
-        guard let cached = usageCacheByKey[currentUsageCacheKey] else { return [] }
-        let now = Date()
-        return status.accounts.filter(\.isLoggedIn).compactMap { account in
-            guard let report = cached.reports[account.name],
-                  let until = exhaustedUsageResumeDate(report: report),
-                  until > now else {
-                return nil
-            }
-            return UsageRefreshPause(accountName: account.name, until: until)
-        }.sorted { $0.until < $1.until }
     }
 
     var selectedAccountStatus: AccountStatus? {
@@ -177,10 +173,94 @@ final class CABStore: ObservableObject {
         Task { await reloadUsage(force: true) }
     }
 
+    func startUsageRefreshScheduler() {
+        guard usageSchedulerTask == nil else { return }
+        usageSchedulerTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                await self.runUsageRefreshSchedulerTick()
+            }
+        }
+    }
+
+    func stopUsageRefreshScheduler() {
+        usageSchedulerTask?.cancel()
+        usageSchedulerTask = nil
+    }
+
     func setUsageRefreshInterval(_ interval: UsageRefreshInterval) {
         usageRefreshInterval = interval
         defaults.set(interval.rawValue, forKey: usageRefreshIntervalKey)
         Task { await reloadUsage(force: false) }
+    }
+
+    func setUsageWakeEnabled(_ enabled: Bool) {
+        usageWakeSettings.enabled = enabled
+        persistUsageWakeSettings()
+    }
+
+    func setUsageWakeRecoveryEnabled(_ enabled: Bool) {
+        usageWakeSettings.wakeOnRecovery = enabled
+        persistUsageWakeSettings()
+    }
+
+    func updateUsageWakeSettings(_ update: (inout UsageWakeSettings) -> Void) {
+        update(&usageWakeSettings)
+        usageWakeSettings.normalize()
+        persistUsageWakeSettings()
+    }
+
+    func usageWakeDate(for time: UsageTimeOfDay) -> Date {
+        time.date(on: Date()) ?? Date()
+    }
+
+    func addUsageWakeProbeTime() {
+        guard usageWakeSettings.weeklyProbeTimes.count < usageWakeMaximumEntries else { return }
+        let now = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
+        updateUsageWakeSettings { settings in
+            guard let time = UsageTimeOfDay(hour: Calendar.current.component(.hour, from: now), minute: Calendar.current.component(.minute, from: now)) else { return }
+            settings.weeklyProbeTimes.append(time)
+        }
+    }
+
+    func removeUsageWakeProbeTime(at index: Int) {
+        guard usageWakeSettings.weeklyProbeTimes.indices.contains(index) else { return }
+        updateUsageWakeSettings { $0.weeklyProbeTimes.remove(at: index) }
+    }
+
+    func setUsageWakeProbeTime(at index: Int, date: Date) {
+        guard usageWakeSettings.weeklyProbeTimes.indices.contains(index) else { return }
+        let time = UsageTimeOfDay(date: date)
+        updateUsageWakeSettings { $0.weeklyProbeTimes[index] = time }
+    }
+
+    func addUsageWakeQuietPeriod() {
+        guard usageWakeSettings.quietPeriods.count < usageWakeMaximumEntries else { return }
+        let start = UsageTimeOfDay(hour: 23, minute: 0)!
+        let end = UsageTimeOfDay(hour: 7, minute: 0)!
+        updateUsageWakeSettings { $0.quietPeriods.append(UsageQuietPeriod(start: start, end: end)) }
+    }
+
+    func removeUsageWakeQuietPeriod(at index: Int) {
+        guard usageWakeSettings.quietPeriods.indices.contains(index) else { return }
+        updateUsageWakeSettings { $0.quietPeriods.remove(at: index) }
+    }
+
+    func setUsageWakeQuietStart(at index: Int, date: Date) {
+        guard usageWakeSettings.quietPeriods.indices.contains(index) else { return }
+        let time = UsageTimeOfDay(date: date)
+        updateUsageWakeSettings { $0.quietPeriods[index].start = time }
+    }
+
+    func setUsageWakeQuietEnd(at index: Int, date: Date) {
+        guard usageWakeSettings.quietPeriods.indices.contains(index) else { return }
+        let time = UsageTimeOfDay(date: date)
+        updateUsageWakeSettings { $0.quietPeriods[index].end = time }
     }
 
     func setUsageResetNotificationsEnabled(_ enabled: Bool) {
@@ -869,6 +949,7 @@ final class CABStore: ObservableObject {
         let capturedHost = remoteHost
         let capturedAccountNames = Set(status.accounts.map(\.name))
         let attemptedAccountNames = requestedAccountNames ?? Array(capturedAccountNames)
+        let previousReports = usageCacheByKey[key]?.reports ?? [:]
         do {
             let report = try await service.loadUsage(
                 target: capturedTarget,
@@ -892,6 +973,13 @@ final class CABStore: ObservableObject {
             )
             usageCacheByKey[key] = entry
             if key == currentUsageCacheKey { applyUsageCache(entry) }
+            await evaluateUsageWakeRecovery(
+                previousReports: previousReports,
+                currentReports: reports,
+                cacheKey: key,
+                target: capturedTarget,
+                remoteHost: capturedHost
+            )
             await refreshUsageResetNotificationsIfNeeded(replacingCacheKeys: [key])
         } catch {
             let previous = usageCacheByKey[key]
@@ -909,6 +997,185 @@ final class CABStore: ObservableObject {
             usageCacheByKey[key] = entry
             if key == currentUsageCacheKey { applyUsageCache(entry) }
         }
+    }
+
+    private func runUsageRefreshSchedulerTick() async {
+        let cacheKey = currentUsageCacheKey
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        guard !isBusy, !usageRefreshingKeys.contains(cacheKey) else { return }
+        let now = Date()
+        if usageWakeSettings.enabled,
+           usageIsWithinQuietPeriod(now, periods: usageWakeSettings.quietPeriods) {
+            return
+        }
+        let slot = usageScheduledProbeSlot(
+            at: now,
+            times: usageWakeSettings.weeklyProbeTimes
+        )
+        if usageWakeSettings.enabled, slot != nil {
+            await reloadUsage(force: true)
+            guard cacheKey == currentUsageCacheKey else { return }
+            await evaluateScheduledUsageWake(
+                slot: slot,
+                cacheKey: cacheKey,
+                target: capturedTarget,
+                remoteHost: capturedHost
+            )
+        } else {
+            await reloadUsage(force: false)
+        }
+    }
+
+    private func evaluateUsageWakeRecovery(
+        previousReports: [String: AccountUsageReport],
+        currentReports: [String: AccountUsageReport],
+        cacheKey: String,
+        target: BridgeTarget,
+        remoteHost: String
+    ) async {
+        guard usageWakeSettings.enabled, usageWakeSettings.wakeOnRecovery else { return }
+        for accountName in currentReports.keys.sorted() {
+            let current = currentReports[accountName]
+            let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: accountName)
+            let fingerprint = usageWakeRecoveryFingerprint(previousReports[accountName])
+            let isPendingRecovery = usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] == fingerprint
+            let needsProbe = UsagePeriodKind.allCases.contains {
+                usageWakeNeedsProbe(report: current, period: $0)
+            }
+            guard usageWakeNeedsProbeAfterRecovery(
+                previous: previousReports[accountName],
+                current: current
+            ) || (isPendingRecovery && needsProbe) else { continue }
+            if usageWakeState.lastRecoveryFingerprintByAccount[stateKey] == fingerprint && !isPendingRecovery { continue }
+            if usageIsWithinQuietPeriod(Date(), periods: usageWakeSettings.quietPeriods) {
+                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = fingerprint
+                persistUsageWakeState()
+                continue
+            }
+            guard canAttemptUsageWake(stateKey: stateKey) else { continue }
+            usageWakeState.lastRecoveryFingerprintByAccount[stateKey] = fingerprint
+            usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
+            persistUsageWakeState()
+            await performUsageWake(
+                accountName: accountName,
+                stateKey: stateKey,
+                cacheKey: cacheKey,
+                target: target,
+                remoteHost: remoteHost,
+                reason: "recovery"
+            )
+        }
+    }
+
+    private func evaluateScheduledUsageWake(
+        slot: UsageTimeOfDay?,
+        cacheKey: String,
+        target: BridgeTarget,
+        remoteHost: String
+    ) async {
+        guard usageWakeSettings.enabled, let slot else { return }
+        let now = Date()
+        guard !usageIsWithinQuietPeriod(now, periods: usageWakeSettings.quietPeriods) else { return }
+        let slotID = usageScheduledProbeSlotIdentifier(at: now, time: slot)
+        for account in status.accounts where account.isLoggedIn {
+            let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: account.name)
+            guard usageWakeState.lastScheduledSlotByAccount[stateKey] != slotID else { continue }
+            guard let report = usageByAccount[account.name], report.error == nil, report.usage != nil else { continue }
+            usageWakeState.lastScheduledSlotByAccount[stateKey] = slotID
+            persistUsageWakeState()
+            let weeklyNeedsProbe = usageWakeNeedsProbe(
+                report: report,
+                period: .weekly,
+                now: now
+            )
+            guard weeklyNeedsProbe else {
+                if !UsagePeriodKind.allCases.contains(where: { usageWakeNeedsProbe(report: report, period: $0, now: now) }) {
+                    usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
+                    persistUsageWakeState()
+                }
+                recordUsageWakeResult("周周期已在计时，无需请求", for: stateKey)
+                continue
+            }
+            guard canAttemptUsageWake(stateKey: stateKey) else { continue }
+            usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
+            persistUsageWakeState()
+            await performUsageWake(
+                accountName: account.name,
+                stateKey: stateKey,
+                cacheKey: cacheKey,
+                target: target,
+                remoteHost: remoteHost,
+                reason: "weekly-schedule"
+            )
+        }
+    }
+
+    private func performUsageWake(
+        accountName: String,
+        stateKey: String,
+        cacheKey: String,
+        target: BridgeTarget,
+        remoteHost: String,
+        reason: String
+    ) async {
+        guard !usageWakeInFlightKeys.contains(stateKey) else { return }
+        usageWakeInFlightKeys.insert(stateKey)
+        defer { usageWakeInFlightKeys.remove(stateKey) }
+        let now = Date()
+        usageWakeState.lastProbeAtByAccount[stateKey] = now
+        persistUsageWakeState()
+        do {
+            try await service.probeUsage(
+                target: target,
+                remoteHost: remoteHost,
+                accountName: accountName
+            )
+            recordUsageWakeResult("已发送最低消耗请求（\(reason)）", for: stateKey)
+            if cacheKey == currentUsageCacheKey {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    guard let self else { return }
+                    await self.reloadUsage(force: true)
+                }
+            }
+        } catch {
+            recordUsageWakeResult("唤醒请求失败，未自动重试", for: stateKey)
+        }
+    }
+
+    private func canAttemptUsageWake(stateKey: String, now: Date = Date()) -> Bool {
+        guard let previous = usageWakeState.lastProbeAtByAccount[stateKey] else { return true }
+        return now.timeIntervalSince(previous) >= usageWakeProbeCooldown
+    }
+
+    private func recordUsageWakeResult(_ result: String, for stateKey: String) {
+        usageWakeState.lastResultByAccount[stateKey] = result
+        usageWakeState.lastResultAtByAccount[stateKey] = Date()
+        persistUsageWakeState()
+    }
+
+    private func usageWakeStateKey(cacheKey: String, accountName: String) -> String {
+        "\(cacheKey)|\(accountName)"
+    }
+
+    private func usageWakeRecoveryFingerprint(_ report: AccountUsageReport?) -> String {
+        guard let report, let usage = report.usage else { return "unknown" }
+        let limits = usageCodexRateLimits(for: usage)
+        let windows = [limits.primary, limits.secondary].compactMap { $0 }.map {
+            "\($0.windowDurationMins ?? 0):\($0.resetsAt ?? 0):\(Int($0.usedPercent * 10))"
+        }.sorted().joined(separator: ",")
+        return "\(limits.rateLimitReachedType ?? "")|\(windows)"
+    }
+
+    private func persistUsageWakeSettings() {
+        guard let data = try? JSONEncoder().encode(usageWakeSettings) else { return }
+        defaults.set(data, forKey: usageWakeSettingsKey)
+    }
+
+    private func persistUsageWakeState() {
+        guard let data = try? JSONEncoder().encode(usageWakeState) else { return }
+        defaults.set(data, forKey: usageWakeStateKey)
     }
 
     private var currentUsageCacheKey: String {

@@ -18,6 +18,7 @@ CAB keeps every login in an independent `CODEX_HOME` and delegates authenticatio
 - Select an account explicitly for a CLI launch, the Codex desktop app, or a remote Codex app-server.
 - View official Codex usage limits and reset windows for each account.
 - Optionally receive local macOS notifications when a reported usage window reaches its reset time.
+- Optionally wake a recovered or not-yet-started usage period with one minimal official Codex request, with quiet periods and up to three daily weekly checks.
 - Manage accounts on multiple SSH servers from the native macOS app.
 - Preserve or isolate project and session history during deliberate account changes.
 - Opt in to cross-account session sharing with explicit disclosure and process checks.
@@ -32,7 +33,7 @@ CodexAccountBridge is intentionally conservative:
 - CAB never reads, parses, exports, or copies the contents of `auth.json`.
 - The official `codex` executable is invoked directly, without a shell or argument rewriting.
 - Codex approval, sandbox, and project-trust defaults remain unchanged.
-- Usage data is display-only; CAB never rotates accounts because of rate limits, login failures, or runtime errors.
+- Normal usage reads are display-only. The optional usage-period wake is an explicit, opt-in minimal request and never rotates accounts because of rate limits, login failures, or runtime errors.
 - Session sharing excludes credentials, `config.toml`, and SQLite/WAL state, and requires explicit acknowledgement.
 - Configuration updates are locked, atomic, permission-restricted, and recoverable from backups.
 
@@ -112,7 +113,15 @@ Depending on the official response, the report can include the ChatGPT plan type
 
 The macOS app includes an optional usage-reset notification switch in Global Settings. It is off by default and requests system notification permission only when enabled. CAB replaces its scheduled notifications whenever usage data is refreshed and removes them when the switch is turned off. A notification indicates that the reported reset time has arrived; refresh CAB to confirm the latest server-side quota.
 
-Automatic refresh is evaluated per account. An account with exhausted usage and a known future reset time is skipped until that reset, while other accounts continue to refresh normally. Manual refresh still queries every account.
+Automatic refresh is evaluated per account and continues at the configured interval even when an account reports zero remaining usage. Manual refresh still queries every account. The Global Settings usage-period wake switch is off by default; when enabled, CAB can send one deliberately tiny `gpt-5.6-luna` request after a recovered period or at up to three configured weekly check times, only when the weekly period has not started. Up to three daily quiet periods suppress both automatic usage reads and wake requests. CAB verifies the returned reset window after a wake request and does not retry a failed probe automatically.
+
+The low-level probe is also available for a deliberate manual check:
+
+```bash
+cab usage probe --account personal
+```
+
+It invokes the official Codex executable with an ephemeral, read-only temporary workspace and never persists a session or exposes the response.
 
 Usage information never triggers an automatic account change.
 
@@ -130,6 +139,7 @@ The app can:
 - Switch between this Mac and saved SSH servers.
 - Register, sign in, reauthenticate, and inspect independent accounts.
 - Display quota summaries and detailed official usage periods.
+- Configure optional usage-period wake checks, weekly check times, and quiet periods.
 - Launch the Codex desktop app with a selected local account.
 - Select the account used by new remote Codex connections.
 - Preserve approved projects, complete chat content and catalog state, goals, memories, personal skills, attachments, prompt history, and unsent drafts during deliberate desktop account changes.

@@ -25,7 +25,8 @@ func usageResetNotificationPlans(
     var plans: [UsageResetNotificationPlan] = []
     for source in sources {
         for report in source.reports where report.error == nil {
-            guard let limits = report.usage?.rateLimits else { continue }
+            guard let usage = report.usage else { continue }
+            let limits = usageCodexRateLimits(for: usage)
             let windows: [(String, String, UsageWindow?)] = [
                 ("primary", "主要周期", limits.primary),
                 ("secondary", "次要周期", limits.secondary),

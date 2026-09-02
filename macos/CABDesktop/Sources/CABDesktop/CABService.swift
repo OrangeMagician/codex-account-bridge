@@ -103,6 +103,17 @@ final class CABService {
         }
     }
 
+    func probeUsage(target: BridgeTarget, remoteHost: String, accountName: String) async throws {
+        let result = try await execute(
+            ["usage", "probe", "--account", accountName, "--model", "gpt-5.6-luna", "--json"],
+            target: target,
+            remoteHost: remoteHost
+        )
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed("官方 Codex 最低消耗请求未完成；本次不会自动重试。")
+        }
+    }
+
     func loadAgentBindings(remoteHost: String) async throws -> AgentBindingReport {
         let result = try await execute(["agent", "list", "--json"], target: .remote, remoteHost: remoteHost)
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }

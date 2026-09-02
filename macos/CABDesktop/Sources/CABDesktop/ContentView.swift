@@ -8,8 +8,14 @@ struct ContentView: View {
     @State private var pendingAgentBinding: AgentBindingRequest?
     @State private var pendingBulkAgentBinding: AgentBulkBindingRequest?
     @State private var pendingLegacyImport = false
+    @State private var pendingUsageWakeEnable = false
+    @State private var usageWakeExpanded = false
 
     var body: some View {
+        withDialogs(baseView)
+    }
+
+    private var baseView: some View {
         NavigationSplitView {
             sidebar
         } detail: {
@@ -62,6 +68,14 @@ struct ContentView: View {
             ServerManagerView()
                 .environmentObject(store)
         }
+        .task {
+            store.startUsageRefreshScheduler()
+            store.refresh()
+        }
+    }
+
+    private func withDialogs<Content: View>(_ content: Content) -> some View {
+        content
         .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitchConfirmation != nil }, set: { if !$0 { pendingDesktopSwitchConfirmation = nil } }), titleVisibility: .visible) {
             Button(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话并切换" : "使用独立项目与会话并切换", role: .destructive) {
                 if let account = pendingDesktopSwitchConfirmation { store.switchCodexDesktop(to: account) }
@@ -169,7 +183,6 @@ struct ContentView: View {
                 Text("将 \(request.serviceCount) 个智能体服务统一绑定到 \(request.account)。其中 \(request.activeServiceCount) 个正在运行的服务需要重启，当前任务可能中断。CAB 不会读取或复制令牌。")
             }
         }
-        .task { await MainActor.run { store.refresh() } }
     }
 
     private var sidebar: some View {
@@ -467,19 +480,6 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 }
-                if !store.usageAutomaticRefreshPauses.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(store.usageAutomaticRefreshPauses) { pause in
-                            Label(
-                                "\(pause.accountName) 自动刷新已暂停",
-                                systemImage: "pause.circle"
-                            )
-                            .help("额度已用完，自动刷新暂停至 \(pause.until.formatted(date: .abbreviated, time: .standard))；手动刷新仍可使用。")
-                        }
-                    }
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                }
                 Divider()
                 HStack(alignment: .center, spacing: 12) {
                     Label("额度重置通知", systemImage: "bell.badge")
@@ -527,6 +527,10 @@ struct ContentView: View {
                     }
                     .disabled(store.isUsageRefreshing)
                 }
+                UsageWakeControlsView(
+                    pendingEnable: $pendingUsageWakeEnable,
+                    isExpanded: $usageWakeExpanded
+                )
             }
             .padding(8)
         } label: {
@@ -554,7 +558,7 @@ struct ContentView: View {
                 .font(.callout)
                 .foregroundStyle(store.loginStatusConfirmed ? .green : .secondary)
             } else if let report = store.usage(for: account.name), let usage = report.usage {
-                if let window = usage.rateLimits.primary {
+                if let window = usageCodexRateLimits(for: usage).primary {
                     ProgressView(value: window.remainingPercent, total: 100)
                         .tint(usageColor(window.remainingPercent))
                         .frame(maxWidth: 220)
@@ -768,23 +772,24 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
                 } else if let report = store.usage(for: account.name), let usage = report.usage {
-                    if let plan = usage.planType ?? usage.rateLimits.planType {
+                    let limits = usageCodexRateLimits(for: usage)
+                    if let plan = usage.planType ?? limits.planType {
                         HStack {
                             Spacer()
                             statusBadge(plan.uppercased(), color: .blue)
                         }
                     }
-                    if let primary = usage.rateLimits.primary {
+                    if let primary = limits.primary {
                         usageWindowRow("主要周期", window: primary)
                     }
-                    if let secondary = usage.rateLimits.secondary {
+                    if let secondary = limits.secondary {
                         usageWindowRow("次要周期", window: secondary)
                     }
-                    if usage.rateLimits.primary == nil && usage.rateLimits.secondary == nil {
+                    if limits.primary == nil && limits.secondary == nil {
                         Label("官方接口当前未返回额度周期。", systemImage: "info.circle")
                             .font(.callout).foregroundStyle(.secondary)
                     }
-                    if let credits = usage.rateLimits.credits, credits.unlimited || credits.hasCredits {
+                    if let credits = limits.credits, credits.unlimited || credits.hasCredits {
                         Divider()
                         HStack {
                             Label("额外 Credits", systemImage: "creditcard")
@@ -793,7 +798,7 @@ struct ContentView: View {
                                 .fontWeight(.medium)
                         }
                     }
-                    if let individual = usage.rateLimits.individualLimit {
+                    if let individual = limits.individualLimit {
                         Divider()
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -903,7 +908,8 @@ struct ContentView: View {
 
     @ViewBuilder
     private func sidebarUsage(_ account: AccountStatus) -> some View {
-        if let report = store.usage(for: account.name), let window = report.usage?.rateLimits.primary {
+        if let report = store.usage(for: account.name), let usage = report.usage,
+           let window = usageCodexRateLimits(for: usage).primary {
             HStack(spacing: 5) {
                 ProgressView(value: window.remainingPercent, total: 100)
                     .tint(usageColor(window.remainingPercent))
@@ -1152,6 +1158,178 @@ struct ContentView: View {
             .foregroundStyle(color)
             .padding(.horizontal, 9).padding(.vertical, 5)
             .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct UsageWakeControlsView: View {
+    @EnvironmentObject private var store: CABStore
+    @Binding var pendingEnable: Bool
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 12)
+                        Label("额度周期唤醒", systemImage: "bolt.horizontal.circle")
+                            .fontWeight(.medium)
+                    }
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                if store.usageWakeSettings.enabled {
+                    Text(cabLocalized("已开启"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(.green.opacity(0.12), in: Capsule())
+                }
+                Toggle("额度周期唤醒", isOn: Binding(
+                    get: { store.usageWakeSettings.enabled },
+                    set: { enabled in
+                        if enabled {
+                            pendingEnable = true
+                        } else {
+                            store.setUsageWakeEnabled(false)
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            }
+            if isExpanded {
+                details
+            }
+        }
+        .confirmationDialog("启用额度周期唤醒？", isPresented: $pendingEnable, titleVisibility: .visible) {
+            Button("确认启用") {
+                store.setUsageWakeEnabled(true)
+                pendingEnable = false
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("启用后，CAB 会在额度恢复或你设置的周周期时间点，向官方 Codex 发送一次极小的真实请求。这会消耗少量额度；免打扰时段内不会发送。")
+        }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("只发送最低消耗的官方 Codex 请求；普通额度查询不会消耗 Token。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("额度恢复后唤醒", isOn: Binding(
+                get: { store.usageWakeSettings.wakeOnRecovery },
+                set: store.setUsageWakeRecoveryEnabled
+            ))
+
+            HStack {
+                Text("周周期检查时间").fontWeight(.medium)
+                Spacer()
+                Button {
+                    store.addUsageWakeProbeTime()
+                } label: {
+                    Label("添加", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.usageWakeSettings.weeklyProbeTimes.count >= usageWakeMaximumEntries)
+            }
+            ForEach(Array(store.usageWakeSettings.weeklyProbeTimes.enumerated()), id: \.offset) { index, time in
+                HStack {
+                    DatePicker(
+                        "时间 \(index + 1)",
+                        selection: probeDateBinding(index: index),
+                        displayedComponents: .hourAndMinute
+                    )
+                    Spacer()
+                    Button(role: .destructive) {
+                        store.removeUsageWakeProbeTime(at: index)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("删除时间 \(time.id)")
+                }
+            }
+
+            HStack {
+                Text("免打扰时段").fontWeight(.medium)
+                Spacer()
+                Button {
+                    store.addUsageWakeQuietPeriod()
+                } label: {
+                    Label("添加", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.usageWakeSettings.quietPeriods.count >= usageWakeMaximumEntries)
+            }
+            ForEach(Array(store.usageWakeSettings.quietPeriods.enumerated()), id: \.offset) { index, period in
+                HStack(spacing: 8) {
+                    DatePicker(
+                        "开始",
+                        selection: quietStartDateBinding(index: index),
+                        displayedComponents: .hourAndMinute
+                    )
+                    Text("至").foregroundStyle(.secondary)
+                    DatePicker(
+                        "结束",
+                        selection: quietEndDateBinding(index: index),
+                        displayedComponents: .hourAndMinute
+                    )
+                    Spacer()
+                    Button(role: .destructive) {
+                        store.removeUsageWakeQuietPeriod(at: index)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("删除免打扰时段 \(period.id)")
+                }
+            }
+
+            Text("时间按本机时区每天执行；同一账号 30 分钟内不会重复发送，失败也不会自动重试。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 6)
+    }
+
+    private func probeDateBinding(index: Int) -> Binding<Date> {
+        Binding(
+            get: {
+                guard store.usageWakeSettings.weeklyProbeTimes.indices.contains(index) else { return Date() }
+                return store.usageWakeDate(for: store.usageWakeSettings.weeklyProbeTimes[index])
+            },
+            set: { store.setUsageWakeProbeTime(at: index, date: $0) }
+        )
+    }
+
+    private func quietStartDateBinding(index: Int) -> Binding<Date> {
+        Binding(
+            get: {
+                guard store.usageWakeSettings.quietPeriods.indices.contains(index) else { return Date() }
+                return store.usageWakeDate(for: store.usageWakeSettings.quietPeriods[index].start)
+            },
+            set: { store.setUsageWakeQuietStart(at: index, date: $0) }
+        )
+    }
+
+    private func quietEndDateBinding(index: Int) -> Binding<Date> {
+        Binding(
+            get: {
+                guard store.usageWakeSettings.quietPeriods.indices.contains(index) else { return Date() }
+                return store.usageWakeDate(for: store.usageWakeSettings.quietPeriods[index].end)
+            },
+            set: { store.setUsageWakeQuietEnd(at: index, date: $0) }
+        )
     }
 }
 

@@ -375,7 +375,7 @@ struct SSHConfigDiscoveryTests {
         #expect(!all.contains("unrelated.notification"))
     }
 
-    @Test func pausesEachExhaustedAccountUntilItsOwnReset() {
+    @Test func keepsRefreshingEachExhaustedAccountAtItsConfiguredInterval() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let work = usageReportForRefreshPolicy(
             name: "work",
@@ -392,22 +392,22 @@ struct SSHConfigDiscoveryTests {
 
         let workDecision = usageAutomaticRefreshDecision(
             report: work,
-            cacheCheckedAt: now,
+            cacheCheckedAt: now.addingTimeInterval(-901),
             interval: .fifteenMinutes,
             now: now
         )
         let personalDecision = usageAutomaticRefreshDecision(
             report: personal,
-            cacheCheckedAt: now,
+            cacheCheckedAt: now.addingTimeInterval(-901),
             interval: .fifteenMinutes,
             now: now
         )
 
-        #expect(workDecision == .pause(until: Date(timeIntervalSince1970: 2_000_000_900)))
-        #expect(personalDecision == .pause(until: Date(timeIntervalSince1970: 2_000_000_700)))
+        #expect(workDecision == .refresh)
+        #expect(personalDecision == .refresh)
     }
 
-    @Test func refreshesOnlyAccountsThatAreNotWaitingForReset() {
+    @Test func refreshesAllAccountsWhenTheirCacheIntervalHasElapsed() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let reports = [
             "work": usageReportForRefreshPolicy(
@@ -433,10 +433,10 @@ struct SSHConfigDiscoveryTests {
             now: now
         )
 
-        #expect(accountNames == ["personal"])
+        #expect(accountNames == ["personal", "work"])
     }
 
-    @Test func refreshesOnceImmediatelyAfterExhaustedUsageResets() {
+    @Test func doesNotBypassConfiguredIntervalAfterExhaustedUsageResets() {
         let resetDate = Date(timeIntervalSince1970: 2_000_000_000)
         let report = usageReportForRefreshPolicy(
             name: "work",
@@ -451,7 +451,130 @@ struct SSHConfigDiscoveryTests {
             now: resetDate.addingTimeInterval(1)
         )
 
-        #expect(decision == .refresh)
+        #expect(decision == .useCache)
+    }
+
+    @Test func usageWakeSettingsAreCappedAtThreeEntries() {
+        var settings = UsageWakeSettings(
+            enabled: true,
+            wakeOnRecovery: true,
+            weeklyProbeTimes: [
+                UsageTimeOfDay(hour: 9, minute: 0)!,
+                UsageTimeOfDay(hour: 7, minute: 30)!,
+                UsageTimeOfDay(hour: 9, minute: 0)!,
+                UsageTimeOfDay(hour: 12, minute: 0)!,
+                UsageTimeOfDay(hour: 18, minute: 0)!,
+            ],
+            quietPeriods: [
+                UsageQuietPeriod(start: UsageTimeOfDay(hour: 22, minute: 0)!, end: UsageTimeOfDay(hour: 7, minute: 0)!),
+                UsageQuietPeriod(start: UsageTimeOfDay(hour: 22, minute: 0)!, end: UsageTimeOfDay(hour: 7, minute: 0)!),
+                UsageQuietPeriod(start: UsageTimeOfDay(hour: 12, minute: 0)!, end: UsageTimeOfDay(hour: 13, minute: 0)!),
+                UsageQuietPeriod(start: UsageTimeOfDay(hour: 18, minute: 0)!, end: UsageTimeOfDay(hour: 19, minute: 0)!),
+            ]
+        )
+
+        settings.normalize()
+
+        #expect(settings.weeklyProbeTimes.map(\.id) == ["07:30", "09:00", "12:00"])
+        #expect(settings.quietPeriods.count == 3)
+        #expect(settings.quietPeriods.map(\.id).contains("22:00-07:00"))
+    }
+
+    @Test func usageWakeClassifiesPeriodsByReturnedWindowDuration() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let fiveHourReset = Int64(now.timeIntervalSince1970) + 600
+        let weeklyReset = Int64(now.timeIntervalSince1970) + 3_600
+        let report = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 90, windowDurationMins: 300, resetsAt: fiveHourReset),
+            secondary: UsageWindow(usedPercent: 40, windowDurationMins: 10_080, resetsAt: weeklyReset)
+        )
+
+        #expect(usagePeriodState(report: report, period: .fiveHour, now: now) == .active(resetDate: Date(timeIntervalSince1970: TimeInterval(fiveHourReset))))
+        #expect(usagePeriodState(report: report, period: .weekly, now: now) == .active(resetDate: Date(timeIntervalSince1970: TimeInterval(weeklyReset))))
+    }
+
+    @Test func usagePolicyPrefersTheOfficialCodexLimitGroupWhenPresent() {
+        let fallback = UsageRateLimitSnapshot(
+            limitID: "fallback",
+            limitName: nil,
+            primary: UsageWindow(usedPercent: 99, windowDurationMins: 300, resetsAt: nil),
+            secondary: nil,
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        let codex = UsageRateLimitSnapshot(
+            limitID: "codex",
+            limitName: nil,
+            primary: UsageWindow(usedPercent: 25, windowDurationMins: 300, resetsAt: nil),
+            secondary: nil,
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        let snapshot = CodexUsageSnapshot(
+            planType: nil,
+            rateLimits: fallback,
+            rateLimitsByLimitID: ["codex": codex],
+            resetCredits: nil
+        )
+
+        #expect(usageCodexRateLimits(for: snapshot) == codex)
+    }
+
+    @Test func usageWakeProbesOnlyWhenWeeklyWindowHasNotStarted() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let notStarted = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 60, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            secondary: nil
+        )
+        let active = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 60, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            secondary: UsageWindow(usedPercent: 0, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600)
+        )
+
+        #expect(usageWakeNeedsProbe(report: notStarted, period: .weekly, now: now))
+        #expect(!usageWakeNeedsProbe(report: active, period: .weekly, now: now))
+    }
+
+    @Test func usageWakeDoesNotProbeWhenWindowDurationIsUnknown() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let report = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 60, windowDurationMins: nil, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            secondary: nil
+        )
+
+        #expect(usagePeriodState(report: report, period: .weekly, now: now) == .unknown)
+        #expect(!usageWakeNeedsProbe(report: report, period: .weekly, now: now))
+    }
+
+    @Test func usageWakeRecoveryRequiresExhaustedPreviousAndAvailableCurrent() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let previous = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            secondary: UsageWindow(usedPercent: 100, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600)
+        )
+        let current = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 10, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            secondary: nil
+        )
+
+        #expect(usageWakeNeedsProbeAfterRecovery(previous: previous, current: current, now: now))
+    }
+
+    @Test func usageWakeQuietPeriodsSupportCrossMidnightWindows() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let day = calendar.date(from: DateComponents(year: 2026, month: 9, day: 2, hour: 23, minute: 30))!
+        let noon = calendar.date(from: DateComponents(year: 2026, month: 9, day: 2, hour: 12, minute: 0))!
+        let quiet = UsageQuietPeriod(start: UsageTimeOfDay(hour: 22, minute: 0)!, end: UsageTimeOfDay(hour: 7, minute: 0)!)
+
+        #expect(usageIsWithinQuietPeriod(day, periods: [quiet], calendar: calendar))
+        #expect(!usageIsWithinQuietPeriod(noon, periods: [quiet], calendar: calendar))
     }
 
     private func usageReportForRefreshPolicy(
@@ -487,6 +610,29 @@ struct SSHConfigDiscoveryTests {
             usage: CodexUsageSnapshot(
                 planType: nil,
                 rateLimits: limits,
+                rateLimitsByLimitID: nil,
+                resetCredits: nil
+            ),
+            error: nil
+        )
+    }
+
+    private func usageReportWithLimits(primary: UsageWindow?, secondary: UsageWindow?) -> AccountUsageReport {
+        AccountUsageReport(
+            name: "wake",
+            usage: CodexUsageSnapshot(
+                planType: nil,
+                rateLimits: UsageRateLimitSnapshot(
+                    limitID: "codex",
+                    limitName: nil,
+                    primary: primary,
+                    secondary: secondary,
+                    credits: nil,
+                    individualLimit: nil,
+                    spendControlReached: nil,
+                    planType: nil,
+                    rateLimitReachedType: nil
+                ),
                 rateLimitsByLimitID: nil,
                 resetCredits: nil
             ),

@@ -3,6 +3,7 @@ package codex
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,36 @@ printf '%s\n' '{"id":2,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth
 	t.Setenv("CAB_REAL_CODEX", fake)
 	if _, err := ReadUsage(filepath.Join(root, "account")); err == nil {
 		t.Fatal("expected ChatGPT login requirement")
+	}
+}
+
+func TestProbeUsageUsesEphemeralLowestCostRequest(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	observed := filepath.Join(root, "observed")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$CAB_TEST_OUTPUT"
+exit 0
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_OUTPUT", observed)
+	if err := ProbeUsage(filepath.Join(root, "account"), "gpt-5.6-luna"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	for _, expected := range []string{
+		"exec", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only",
+		"--model", "gpt-5.6-luna", "--cd", "Reply exactly OK.",
+	} {
+		if !strings.Contains(args, expected) {
+			t.Fatalf("probe args %q do not contain %q", args, expected)
+		}
 	}
 }
