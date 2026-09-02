@@ -757,7 +757,17 @@ func systemdMainPIDsByService(from output: String) -> [String: Int] {
 }
 
 func remoteUserCodexProcesses(_ processes: [CodexProcessStatus], excludingParentPIDs agentMainPIDs: Set<Int>) -> [CodexProcessStatus] {
-    processes.filter { !agentMainPIDs.contains($0.parentPID) }
+    var agentProcessPIDs = agentMainPIDs
+    var discoveredDescendant = true
+    while discoveredDescendant {
+        discoveredDescendant = false
+        for process in processes where agentProcessPIDs.contains(process.parentPID) {
+            if agentProcessPIDs.insert(process.pid).inserted {
+                discoveredDescendant = true
+            }
+        }
+    }
+    return processes.filter { !agentProcessPIDs.contains($0.pid) }
 }
 
 func codexProcesses(_ current: [CodexProcessStatus], matchingPIDsFrom snapshot: [CodexProcessStatus]) -> [CodexProcessStatus] {

@@ -54,6 +54,7 @@ struct SSHConfigDiscoveryTests {
     @Test func remoteSwitchExcludesCodexOwnedByAgentServices() {
         let processes = [
             CodexProcessStatus(pid: 101, parentPID: 11, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
+            CodexProcessStatus(pid: 104, parentPID: 101, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
             CodexProcessStatus(pid: 102, parentPID: 22, elapsed: "2:00", tty: "pts/1", state: "Sl", executable: "codex"),
             CodexProcessStatus(pid: 103, parentPID: 1, elapsed: "3:00", tty: "?", state: "Sl", executable: "codex"),
         ]
