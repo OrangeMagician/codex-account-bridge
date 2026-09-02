@@ -18,7 +18,7 @@ CAB keeps every login in an independent `CODEX_HOME` and delegates authenticatio
 - Select an account explicitly for a CLI launch, the Codex desktop app, or a remote Codex app-server.
 - View official Codex usage limits and reset windows for each account.
 - Optionally receive local macOS notifications when a reported usage window reaches its reset time.
-- Optionally wake a recovered or not-yet-started usage period with one minimal official Codex request, with quiet periods and up to three daily weekly checks.
+- Optionally start a recovered or not-yet-started usage countdown with one minimal official Codex request, with paused-refresh periods and up to three explicit daily start times.
 - Manage accounts on multiple SSH servers from the native macOS app.
 - Preserve or isolate project and session history during deliberate account changes.
 - Opt in to cross-account session sharing with explicit disclosure and process checks.
@@ -111,9 +111,9 @@ cab usage --json
 
 Depending on the official response, the report can include the ChatGPT plan type, primary and secondary Codex usage windows, reset times, credits, spend controls, and available rate-limit resets. Account identity, email addresses, token contents, and reset credential identifiers are not exposed.
 
-The macOS app includes an optional usage-reset notification switch in Global Settings. It is off by default and requests system notification permission only when enabled. CAB replaces its scheduled notifications whenever usage data is refreshed and removes them when the switch is turned off. A notification indicates that the reported reset time has arrived; refresh CAB to confirm the latest server-side quota.
+The macOS app includes an optional usage-reset notification switch in System Settings. It is off by default and requests system notification permission only when enabled. CAB replaces its scheduled notifications whenever usage data is refreshed and removes them when the switch is turned off. A notification indicates that the reported reset time has arrived; refresh CAB to confirm the latest server-side quota.
 
-Automatic refresh is evaluated per account and continues at the configured interval even when an account reports zero remaining usage. Manual refresh still queries every account. The Global Settings usage-period wake switch is off by default; when enabled, CAB can send one deliberately tiny `gpt-5.6-luna` request after a recovered period or at up to three configured weekly check times, only when the weekly period has not started. Up to three daily quiet periods suppress both automatic usage reads and wake requests. CAB verifies the returned reset window after a wake request and does not retry a failed probe automatically.
+Automatic refresh is evaluated per account and continues at the configured interval even when an account reports zero remaining usage. Manual refresh still queries every account. The System Settings usage-period wake switch is off by default. When enabled, CAB checks usage after a recovered period or at up to three explicit daily start times, then sends one deliberately tiny `gpt-5.6-luna` request only when the five-hour or weekly window has no active countdown. Up to three paused-refresh periods suppress ordinary automatic reads and recovery-triggered probes; explicit start times take priority. CAB verifies the returned reset window after a wake request and does not retry a failed probe automatically.
 
 The low-level probe is also available for a deliberate manual check:
 
@@ -139,7 +139,7 @@ The app can:
 - Switch between this Mac and saved SSH servers.
 - Register, sign in, reauthenticate, and inspect independent accounts.
 - Display quota summaries and detailed official usage periods.
-- Configure optional usage-period wake checks, weekly check times, and quiet periods.
+- Configure optional usage-period wake checks, daily start times, and paused-refresh periods from System Settings.
 - Launch the Codex desktop app with a selected local account.
 - Select the account used by new remote Codex connections.
 - Preserve approved projects, complete chat content and catalog state, goals, memories, personal skills, attachments, prompt history, and unsent drafts during deliberate desktop account changes.

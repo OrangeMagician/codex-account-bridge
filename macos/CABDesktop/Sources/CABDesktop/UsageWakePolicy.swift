@@ -30,6 +30,12 @@ enum UsagePeriodState: Equatable {
     case unknown
 }
 
+enum UsageWakeTickMode: Equatable {
+    case scheduled(UsageTimeOfDay)
+    case paused
+    case automatic
+}
+
 struct UsageTimeOfDay: Codable, Equatable, Identifiable, Hashable {
     let hour: Int
     let minute: Int
@@ -148,6 +154,15 @@ func usageWakeNeedsProbe(
     return false
 }
 
+func usageWakeNeedsScheduledProbe(
+    report: AccountUsageReport?,
+    now: Date = Date()
+) -> Bool {
+    UsagePeriodKind.allCases.contains {
+        usageWakeNeedsProbe(report: report, period: $0, now: now)
+    }
+}
+
 func usageWakeNeedsProbeAfterRecovery(
     previous: AccountUsageReport?,
     current: AccountUsageReport?,
@@ -186,6 +201,21 @@ func usageScheduledProbeSlot(
 ) -> UsageTimeOfDay? {
     let current = UsageTimeOfDay(date: date, calendar: calendar)
     return times.first { $0 == current }
+}
+
+func usageWakeTickMode(
+    at date: Date,
+    settings: UsageWakeSettings,
+    calendar: Calendar = .current
+) -> UsageWakeTickMode {
+    guard settings.enabled else { return .automatic }
+    if let slot = usageScheduledProbeSlot(at: date, times: settings.weeklyProbeTimes, calendar: calendar) {
+        return .scheduled(slot)
+    }
+    if usageIsWithinQuietPeriod(date, periods: settings.quietPeriods, calendar: calendar) {
+        return .paused
+    }
+    return .automatic
 }
 
 func usageScheduledProbeSlotIdentifier(

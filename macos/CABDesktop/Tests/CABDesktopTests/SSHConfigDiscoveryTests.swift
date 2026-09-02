@@ -595,6 +595,40 @@ struct SSHConfigDiscoveryTests {
         #expect(!usageWakeNeedsProbe(report: active, period: .weekly, now: now))
     }
 
+    @Test func scheduledUsageWakeStartsEitherMissingCountdown() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let missingFiveHour = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 0, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600),
+            secondary: nil
+        )
+        let bothActive = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 10, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            secondary: UsageWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600)
+        )
+
+        #expect(usageWakeNeedsScheduledProbe(report: missingFiveHour, now: now))
+        #expect(!usageWakeNeedsScheduledProbe(report: bothActive, now: now))
+    }
+
+    @Test func explicitUsageWakeTimeOverridesPausedRefreshPeriod() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let fourAM = calendar.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 4, minute: 0))!
+        let settings = UsageWakeSettings(
+            enabled: true,
+            wakeOnRecovery: true,
+            weeklyProbeTimes: [UsageTimeOfDay(hour: 4, minute: 0)!],
+            quietPeriods: [
+                UsageQuietPeriod(
+                    start: UsageTimeOfDay(hour: 22, minute: 0)!,
+                    end: UsageTimeOfDay(hour: 6, minute: 0)!
+                )
+            ]
+        )
+
+        #expect(usageWakeTickMode(at: fourAM, settings: settings, calendar: calendar) == .scheduled(UsageTimeOfDay(hour: 4, minute: 0)!))
+    }
+
     @Test func usageWakeDoesNotProbeWhenWindowDurationIsUnknown() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let report = usageReportWithLimits(

@@ -1005,15 +1005,8 @@ final class CABStore: ObservableObject {
         let capturedHost = remoteHost
         guard !isBusy, !usageRefreshingKeys.contains(cacheKey) else { return }
         let now = Date()
-        if usageWakeSettings.enabled,
-           usageIsWithinQuietPeriod(now, periods: usageWakeSettings.quietPeriods) {
-            return
-        }
-        let slot = usageScheduledProbeSlot(
-            at: now,
-            times: usageWakeSettings.weeklyProbeTimes
-        )
-        if usageWakeSettings.enabled, slot != nil {
+        switch usageWakeTickMode(at: now, settings: usageWakeSettings) {
+        case let .scheduled(slot):
             await reloadUsage(force: true)
             guard cacheKey == currentUsageCacheKey else { return }
             await evaluateScheduledUsageWake(
@@ -1022,7 +1015,9 @@ final class CABStore: ObservableObject {
                 target: capturedTarget,
                 remoteHost: capturedHost
             )
-        } else {
+        case .paused:
+            return
+        case .automatic:
             await reloadUsage(force: false)
         }
     }
@@ -1076,7 +1071,6 @@ final class CABStore: ObservableObject {
     ) async {
         guard usageWakeSettings.enabled, let slot else { return }
         let now = Date()
-        guard !usageIsWithinQuietPeriod(now, periods: usageWakeSettings.quietPeriods) else { return }
         let slotID = usageScheduledProbeSlotIdentifier(at: now, time: slot)
         for account in status.accounts where account.isLoggedIn {
             let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: account.name)
@@ -1084,17 +1078,10 @@ final class CABStore: ObservableObject {
             guard let report = usageByAccount[account.name], report.error == nil, report.usage != nil else { continue }
             usageWakeState.lastScheduledSlotByAccount[stateKey] = slotID
             persistUsageWakeState()
-            let weeklyNeedsProbe = usageWakeNeedsProbe(
-                report: report,
-                period: .weekly,
-                now: now
-            )
-            guard weeklyNeedsProbe else {
-                if !UsagePeriodKind.allCases.contains(where: { usageWakeNeedsProbe(report: report, period: $0, now: now) }) {
-                    usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-                    persistUsageWakeState()
-                }
-                recordUsageWakeResult("周周期已在计时，无需请求", for: stateKey)
+            guard usageWakeNeedsScheduledProbe(report: report, now: now) else {
+                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
+                persistUsageWakeState()
+                recordUsageWakeResult("额度周期均在计时，无需请求", for: stateKey)
                 continue
             }
             guard canAttemptUsageWake(stateKey: stateKey) else { continue }
@@ -1106,7 +1093,7 @@ final class CABStore: ObservableObject {
                 cacheKey: cacheKey,
                 target: target,
                 remoteHost: remoteHost,
-                reason: "weekly-schedule"
+                reason: "scheduled-period-start"
             )
         }
     }

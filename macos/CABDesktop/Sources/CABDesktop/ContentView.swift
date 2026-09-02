@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var pendingLegacyImport = false
     @State private var pendingUsageWakeEnable = false
     @State private var usageWakeExpanded = false
+    @State private var showSystemSettings = false
 
     var body: some View {
         withDialogs(baseView)
@@ -51,6 +52,24 @@ struct ContentView: View {
                 Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
                     .keyboardShortcut("r", modifiers: [.command])
                     .help("在终端启动当前目标的 Codex")
+                Menu {
+                    Button {
+                        showSystemSettings = true
+                    } label: {
+                        Label("系统设置…", systemImage: "gearshape")
+                    }
+                    if store.target == .remote {
+                        Divider()
+                        Button {
+                            store.showServerManager = true
+                        } label: {
+                            Label("管理服务器…", systemImage: "server.rack")
+                        }
+                    }
+                } label: {
+                    Label("更多", systemImage: "ellipsis.circle")
+                }
+                .help("更多操作与系统设置")
             }
         }
         .overlay {
@@ -67,6 +86,13 @@ struct ContentView: View {
         .sheet(isPresented: $store.showServerManager) {
             ServerManagerView()
                 .environmentObject(store)
+        }
+        .sheet(isPresented: $showSystemSettings) {
+            SystemSettingsView(
+                pendingUsageWakeEnable: $pendingUsageWakeEnable,
+                usageWakeExpanded: $usageWakeExpanded
+            )
+            .environmentObject(store)
         }
         .task {
             store.startUsageRefreshScheduler()
@@ -213,7 +239,7 @@ struct ContentView: View {
 
             List(selection: $store.sidebarSelection) {
                 Section("管理") {
-                    Label("全局设置", systemImage: "gearshape")
+                    Label("管理概览", systemImage: "square.grid.2x2")
                         .tag(CABStore.globalSettingsSelection)
                 }
                 Section("账号") {
@@ -366,12 +392,6 @@ struct ContentView: View {
                 }
                 summaryValue("会话", value: cabLocalized(store.status.sharedSessions ? "共享" : "独立"))
                 Spacer()
-                Picker("语言", selection: Binding(get: { store.interfaceLanguage }, set: store.setInterfaceLanguage)) {
-                    ForEach(InterfaceLanguage.allCases) { language in
-                        Text(language.title).tag(language)
-                    }
-                }
-                .fixedSize()
             }
             .padding(8)
         } label: {
@@ -480,31 +500,6 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 }
-                Divider()
-                HStack(alignment: .center, spacing: 12) {
-                    Label("额度重置通知", systemImage: "bell.badge")
-                        .fontWeight(.medium)
-                    if let error = store.usageResetNotificationError {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                            .help(error)
-                            .accessibilityLabel(error)
-                    } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
-                        statusBadge("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))", color: .blue)
-                    }
-                    Spacer()
-                    if store.isUsageResetNotificationUpdating {
-                        ProgressView().controlSize(.small)
-                    }
-                    Toggle("额度重置通知", isOn: Binding(
-                        get: { store.usageResetNotificationsEnabled },
-                        set: store.setUsageResetNotificationsEnabled
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .disabled(store.isUsageResetNotificationUpdating)
-                    .help("在官方额度周期到达重置时间时发送 macOS 通知")
-                }
                 HStack {
                     if let fetchedAt = store.usageFetchedAt {
                         Text("更新于 \(fetchedAt, style: .relative)")
@@ -512,12 +507,6 @@ struct ContentView: View {
                             .help(fetchedAt.formatted(date: .abbreviated, time: .standard))
                     }
                     Spacer()
-                    Picker("刷新间隔", selection: Binding(get: { store.usageRefreshInterval }, set: store.setUsageRefreshInterval)) {
-                        ForEach(UsageRefreshInterval.allCases) { interval in
-                            Text(interval.title).tag(interval)
-                        }
-                    }
-                    .fixedSize()
                     Button(action: store.refreshUsage) {
                         if store.isUsageRefreshing {
                             ProgressView().controlSize(.small)
@@ -527,10 +516,6 @@ struct ContentView: View {
                     }
                     .disabled(store.isUsageRefreshing)
                 }
-                UsageWakeControlsView(
-                    pendingEnable: $pendingUsageWakeEnable,
-                    isExpanded: $usageWakeExpanded
-                )
             }
             .padding(8)
         } label: {
@@ -1161,6 +1146,108 @@ struct ContentView: View {
     }
 }
 
+private struct SystemSettingsView: View {
+    @EnvironmentObject private var store: CABStore
+    @Environment(\.dismiss) private var dismiss
+    @Binding var pendingUsageWakeEnable: Bool
+    @Binding var usageWakeExpanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Label("系统设置", systemImage: "gearshape")
+                    .font(.title2.bold())
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox {
+                        HStack {
+                            Label("界面语言", systemImage: "globe")
+                            Spacer()
+                            Picker("界面语言", selection: Binding(
+                                get: { store.interfaceLanguage },
+                                set: store.setInterfaceLanguage
+                            )) {
+                                ForEach(InterfaceLanguage.allCases) { language in
+                                    Text(language.title).tag(language)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("通用")
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Label("自动刷新额度", systemImage: "arrow.clockwise")
+                                Spacer()
+                                Picker("刷新间隔", selection: Binding(
+                                    get: { store.usageRefreshInterval },
+                                    set: store.setUsageRefreshInterval
+                                )) {
+                                    ForEach(UsageRefreshInterval.allCases) { interval in
+                                        Text(interval.title).tag(interval)
+                                    }
+                                }
+                                .labelsHidden()
+                                .fixedSize()
+                            }
+
+                            Divider()
+
+                            HStack(spacing: 10) {
+                                Label("额度重置通知", systemImage: "bell.badge")
+                                if let error = store.usageResetNotificationError {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange)
+                                        .help(error)
+                                        .accessibilityLabel(error)
+                                } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
+                                    Text("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if store.isUsageResetNotificationUpdating {
+                                    ProgressView().controlSize(.small)
+                                }
+                                Toggle("额度重置通知", isOn: Binding(
+                                    get: { store.usageResetNotificationsEnabled },
+                                    set: store.setUsageResetNotificationsEnabled
+                                ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .disabled(store.isUsageResetNotificationUpdating)
+                                .help("在官方额度周期到达重置时间时发送 macOS 通知")
+                            }
+
+                            Divider()
+
+                            UsageWakeControlsView(
+                                pendingEnable: $pendingUsageWakeEnable,
+                                isExpanded: $usageWakeExpanded
+                            )
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("额度与通知")
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 600, minHeight: 500)
+    }
+}
+
 private struct UsageWakeControlsView: View {
     @EnvironmentObject private var store: CABStore
     @Binding var pendingEnable: Bool
@@ -1216,7 +1303,7 @@ private struct UsageWakeControlsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("启用后，CAB 会在额度恢复或你设置的周周期时间点，向官方 Codex 发送一次极小的真实请求。这会消耗少量额度；免打扰时段内不会发送。")
+            Text("启用后，CAB 会在额度恢复或你设置的时间先查询额度。只有五小时或周周期尚未开始倒计时时，才向官方 Codex 发送一次极小的真实请求。")
         }
     }
 
@@ -1226,13 +1313,13 @@ private struct UsageWakeControlsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("额度恢复后唤醒", isOn: Binding(
+            Toggle("额度恢复后启动周期", isOn: Binding(
                 get: { store.usageWakeSettings.wakeOnRecovery },
                 set: store.setUsageWakeRecoveryEnabled
             ))
 
             HStack {
-                Text("周周期检查时间").fontWeight(.medium)
+                Text("周期启动时间").fontWeight(.medium)
                 Spacer()
                 Button {
                     store.addUsageWakeProbeTime()
@@ -1261,7 +1348,7 @@ private struct UsageWakeControlsView: View {
             }
 
             HStack {
-                Text("免打扰时段").fontWeight(.medium)
+                Text("暂停自动刷新时段").fontWeight(.medium)
                 Spacer()
                 Button {
                     store.addUsageWakeQuietPeriod()
@@ -1291,11 +1378,11 @@ private struct UsageWakeControlsView: View {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
-                    .help("删除免打扰时段 \(period.id)")
+                    .help("删除暂停时段 \(period.id)")
                 }
             }
 
-            Text("时间按本机时区每天执行；同一账号 30 分钟内不会重复发送，失败也不会自动重试。")
+            Text("设定时间会优先执行；到点仅在五小时或周周期没有倒计时时发送一次。其他自动刷新在暂停时段内不运行。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
