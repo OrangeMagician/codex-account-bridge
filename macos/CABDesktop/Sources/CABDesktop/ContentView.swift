@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var pendingAgentBinding: AgentBindingRequest?
     @State private var pendingBulkAgentBinding: AgentBulkBindingRequest?
     @State private var pendingLegacyImport = false
+    @State private var pendingUsageReset: UsageResetConfirmation?
 
     var body: some View {
         withDialogs(baseView)
@@ -61,6 +62,11 @@ struct ContentView: View {
             Button("知道了", role: .cancel) { store.errorMessage = nil }
         } message: {
             Text(store.errorMessage ?? "未知错误")
+        }
+        .alert(usageResetResultTitle, isPresented: Binding(get: { store.usageResetResult != nil }, set: { if !$0 { store.usageResetResult = nil } })) {
+            Button("知道了", role: .cancel) { store.usageResetResult = nil }
+        } message: {
+            Text(usageResetResultMessage)
         }
         .sheet(isPresented: $store.showServerManager) {
             ServerManagerView()
@@ -180,6 +186,16 @@ struct ContentView: View {
             if let request = pendingBulkAgentBinding {
                 Text("将 \(request.serviceCount) 个智能体服务统一绑定到 \(request.account)。其中 \(request.activeServiceCount) 个正在运行的服务需要重启，当前任务可能中断。CAB 不会读取或复制令牌。")
             }
+        }
+        .sheet(item: $pendingUsageReset) { confirmation in
+            UsageResetConfirmationSheet(
+                confirmation: confirmation,
+                onCancel: { pendingUsageReset = nil },
+                onConfirm: {
+                    pendingUsageReset = nil
+                    store.consumeUsageReset(for: confirmation)
+                }
+            )
         }
     }
 
@@ -755,7 +771,8 @@ struct ContentView: View {
                             resetDateLabel(individual.resetDate)
                         }
                     }
-                    if let resetCredits = usage.resetCredits, resetCredits.availableCount > 0 {
+                    if let resetConfirmation = usageResetConfirmation(accountName: account.name, usage: usage),
+                       let resetCredits = usage.resetCredits {
                         Divider()
                         HStack {
                             Label("可用额度重置次数", systemImage: "arrow.counterclockwise.circle")
@@ -766,6 +783,18 @@ struct ContentView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                                 resetDateLabel(Date(timeIntervalSince1970: TimeInterval(expiry)))
                             }
+                            Button {
+                                pendingUsageReset = resetConfirmation
+                            } label: {
+                                if store.usageResettingAccount == account.name {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label("重置额度", systemImage: "arrow.counterclockwise")
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.orange)
+                            .disabled(store.usageResettingAccount != nil || store.isUsageRefreshing)
                         }
                     }
                     Divider()
@@ -992,6 +1021,30 @@ struct ContentView: View {
         return "读取失败"
     }
 
+    private var usageResetResultTitle: String {
+        switch store.usageResetResult?.outcome {
+        case .reset, .alreadyRedeemed: return cabLocalized("额度已重置")
+        case .nothingToReset: return cabLocalized("当前无需重置")
+        case .noCredit: return cabLocalized("没有可用重置次数")
+        case nil: return cabLocalized("额度重置结果")
+        }
+    }
+
+    private var usageResetResultMessage: String {
+        switch store.usageResetResult?.outcome {
+        case .reset:
+            return cabLocalized("5 小时额度和周额度已同步刷新；周额度将从现在起重新计算 7 天。")
+        case .alreadyRedeemed:
+            return cabLocalized("这次请求此前已经成功完成，没有重复消耗重置次数。最新额度已刷新。")
+        case .nothingToReset:
+            return cabLocalized("当前没有符合条件的额度周期，本次没有消耗重置次数。")
+        case .noCredit:
+            return cabLocalized("此账号目前没有可用的额度重置次数，额度信息已重新读取。")
+        case nil:
+            return ""
+        }
+    }
+
     @ViewBuilder
     private func loginActions(_ account: AccountStatus) -> some View {
         HStack {
@@ -1181,6 +1234,84 @@ struct ContentView: View {
             .foregroundStyle(color)
             .padding(.horizontal, 9).padding(.vertical, 5)
             .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct UsageResetConfirmationSheet: View {
+    let confirmation: UsageResetConfirmation
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 72, height: 72)
+                .background(.orange, in: RoundedRectangle(cornerRadius: 18))
+
+            VStack(spacing: 6) {
+                Text("重置 Codex 额度？")
+                    .font(.title2.bold())
+                Text(String(format: cabLocalized("即将为 %@ 使用 1 次额度重置机会"), confirmation.accountName))
+                    .font(.headline)
+                Text(String(format: cabLocalized("可用次数：%lld"), confirmation.availableCount))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            if confirmation.hasRemainingUsage {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("当前额度仍有剩余", systemImage: "exclamationmark.circle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    ForEach(Array(confirmation.remainingPeriods.enumerated()), id: \.offset) { _, period in
+                        HStack {
+                            Text(cabLocalized(period.title))
+                            Spacer()
+                            Text("\(cabLocalized("剩余")) \(percentText(period.percent))")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    Text("继续后，上述剩余额度会被新周期覆盖，且无法恢复。")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+                .padding(14)
+                .background(.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(.orange.opacity(0.65), lineWidth: 1)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                warningRow("5 小时额度和周额度会同时刷新", systemImage: "arrow.triangle.2.circlepath")
+                warningRow("周额度将从确认时重新计算 7 天", systemImage: "calendar.badge.clock")
+                warningRow("重置成功后无法撤销", systemImage: "lock.fill")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("使用 1 次重置", role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+            }
+        }
+        .padding(28)
+        .frame(width: 520)
+    }
+
+    private func warningRow(_ title: String, systemImage: String) -> some View {
+        Label(cabLocalized(title), systemImage: systemImage)
+            .foregroundStyle(.secondary)
+    }
+
+    private func percentText(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1))) + "%"
     }
 }
 

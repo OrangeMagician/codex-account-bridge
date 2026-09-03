@@ -43,6 +43,8 @@ final class CABStore: ObservableObject {
     @Published var usageFetchedAt: Date?
     @Published var usageLoadError: String?
     @Published var isUsageRefreshing = false
+    @Published var usageResettingAccount: String?
+    @Published var usageResetResult: UsageResetResult?
     @Published private(set) var loginAccountName: String?
     @Published private(set) var loginStatusConfirmed = false
     @Published private(set) var canManuallyCheckLogin = false
@@ -171,6 +173,39 @@ final class CABStore: ObservableObject {
 
     func refreshUsage() {
         Task { await reloadUsage(force: true) }
+    }
+
+    func consumeUsageReset(for confirmation: UsageResetConfirmation) {
+        guard usageResettingAccount == nil, !isBusy else { return }
+        let accountName = confirmation.accountName
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        let capturedCacheKey = currentUsageCacheKey
+        usageResettingAccount = accountName
+        isBusy = true
+        Task {
+            defer {
+                usageResettingAccount = nil
+                isBusy = false
+            }
+            do {
+                let result = try await service.resetUsage(
+                    target: capturedTarget,
+                    remoteHost: capturedHost,
+                    accountName: accountName,
+                    idempotencyKey: UUID()
+                )
+                guard result.account == accountName else {
+                    throw BridgeError.invalidUsage("额度重置结果与所选账号不一致。")
+                }
+                if capturedCacheKey == currentUsageCacheKey {
+                    await reloadUsage(force: true)
+                }
+                usageResetResult = result
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func startUsageRefreshScheduler() {

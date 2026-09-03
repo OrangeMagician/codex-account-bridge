@@ -66,6 +66,52 @@ printf '%s\n' '{"id":2,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth
 	}
 }
 
+func TestConsumeUsageResetCreditUsesOfficialIdempotentMethod(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	observed := filepath.Join(root, "observed")
+	script := `#!/bin/sh
+printf '%s\n' "$CODEX_HOME" > "$CAB_TEST_OUTPUT"
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{}}'
+IFS= read -r initialized
+IFS= read -r account
+printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"}}}'
+IFS= read -r reset
+printf '%s\n' "$reset" >> "$CAB_TEST_OUTPUT"
+printf '%s\n' '{"id":3,"result":{"outcome":"reset"}}'
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_OUTPUT", observed)
+	home := filepath.Join(root, "account")
+	outcome, err := ConsumeUsageResetCredit(home, "123e4567-e89b-12d3-a456-426614174000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != UsageResetCompleted {
+		t.Fatalf("outcome = %q", outcome)
+	}
+	data, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := string(data)
+	if !strings.Contains(request, home+"\n") ||
+		!strings.Contains(request, `"method":"account/rateLimitResetCredit/consume"`) ||
+		!strings.Contains(request, `"idempotencyKey":"123e4567-e89b-12d3-a456-426614174000"`) {
+		t.Fatalf("unexpected reset request %q", request)
+	}
+}
+
+func TestConsumeUsageResetCreditRejectsInvalidIdempotencyKey(t *testing.T) {
+	if _, err := ConsumeUsageResetCredit("/tmp/account", "not valid"); err == nil {
+		t.Fatal("expected invalid idempotency key error")
+	}
+}
+
 func TestProbeUsageUsesEphemeralLowestCostRequest(t *testing.T) {
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")

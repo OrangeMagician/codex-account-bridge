@@ -250,6 +250,18 @@ struct UsageResetCredit: Codable, Equatable {
     }
 }
 
+enum UsageResetOutcome: String, Codable, Equatable {
+    case reset
+    case nothingToReset
+    case noCredit
+    case alreadyRedeemed
+}
+
+struct UsageResetResult: Codable, Equatable {
+    let account: String
+    let outcome: UsageResetOutcome
+}
+
 struct RemoteServer: Codable, Equatable, Identifiable {
     var id: UUID
     var name: String

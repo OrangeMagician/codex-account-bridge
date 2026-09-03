@@ -114,6 +114,31 @@ final class CABService {
         }
     }
 
+    func resetUsage(target: BridgeTarget, remoteHost: String, accountName: String, idempotencyKey: UUID) async throws -> UsageResetResult {
+        let result = try await execute(
+            [
+                "usage", "reset",
+                "--account", accountName,
+                "--idempotency-key", idempotencyKey.uuidString.lowercased(),
+                "--confirm-reset-usage",
+                "--json",
+            ],
+            target: target,
+            remoteHost: remoteHost
+        )
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed(preferredMessage(result))
+        }
+        guard let data = result.output.data(using: .utf8) else {
+            throw BridgeError.invalidUsage("cab 返回了无法读取的额度重置结果。")
+        }
+        do {
+            return try JSONDecoder().decode(UsageResetResult.self, from: data)
+        } catch {
+            throw BridgeError.invalidUsage("无法解析额度重置结果：\(error.localizedDescription)")
+        }
+    }
+
     func loadAgentBindings(remoteHost: String) async throws -> AgentBindingReport {
         let result = try await execute(["agent", "list", "--json"], target: .remote, remoteHost: remoteHost)
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }

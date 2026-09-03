@@ -17,6 +17,7 @@ import (
 
 const usageReadTimeout = 20 * time.Second
 const usageProbeTimeout = 45 * time.Second
+const usageResetTimeout = 20 * time.Second
 
 const DefaultUsageProbeModel = "gpt-5.6-luna"
 
@@ -147,6 +148,19 @@ type rpcRateLimitCredit struct {
 	Description *string `json:"description"`
 }
 
+type UsageResetOutcome string
+
+const (
+	UsageResetCompleted       UsageResetOutcome = "reset"
+	UsageResetNothingToReset  UsageResetOutcome = "nothingToReset"
+	UsageResetNoCredit        UsageResetOutcome = "noCredit"
+	UsageResetAlreadyRedeemed UsageResetOutcome = "alreadyRedeemed"
+)
+
+type rpcUsageResetResponse struct {
+	Outcome UsageResetOutcome `json:"outcome"`
+}
+
 // ReadUsage asks the official Codex app-server for the selected ChatGPT
 // account's plan and rate-limit snapshot. It never reads auth storage itself.
 func ReadUsage(home string) (UsageSnapshot, error) {
@@ -234,6 +248,112 @@ func ReadUsage(home string) (UsageSnapshot, error) {
 		result.RateLimits.PlanType = result.PlanType
 	}
 	return result, nil
+}
+
+// ConsumeUsageResetCredit asks the official Codex app-server to redeem one
+// backend-selected rate-limit reset credit. The idempotency key identifies one
+// user-confirmed attempt; CAB never reads or handles the opaque credit ID.
+func ConsumeUsageResetCredit(home, idempotencyKey string) (UsageResetOutcome, error) {
+	if !validUsageResetIdempotencyKey(idempotencyKey) {
+		return "", errors.New("usage reset idempotency key is invalid")
+	}
+	binary, err := FindReal("codex")
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), usageResetTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binary, "app-server")
+	cmd.Env = environment(home)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	var stderr synchronizedBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	defer stopUsageAppServer(cmd, stdin)
+
+	encoder := json.NewEncoder(stdin)
+	decoder := json.NewDecoder(stdout)
+	if err := encoder.Encode(map[string]any{
+		"method": "initialize",
+		"id":     1,
+		"params": map[string]any{"clientInfo": map[string]string{
+			"name": "codex_account_bridge", "title": "CodexAccountBridge", "version": "1.0",
+		}},
+	}); err != nil {
+		return "", err
+	}
+	if _, err := readResponse(decoder, 1); err != nil {
+		return "", usageRPCError(ctx, stderr.String(), "initialize official Codex app-server", err)
+	}
+	if err := encoder.Encode(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {
+		return "", err
+	}
+
+	if err := encoder.Encode(map[string]any{
+		"method": "account/read", "id": 2, "params": map[string]bool{"refreshToken": false},
+	}); err != nil {
+		return "", err
+	}
+	accountResponse, err := readResponse(decoder, 2)
+	if err != nil {
+		return "", usageRPCError(ctx, stderr.String(), "read Codex account", err)
+	}
+	var account rpcAccountRead
+	if err := json.Unmarshal(accountResponse.Result, &account); err != nil {
+		return "", fmt.Errorf("decode Codex account: %w", err)
+	}
+	if account.Account == nil || account.Account.Type != "chatgpt" {
+		return "", errors.New("ChatGPT login is required to reset Codex usage")
+	}
+
+	if err := encoder.Encode(map[string]any{
+		"method": "account/rateLimitResetCredit/consume",
+		"id":     3,
+		"params": map[string]string{"idempotencyKey": idempotencyKey},
+	}); err != nil {
+		return "", err
+	}
+	resetResponse, err := readResponse(decoder, 3)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "method not found") {
+			return "", errors.New("installed official Codex does not support usage resets; update Codex and try again")
+		}
+		return "", usageRPCError(ctx, stderr.String(), "reset Codex rate limits", err)
+	}
+	var response rpcUsageResetResponse
+	if err := json.Unmarshal(resetResponse.Result, &response); err != nil {
+		return "", fmt.Errorf("decode Codex usage reset result: %w", err)
+	}
+	switch response.Outcome {
+	case UsageResetCompleted, UsageResetNothingToReset, UsageResetNoCredit, UsageResetAlreadyRedeemed:
+		return response.Outcome, nil
+	default:
+		return "", fmt.Errorf("official Codex returned an unknown usage reset outcome %q", response.Outcome)
+	}
+}
+
+func validUsageResetIdempotencyKey(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // ProbeUsage sends one deliberately tiny, ephemeral request through the

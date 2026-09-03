@@ -611,6 +611,41 @@ struct SSHConfigDiscoveryTests {
         #expect(periods.weekly == .unavailable)
     }
 
+    @Test func usageResetConfirmationIncludesOnlyMeasuredRemainingWindows() {
+        let weekly = UsageWindow(usedPercent: 69, windowDurationMins: 10_080, resetsAt: 2_000_003_600)
+        let report = usageReportWithLimits(
+            primary: weekly,
+            secondary: nil,
+            resetCredits: UsageResetCredits(availableCount: 2, credits: nil)
+        )
+
+        let confirmation = usageResetConfirmation(accountName: "work", usage: report.usage!)
+
+        #expect(confirmation?.accountName == "work")
+        #expect(confirmation?.availableCount == 2)
+        #expect(confirmation?.fiveHourRemaining == nil)
+        #expect(confirmation?.weeklyRemaining == 31)
+        #expect(confirmation?.hasRemainingUsage == true)
+    }
+
+    @Test func usageResetConfirmationIsHiddenWithoutAvailableCredits() {
+        let report = usageReportWithLimits(
+            primary: UsageWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: nil),
+            secondary: nil,
+            resetCredits: UsageResetCredits(availableCount: 0, credits: nil)
+        )
+
+        #expect(usageResetConfirmation(accountName: "work", usage: report.usage!) == nil)
+    }
+
+    @Test func decodesUsageResetOutcome() throws {
+        let data = Data(#"{"account":"work","outcome":"reset"}"#.utf8)
+
+        let result = try JSONDecoder().decode(UsageResetResult.self, from: data)
+
+        #expect(result == UsageResetResult(account: "work", outcome: .reset))
+    }
+
     @Test func usageWakeProbesOnlyWhenWeeklyWindowHasNotStarted() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let notStarted = usageReportWithLimits(
@@ -736,7 +771,11 @@ struct SSHConfigDiscoveryTests {
         )
     }
 
-    private func usageReportWithLimits(primary: UsageWindow?, secondary: UsageWindow?) -> AccountUsageReport {
+    private func usageReportWithLimits(
+        primary: UsageWindow?,
+        secondary: UsageWindow?,
+        resetCredits: UsageResetCredits? = nil
+    ) -> AccountUsageReport {
         AccountUsageReport(
             name: "wake",
             usage: CodexUsageSnapshot(
@@ -753,7 +792,7 @@ struct SSHConfigDiscoveryTests {
                     rateLimitReachedType: nil
                 ),
                 rateLimitsByLimitID: nil,
-                resetCredits: nil
+                resetCredits: resetCredits
             ),
             error: nil
         )
