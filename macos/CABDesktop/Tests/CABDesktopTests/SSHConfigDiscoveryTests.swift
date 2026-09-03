@@ -580,6 +580,37 @@ struct SSHConfigDiscoveryTests {
         #expect(usageCodexRateLimits(for: snapshot) == codex)
     }
 
+    @Test func usageDisplayMapsFiveHourAndWeeklyWindowsByDuration() {
+        let fiveHour = UsageWindow(usedPercent: 2, windowDurationMins: 300, resetsAt: 2_000_000_600)
+        let weekly = UsageWindow(usedPercent: 71, windowDurationMins: 10_080, resetsAt: 2_000_003_600)
+        let report = usageReportWithLimits(primary: fiveHour, secondary: weekly)
+
+        let periods = usagePeriodDisplays(for: report.usage!)
+
+        #expect(periods.fiveHour == .measured(fiveHour))
+        #expect(periods.weekly == .measured(weekly))
+    }
+
+    @Test func usageDisplayShowsUnlimitedFiveHourWhenOnlyWeeklyIsReported() {
+        let weekly = UsageWindow(usedPercent: 69, windowDurationMins: 10_080, resetsAt: 2_000_003_600)
+        let report = usageReportWithLimits(primary: weekly, secondary: nil)
+
+        let periods = usagePeriodDisplays(for: report.usage!)
+
+        #expect(periods.fiveHour == .unlimited)
+        #expect(periods.fiveHour.remainingPercent == 100)
+        #expect(periods.weekly == .measured(weekly))
+    }
+
+    @Test func usageDisplayDoesNotClaimUnlimitedWhenNoWindowsAreReported() {
+        let report = usageReportWithLimits(primary: nil, secondary: nil)
+
+        let periods = usagePeriodDisplays(for: report.usage!)
+
+        #expect(periods.fiveHour == .unavailable)
+        #expect(periods.weekly == .unavailable)
+    }
+
     @Test func usageWakeProbesOnlyWhenWeeklyWindowHasNotStarted() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let notStarted = usageReportWithLimits(

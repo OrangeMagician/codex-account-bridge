@@ -22,7 +22,14 @@
 "重置" = "Reset";
 "重置时间未知" = "Reset time unknown";
 "周期" = "window";
-"周" = "weeks";
+"周" = "wk";
+"5 小时" = "5 hours";
+"5 小时额度" = "5-hour usage";
+"周额度" = "Weekly usage";
+"没有5小时额度限制" = "No 5-hour usage limit";
+"官方接口暂未返回" = "Not reported by the official API";
+"无限制" = "Unlimited";
+"暂未返回" = "Not reported";
 "天" = "days";
 "最早到期" = "Earliest expiry";
 "管理位置" = "Manage location";

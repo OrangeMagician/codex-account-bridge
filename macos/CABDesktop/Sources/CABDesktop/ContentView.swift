@@ -515,17 +515,10 @@ struct ContentView: View {
                 .font(.callout)
                 .foregroundStyle(store.loginStatusConfirmed ? .green : .secondary)
             } else if let report = store.usage(for: account.name), let usage = report.usage {
-                if let window = usageCodexRateLimits(for: usage).primary {
-                    ProgressView(value: window.remainingPercent, total: 100)
-                        .tint(usageColor(window.remainingPercent))
-                        .frame(maxWidth: 220)
-                    Text("剩余 \(percentText(window.remainingPercent))")
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(usageColor(window.remainingPercent))
-                        .frame(width: 82, alignment: .trailing)
-                    resetSummary(window)
-                } else {
-                    Text("官方接口未返回额度周期").font(.callout).foregroundStyle(.secondary)
+                let periods = usagePeriodDisplays(for: usage)
+                HStack(spacing: 12) {
+                    usageOverviewPeriod("5 小时", value: periods.fiveHour)
+                    usageOverviewPeriod("周", value: periods.weekly)
                 }
             } else if let message = store.usage(for: account.name)?.error {
                 Label(shortUsageError(message), systemImage: "exclamationmark.circle")
@@ -730,22 +723,15 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
                 } else if let report = store.usage(for: account.name), let usage = report.usage {
                     let limits = usageCodexRateLimits(for: usage)
+                    let periods = usagePeriodDisplays(for: usage)
                     if let plan = usage.planType ?? limits.planType {
                         HStack {
                             Spacer()
                             statusBadge(plan.uppercased(), color: .blue)
                         }
                     }
-                    if let primary = limits.primary {
-                        usageWindowRow("主要周期", window: primary)
-                    }
-                    if let secondary = limits.secondary {
-                        usageWindowRow("次要周期", window: secondary)
-                    }
-                    if limits.primary == nil && limits.secondary == nil {
-                        Label("官方接口当前未返回额度周期。", systemImage: "info.circle")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+                    usagePeriodRow("5 小时额度", value: periods.fiveHour)
+                    usagePeriodRow("周额度", value: periods.weekly)
                     if let credits = limits.credits, credits.unlimited || credits.hasCredits {
                         Divider()
                         HStack {
@@ -864,19 +850,97 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private func usagePeriodRow(_ title: String, value: UsagePeriodDisplayValue) -> some View {
+        switch value {
+        case let .measured(window):
+            usageWindowRow(title, window: window)
+        case .unlimited:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(cabLocalized(title)).fontWeight(.medium)
+                        Text("没有5小时额度限制")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(cabLocalized("已用")) 0%")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("\(cabLocalized("剩余")) 100%")
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                }
+                ProgressView(value: 100, total: 100)
+                    .tint(.green)
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        case .unavailable:
+            HStack {
+                Text(cabLocalized(title)).fontWeight(.medium)
+                Spacer()
+                Text("官方接口暂未返回")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private func usageOverviewPeriod(_ title: String, value: UsagePeriodDisplayValue) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(cabLocalized(title))
+                    .font(.caption.weight(.medium))
+                Spacer()
+                if let remaining = value.remainingPercent {
+                    Text(percentText(remaining))
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(usageColor(remaining))
+                } else {
+                    Text("—").foregroundStyle(.secondary)
+                }
+            }
+            ProgressView(value: value.remainingPercent ?? 0, total: 100)
+                .tint(value.remainingPercent.map(usageColor) ?? .gray)
+            switch value {
+            case let .measured(window):
+                resetSummary(window)
+            case .unlimited:
+                Text("无限制").font(.caption).foregroundStyle(.secondary)
+            case .unavailable:
+                Text("暂未返回").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
     private func sidebarUsage(_ account: AccountStatus) -> some View {
-        if let report = store.usage(for: account.name), let usage = report.usage,
-           let window = usageCodexRateLimits(for: usage).primary {
-            HStack(spacing: 5) {
-                ProgressView(value: window.remainingPercent, total: 100)
-                    .tint(usageColor(window.remainingPercent))
-                    .frame(width: 52)
-                Text("\(cabLocalized("剩余")) \(percentText(window.remainingPercent))")
+        if let report = store.usage(for: account.name), let usage = report.usage {
+            let periods = usagePeriodDisplays(for: usage)
+            HStack(spacing: 9) {
+                sidebarUsagePeriod("5h", value: periods.fiveHour)
+                sidebarUsagePeriod("周", value: periods.weekly)
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
         } else if store.usage(for: account.name)?.error != nil {
             Text("额度不可用").font(.caption2).foregroundStyle(.orange)
+        }
+    }
+
+    private func sidebarUsagePeriod(_ title: String, value: UsagePeriodDisplayValue) -> some View {
+        HStack(spacing: 4) {
+            Text(cabLocalized(title))
+                .fontWeight(.medium)
+            ProgressView(value: value.remainingPercent ?? 0, total: 100)
+                .tint(value.remainingPercent.map(usageColor) ?? .gray)
+                .frame(width: 28)
+            Text(value.remainingPercent.map(percentText) ?? "—")
+                .monospacedDigit()
         }
     }
 
