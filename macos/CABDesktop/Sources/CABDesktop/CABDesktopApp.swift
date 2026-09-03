@@ -10,11 +10,11 @@ struct CABDesktopApp: App {
                 .environmentObject(store)
         }
         .windowStyle(.titleBar)
-        .commands {
-            CommandGroup(after: .appInfo) {
-                Button("刷新状态") { store.refresh() }
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
-            }
+
+        Settings {
+            SystemSettingsView()
+                .environmentObject(store)
+                .environment(\.locale, Locale(identifier: store.interfaceLanguage.localeIdentifier))
         }
 
         MenuBarExtra("app.name", systemImage: "person.2.circle") {

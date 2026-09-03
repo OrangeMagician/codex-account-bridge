@@ -8,9 +8,6 @@ struct ContentView: View {
     @State private var pendingAgentBinding: AgentBindingRequest?
     @State private var pendingBulkAgentBinding: AgentBulkBindingRequest?
     @State private var pendingLegacyImport = false
-    @State private var pendingUsageWakeEnable = false
-    @State private var usageWakeExpanded = false
-    @State private var showSystemSettings = false
 
     var body: some View {
         withDialogs(baseView)
@@ -52,24 +49,6 @@ struct ContentView: View {
                 Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
                     .keyboardShortcut("r", modifiers: [.command])
                     .help("在终端启动当前目标的 Codex")
-                Menu {
-                    Button {
-                        showSystemSettings = true
-                    } label: {
-                        Label("系统设置…", systemImage: "gearshape")
-                    }
-                    if store.target == .remote {
-                        Divider()
-                        Button {
-                            store.showServerManager = true
-                        } label: {
-                            Label("管理服务器…", systemImage: "server.rack")
-                        }
-                    }
-                } label: {
-                    Label("更多", systemImage: "ellipsis.circle")
-                }
-                .help("更多操作与系统设置")
             }
         }
         .overlay {
@@ -86,13 +65,6 @@ struct ContentView: View {
         .sheet(isPresented: $store.showServerManager) {
             ServerManagerView()
                 .environmentObject(store)
-        }
-        .sheet(isPresented: $showSystemSettings) {
-            SystemSettingsView(
-                pendingUsageWakeEnable: $pendingUsageWakeEnable,
-                usageWakeExpanded: $usageWakeExpanded
-            )
-            .environmentObject(store)
         }
         .task {
             store.startUsageRefreshScheduler()
@@ -1146,100 +1118,92 @@ struct ContentView: View {
     }
 }
 
-private struct SystemSettingsView: View {
+struct SystemSettingsView: View {
     @EnvironmentObject private var store: CABStore
-    @Environment(\.dismiss) private var dismiss
-    @Binding var pendingUsageWakeEnable: Bool
-    @Binding var usageWakeExpanded: Bool
+    @State private var pendingUsageWakeEnable = false
+    @State private var usageWakeExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
                 Label("系统设置", systemImage: "gearshape")
                     .font(.title2.bold())
-                Spacer()
-                Button("完成") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    GroupBox {
+                GroupBox {
+                    HStack {
+                        Label("界面语言", systemImage: "globe")
+                        Spacer()
+                        Picker("界面语言", selection: Binding(
+                            get: { store.interfaceLanguage },
+                            set: store.setInterfaceLanguage
+                        )) {
+                            ForEach(InterfaceLanguage.allCases) { language in
+                                Text(language.title).tag(language)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    .padding(8)
+                } label: {
+                    Text("通用")
+                }
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Label("界面语言", systemImage: "globe")
+                            Label("自动刷新额度", systemImage: "arrow.clockwise")
                             Spacer()
-                            Picker("界面语言", selection: Binding(
-                                get: { store.interfaceLanguage },
-                                set: store.setInterfaceLanguage
+                            Picker("刷新间隔", selection: Binding(
+                                get: { store.usageRefreshInterval },
+                                set: store.setUsageRefreshInterval
                             )) {
-                                ForEach(InterfaceLanguage.allCases) { language in
-                                    Text(language.title).tag(language)
+                                ForEach(UsageRefreshInterval.allCases) { interval in
+                                    Text(interval.title).tag(interval)
                                 }
                             }
                             .labelsHidden()
                             .fixedSize()
                         }
-                        .padding(8)
-                    } label: {
-                        Text("通用")
-                    }
 
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Label("自动刷新额度", systemImage: "arrow.clockwise")
-                                Spacer()
-                                Picker("刷新间隔", selection: Binding(
-                                    get: { store.usageRefreshInterval },
-                                    set: store.setUsageRefreshInterval
-                                )) {
-                                    ForEach(UsageRefreshInterval.allCases) { interval in
-                                        Text(interval.title).tag(interval)
-                                    }
-                                }
-                                .labelsHidden()
-                                .fixedSize()
+                        Divider()
+
+                        HStack(spacing: 10) {
+                            Label("额度重置通知", systemImage: "bell.badge")
+                            if let error = store.usageResetNotificationError {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .help(error)
+                                    .accessibilityLabel(error)
+                            } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
+                                Text("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
-
-                            Divider()
-
-                            HStack(spacing: 10) {
-                                Label("额度重置通知", systemImage: "bell.badge")
-                                if let error = store.usageResetNotificationError {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundStyle(.orange)
-                                        .help(error)
-                                        .accessibilityLabel(error)
-                                } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
-                                    Text("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if store.isUsageResetNotificationUpdating {
-                                    ProgressView().controlSize(.small)
-                                }
-                                Toggle("额度重置通知", isOn: Binding(
-                                    get: { store.usageResetNotificationsEnabled },
-                                    set: store.setUsageResetNotificationsEnabled
-                                ))
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-                                .disabled(store.isUsageResetNotificationUpdating)
-                                .help("在官方额度周期到达重置时间时发送 macOS 通知")
+                            Spacer()
+                            if store.isUsageResetNotificationUpdating {
+                                ProgressView().controlSize(.small)
                             }
-
-                            Divider()
-
-                            UsageWakeControlsView(
-                                pendingEnable: $pendingUsageWakeEnable,
-                                isExpanded: $usageWakeExpanded
-                            )
+                            Toggle("额度重置通知", isOn: Binding(
+                                get: { store.usageResetNotificationsEnabled },
+                                set: store.setUsageResetNotificationsEnabled
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .disabled(store.isUsageResetNotificationUpdating)
+                            .help("在官方额度周期到达重置时间时发送 macOS 通知")
                         }
-                        .padding(8)
-                    } label: {
-                        Text("额度与通知")
+
+                        Divider()
+
+                        UsageWakeControlsView(
+                            pendingEnable: $pendingUsageWakeEnable,
+                            isExpanded: $usageWakeExpanded
+                        )
                     }
+                    .padding(8)
+                } label: {
+                    Text("额度与通知")
                 }
             }
         }
