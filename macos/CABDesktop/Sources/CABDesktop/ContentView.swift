@@ -921,7 +921,7 @@ struct ContentView: View {
     private func sidebarUsage(_ account: AccountStatus) -> some View {
         if let report = store.usage(for: account.name), let usage = report.usage {
             let periods = usagePeriodDisplays(for: usage)
-            HStack(spacing: 9) {
+            VStack(alignment: .leading, spacing: 3) {
                 sidebarUsagePeriod("5h", value: periods.fiveHour)
                 sidebarUsagePeriod("周", value: periods.weekly)
             }
@@ -936,11 +936,13 @@ struct ContentView: View {
         HStack(spacing: 4) {
             Text(cabLocalized(title))
                 .fontWeight(.medium)
+                .frame(width: 20, alignment: .leading)
             ProgressView(value: value.remainingPercent ?? 0, total: 100)
                 .tint(value.remainingPercent.map(usageColor) ?? .gray)
-                .frame(width: 28)
+                .frame(width: 64)
             Text(value.remainingPercent.map(percentText) ?? "—")
                 .monospacedDigit()
+                .frame(width: 38, alignment: .trailing)
         }
     }
 
