@@ -277,22 +277,19 @@ final class CABService {
         )
     }
 
-    func launchCodexInTerminal(target: BridgeTarget, remoteHost: String) throws {
-        let command: String
-        if target == .local {
-            guard let executable = cabExecutable() else { throw BridgeError.executableMissing }
-            let environment = localCABEnvironment(
-                baseEnvironment: ProcessInfo.processInfo.environment,
-                homeDirectory: fileManager.homeDirectoryForCurrentUser,
-                executableCheck: fileManager.isExecutableFile(atPath:)
-            )
-            let codexPrefix = environment["CAB_REAL_CODEX"].map { "CAB_REAL_CODEX=\(shellQuote($0)) " } ?? ""
-            command = "\(codexPrefix)\(shellQuote(executable.path)) run"
-        } else {
-            let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
-            command = "ssh -tt -- \(shellQuote(host)) cab run"
-        }
+    func launchCodexInTerminal(target: BridgeTarget, remoteHost: String, accountName: String? = nil) throws {
+        let environment = localCABEnvironment(
+            baseEnvironment: ProcessInfo.processInfo.environment,
+            homeDirectory: fileManager.homeDirectoryForCurrentUser,
+            executableCheck: fileManager.isExecutableFile(atPath:)
+        )
+        let command = try codexRunTerminalCommand(
+            target: target,
+            remoteHost: remoteHost,
+            cabExecutablePath: cabExecutable()?.path,
+            realCodexPath: environment["CAB_REAL_CODEX"],
+            accountName: accountName
+        )
         let script = "tell application \"Terminal\" to do script \(appleScriptQuote(command))"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -702,13 +699,32 @@ final class CABService {
         return error.isEmpty ? (output.isEmpty ? "cab 命令执行失败（\(result.exitCode)）。" : output) : error
     }
 
-    private func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
     private func appleScriptQuote(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
+}
+
+func codexRunTerminalCommand(
+    target: BridgeTarget,
+    remoteHost: String,
+    cabExecutablePath: String?,
+    realCodexPath: String?,
+    accountName: String?
+) throws -> String {
+    let accountArgument = accountName.map { " --account \(cabShellQuote($0))" } ?? ""
+    if target == .local {
+        guard let cabExecutablePath else { throw BridgeError.executableMissing }
+        let codexPrefix = realCodexPath.map { "CAB_REAL_CODEX=\(cabShellQuote($0)) " } ?? ""
+        return "\(codexPrefix)\(cabShellQuote(cabExecutablePath)) run\(accountArgument)"
+    }
+
+    let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
+    return "ssh -tt -- \(cabShellQuote(host)) cab run\(accountArgument)"
+}
+
+private func cabShellQuote(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 func localCABEnvironment(

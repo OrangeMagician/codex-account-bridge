@@ -4,6 +4,10 @@
 "打开 CAB Desktop" = "Open CAB Desktop";
 "启动 Codex" = "Launch Codex";
 "退出" = "Quit";
+"操作" = "Actions";
+"默认" = "Default";
+"尚未添加账号" = "No accounts added";
+"刷新失败，正在显示上次成功获取的额度。" = "Refresh failed. Showing the last successfully fetched usage.";
 "轮换：已开启" = "Rotation: On";
 "轮换：已关闭" = "Rotation: Off";
 "这台 Mac" = "This Mac";

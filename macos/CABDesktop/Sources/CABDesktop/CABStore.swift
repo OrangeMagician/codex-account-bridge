@@ -854,8 +854,12 @@ final class CABStore: ObservableObject {
     func resetRotation() { run(["rotation", "reset"]) }
 
     func launchCodex() {
+        launchCodex(account: nil)
+    }
+
+    func launchCodex(account: String?) {
         do {
-            try service.launchCodexInTerminal(target: target, remoteHost: remoteHost)
+            try service.launchCodexInTerminal(target: target, remoteHost: remoteHost, accountName: account)
         } catch {
             errorMessage = error.localizedDescription
         }

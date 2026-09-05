@@ -141,11 +141,15 @@ The app can:
 - Switch between this Mac and saved SSH servers.
 - Register, sign in, reauthenticate, and inspect independent accounts.
 - Display quota summaries and detailed official usage periods.
+- Check remaining five-hour and weekly usage from the menu bar, then launch Terminal with an explicitly selected account.
+- Use standard shortcuts to refresh status (`Command-R`), refresh usage (`Shift-Command-R`), or launch Codex (`Command-Return`).
 - Configure optional usage-period wake checks, daily start times, and paused-refresh periods from System Settings.
 - Launch the Codex desktop app with a selected local account.
 - Select the account used by new remote Codex connections.
 - Preserve approved projects, complete chat content and catalog state, goals, memories, personal skills, attachments, prompt history, and unsent drafts during deliberate desktop account changes.
 - Manage session-sharing policy, launch rotation, and supported agent bindings.
+
+If an automatic usage refresh fails, CAB keeps the last successful values visible and marks them as cached instead of replacing them with an empty state.
 
 Saved server labels and SSH host strings remain in local macOS `UserDefaults`. SSH identity files and private-key contents are not imported into CAB.
 

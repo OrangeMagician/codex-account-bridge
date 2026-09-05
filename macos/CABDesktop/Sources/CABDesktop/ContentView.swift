@@ -48,7 +48,6 @@ struct ContentView: View {
                     .disabled(store.isBusy)
                     .help("刷新当前目标的状态、账号和额度")
                 Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
-                    .keyboardShortcut("r", modifiers: [.command])
                     .help("在终端启动当前目标的 Codex")
             }
         }
@@ -455,10 +454,6 @@ struct ContentView: View {
                     )
                     .font(.callout)
                     .foregroundStyle(store.loginStatusConfirmed ? .green : .secondary)
-                } else if let error = store.usageLoadError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
                 } else if store.status.accounts.isEmpty {
                     Text("添加并登录账号后，这里会显示官方 Codex 额度。")
                         .font(.callout).foregroundStyle(.secondary)
@@ -470,13 +465,20 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 70)
                 } else if store.usageByAccount.isEmpty {
-                    HStack {
-                        Label(store.usageRefreshInterval == .manual ? "尚未获取额度；当前设置为仅手动刷新。" : "尚无额度缓存。", systemImage: "gauge.with.dots.needle.0percent")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("立即获取", action: store.refreshUsage)
+                    if let error = store.usageLoadError {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    } else {
+                        HStack {
+                            Label(store.usageRefreshInterval == .manual ? "尚未获取额度；当前设置为仅手动刷新。" : "尚无额度缓存。", systemImage: "gauge.with.dots.needle.0percent")
+                                .font(.callout).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("立即获取", action: store.refreshUsage)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 54)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 54)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(store.status.accounts) { account in
@@ -487,6 +489,12 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 12)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    if let error = store.usageLoadError {
+                        Label("刷新失败，正在显示上次成功获取的额度。", systemImage: "clock.arrow.circlepath")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .help(error)
+                    }
                 }
                 HStack {
                     if let fetchedAt = store.usageFetchedAt {
@@ -738,6 +746,12 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
                 } else if let report = store.usage(for: account.name), let usage = report.usage {
+                    if let error = store.usageLoadError {
+                        Label("刷新失败，正在显示上次成功获取的额度。", systemImage: "clock.arrow.circlepath")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .help(error)
+                    }
                     let limits = usageCodexRateLimits(for: usage)
                     let periods = usagePeriodDisplays(for: usage)
                     if let plan = usage.planType ?? limits.planType {

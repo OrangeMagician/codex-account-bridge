@@ -117,6 +117,37 @@ struct SSHConfigDiscoveryTests {
         #expect(environment["CAB_REAL_CODEX"] == "/custom/codex")
     }
 
+    @Test func terminalLaunchCanSelectAnAccountExplicitly() throws {
+        let local = try codexRunTerminalCommand(
+            target: .local,
+            remoteHost: "",
+            cabExecutablePath: "/Applications/CAB Tools/cab",
+            realCodexPath: "/Applications/Codex.app/Contents/Resources/codex",
+            accountName: "work"
+        )
+        #expect(local == "CAB_REAL_CODEX='/Applications/Codex.app/Contents/Resources/codex' '/Applications/CAB Tools/cab' run --account 'work'")
+
+        let remote = try codexRunTerminalCommand(
+            target: .remote,
+            remoteHost: "dev@example.com",
+            cabExecutablePath: nil,
+            realCodexPath: nil,
+            accountName: "client's"
+        )
+        #expect(remote == "ssh -tt -- 'dev@example.com' cab run --account 'client'\\''s'")
+    }
+
+    @Test func terminalLaunchWithoutAnAccountPreservesRotationBehavior() throws {
+        let command = try codexRunTerminalCommand(
+            target: .local,
+            remoteHost: "",
+            cabExecutablePath: "/usr/local/bin/cab",
+            realCodexPath: nil,
+            accountName: nil
+        )
+        #expect(command == "'/usr/local/bin/cab' run")
+    }
+
     @Test func desktopBundledCodexTakesPriorityOverOlderCommandLineInstall() {
         let environment = localCABEnvironment(
             baseEnvironment: ["PATH": "/opt/homebrew/bin:/usr/bin"],
