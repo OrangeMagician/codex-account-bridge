@@ -144,7 +144,7 @@ Commands:
   cab status [--json]
   cab usage [--account NAME] [--json]
   cab usage probe --account NAME [--model MODEL] [--json]
-  cab usage reset --account NAME --idempotency-key KEY --confirm-reset-usage [--json]
+  cab usage reset --account NAME [--credit-id ID] --idempotency-key KEY --confirm-reset-usage [--json]
   cab agent list [--json]
   cab agent bind --service UNIT --account NAME --confirm-restart-agent
   cab agent bind-all --account NAME --confirm-restart-agent
@@ -471,11 +471,12 @@ func usageCommand(cfg config.Config, args []string) (int, error) {
 func usageResetCommand(cfg config.Config, args []string) (int, error) {
 	flags := newFlags("usage reset")
 	accountName := flags.String("account", "", "configured account name")
+	creditID := flags.String("credit-id", "", "opaque reset-credit ID returned by usage")
 	idempotencyKey := flags.String("idempotency-key", "", "unique identifier for this reset attempt")
 	confirmed := flags.Bool("confirm-reset-usage", false, "confirm consuming one usage reset credit")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *accountName == "" || *idempotencyKey == "" {
-		return 2, errors.New("usage: cab usage reset --account NAME --idempotency-key KEY --confirm-reset-usage [--json]")
+		return 2, errors.New("usage: cab usage reset --account NAME [--credit-id ID] --idempotency-key KEY --confirm-reset-usage [--json]")
 	}
 	if !*confirmed {
 		return 2, errors.New("usage reset requires --confirm-reset-usage")
@@ -484,7 +485,7 @@ func usageResetCommand(cfg config.Config, args []string) (int, error) {
 	if !ok {
 		return 2, fmt.Errorf("unknown account %q", *accountName)
 	}
-	outcome, err := codex.ConsumeUsageResetCredit(account.Home, *idempotencyKey)
+	outcome, err := codex.ConsumeUsageResetCredit(account.Home, *idempotencyKey, *creditID)
 	if err != nil {
 		return 1, err
 	}

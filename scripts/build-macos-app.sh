@@ -6,6 +6,7 @@ PACKAGE="$ROOT/macos/CABDesktop"
 OUTPUT="$ROOT/dist/CodexAccountBridge.app"
 EXECUTABLE="$PACKAGE/.build/release/CABDesktop"
 ICON_SOURCE="$PACKAGE/Resources/AppIcon.png"
+GO_BIN=${GO:-go}
 VERSION=${1:-0.0.0}
 BUILD_NUMBER=${2:-0}
 
@@ -22,6 +23,7 @@ case "$BUILD_NUMBER" in
     ;;
 esac
 
+"$ROOT/scripts/check-go-version.sh" "$GO_BIN"
 swift build -c release --package-path "$PACKAGE"
 if [ -e "$OUTPUT" ]; then
     rm -rf -- "$OUTPUT"
@@ -29,6 +31,8 @@ fi
 mkdir -p "$OUTPUT/Contents/MacOS" "$OUTPUT/Contents/Resources"
 install -m 0755 "$EXECUTABLE" "$OUTPUT/Contents/MacOS/CABDesktop"
 ditto "$PACKAGE/Resources" "$OUTPUT/Contents/Resources"
+"$GO_BIN" build -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+    -o "$OUTPUT/Contents/Resources/cab" "$ROOT/cmd/cab"
 
 ICON_TEMP=$(mktemp -d "${TMPDIR:-/tmp}/cab-icon.XXXXXX")
 trap 'rm -rf "$ICON_TEMP"' EXIT HUP INT TERM

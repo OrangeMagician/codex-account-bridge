@@ -38,6 +38,9 @@ printf '%s\n' '{"id":3,"result":{"rateLimits":{"limitId":"codex","limitName":"Co
 	if usage.ResetCredits == nil || usage.ResetCredits.AvailableCount != 1 || len(usage.ResetCredits.Credits) != 1 {
 		t.Fatalf("unexpected reset credits: %#v", usage.ResetCredits)
 	}
+	if usage.ResetCredits.Credits[0].ID != "secret-id" {
+		t.Fatalf("reset credit ID = %q", usage.ResetCredits.Credits[0].ID)
+	}
 	data, err := os.ReadFile(observed)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +69,84 @@ printf '%s\n' '{"id":2,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth
 	}
 }
 
+func TestReadUsageRetriesTransientRateLimitRequest(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	observed := filepath.Join(root, "observed")
+	countFile := filepath.Join(root, "attempts")
+	script := `#!/bin/sh
+count=0
+if [ -f "$CAB_TEST_ATTEMPTS" ]; then count=$(cat "$CAB_TEST_ATTEMPTS"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$CAB_TEST_ATTEMPTS"
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{}}'
+IFS= read -r initialized
+IFS= read -r account
+printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"}}}'
+IFS= read -r limits
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' '{"id":3,"error":{"code":-32603,"message":"failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)"}}'
+else
+  printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":17,"windowDurationMins":300,"resetsAt":1788139274},"planType":"plus"},"rateLimitsByLimitId":null,"rateLimitResetCredits":null}}'
+fi
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_ATTEMPTS", countFile)
+	t.Setenv("CAB_TEST_OUTPUT", observed)
+	usage, err := ReadUsage(filepath.Join(root, "account"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.RateLimits.Primary == nil || usage.RateLimits.Primary.UsedPercent != 17 {
+		t.Fatalf("unexpected retried usage: %#v", usage)
+	}
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "2" {
+		t.Fatalf("attempt count = %q", data)
+	}
+}
+
+func TestReadUsageDoesNotRetryPermanentRateLimitRequest(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	countFile := filepath.Join(root, "attempts")
+	script := `#!/bin/sh
+count=0
+if [ -f "$CAB_TEST_ATTEMPTS" ]; then count=$(cat "$CAB_TEST_ATTEMPTS"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$CAB_TEST_ATTEMPTS"
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{}}'
+IFS= read -r initialized
+IFS= read -r account
+printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"}}}'
+IFS= read -r limits
+printf '%s\n' '{"id":3,"error":{"code":-32603,"message":"failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 404 Not Found"}}'
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_ATTEMPTS", countFile)
+	if _, err := ReadUsage(filepath.Join(root, "account")); err == nil {
+		t.Fatal("expected permanent rate-limit error")
+	}
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "1" {
+		t.Fatalf("permanent error attempt count = %q", data)
+	}
+}
+
 func TestConsumeUsageResetCreditUsesOfficialIdempotentMethod(t *testing.T) {
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")
@@ -87,7 +168,7 @@ printf '%s\n' '{"id":3,"result":{"outcome":"reset"}}'
 	t.Setenv("CAB_REAL_CODEX", fake)
 	t.Setenv("CAB_TEST_OUTPUT", observed)
 	home := filepath.Join(root, "account")
-	outcome, err := ConsumeUsageResetCredit(home, "123e4567-e89b-12d3-a456-426614174000")
+	outcome, err := ConsumeUsageResetCredit(home, "123e4567-e89b-12d3-a456-426614174000", "RateLimitResetCredit_1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,13 +182,14 @@ printf '%s\n' '{"id":3,"result":{"outcome":"reset"}}'
 	request := string(data)
 	if !strings.Contains(request, home+"\n") ||
 		!strings.Contains(request, `"method":"account/rateLimitResetCredit/consume"`) ||
-		!strings.Contains(request, `"idempotencyKey":"123e4567-e89b-12d3-a456-426614174000"`) {
+		!strings.Contains(request, `"idempotencyKey":"123e4567-e89b-12d3-a456-426614174000"`) ||
+		!strings.Contains(request, `"creditId":"RateLimitResetCredit_1"`) {
 		t.Fatalf("unexpected reset request %q", request)
 	}
 }
 
 func TestConsumeUsageResetCreditRejectsInvalidIdempotencyKey(t *testing.T) {
-	if _, err := ConsumeUsageResetCredit("/tmp/account", "not valid"); err == nil {
+	if _, err := ConsumeUsageResetCredit("/tmp/account", "not valid", ""); err == nil {
 		t.Fatal("expected invalid idempotency key error")
 	}
 }

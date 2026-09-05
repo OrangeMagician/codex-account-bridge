@@ -58,6 +58,7 @@ final class CABStore: ObservableObject {
     @Published var pendingLegacyProcesses: [CodexProcessStatus]?
     @Published var pendingDesktopSwitch: DesktopSwitchProcessRequest?
     @Published var pendingDesktopSwitchError: String?
+    @Published var desktopSwitchPartialResult: DesktopSwitchPartialResult?
 
     private let service = CABService()
     private lazy var usageResetNotificationService = UsageResetNotificationService()
@@ -175,6 +176,11 @@ final class CABStore: ObservableObject {
         Task { await reloadUsage(force: true) }
     }
 
+    func refreshUsage(accountName: String) {
+        guard status.accounts.contains(where: { $0.name == accountName }) else { return }
+        Task { await reloadUsage(force: true, accountNames: [accountName]) }
+    }
+
     func consumeUsageReset(for confirmation: UsageResetConfirmation) {
         guard usageResettingAccount == nil, !isBusy else { return }
         let accountName = confirmation.accountName
@@ -193,6 +199,7 @@ final class CABStore: ObservableObject {
                     target: capturedTarget,
                     remoteHost: capturedHost,
                     accountName: accountName,
+                    creditID: confirmation.credit?.creditID,
                     idempotencyKey: UUID()
                 )
                 guard result.account == accountName else {
@@ -609,11 +616,13 @@ final class CABStore: ObservableObject {
         Task {
             isBusy = true
             errorMessage = nil
+            desktopSwitchPartialResult = nil
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
             var continuitySync: CodexContinuitySyncResult?
             var threadCatalogSync: CodexThreadCatalogSyncResult?
             var threadIndexBackup: URL?
+            var syncWarnings: [DesktopSwitchWarning] = []
             var sessionModeChanged = false
             var originalSharedSessions = status.sharedSessions
             var fallbackHome = previousDesktopHome(fallback: account.home)
@@ -638,42 +647,87 @@ final class CABStore: ObservableObject {
                 desktopWasStopped = true
                 sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded(currentSharedSessions: originalSharedSessions)
                 if preserveSessionsOnDesktopSwitch {
-                    workspaceSync = try service.synchronizeCodexWorkspaceState(
-                        sourceHome: fallbackHome,
-                        targetHome: account.home,
-                        knownHomes: status.accounts.map(\.home)
-                    )
-                    if let workspaceSync {
-                        let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
-                        appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目、会话归属及未发送草稿\(backupMessage)。\n")
+                    do {
+                        workspaceSync = try service.synchronizeCodexWorkspaceState(
+                            sourceHome: fallbackHome,
+                            targetHome: account.home,
+                            knownHomes: status.accounts.map(\.home)
+                        )
+                        if let workspaceSync {
+                            let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
+                            appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目、会话归属及未发送草稿\(backupMessage)。\n")
+                        }
+                    } catch {
+                        syncWarnings.append(desktopSwitchWarning(
+                            stage: "桌面项目与草稿",
+                            sourcePath: fallbackHome,
+                            targetPath: account.home,
+                            error: error
+                        ))
                     }
-                    continuitySync = try service.synchronizeCodexContinuityState(
-                        sourceHome: fallbackHome,
-                        targetHome: account.home,
-                        knownHomes: status.accounts.map(\.home)
-                    )
-                    if let continuitySync {
-                        appendOutput("已同步完整消息投影、目标、记忆及 \(continuitySync.fileCount) 个工作区文件（\(continuitySync.databaseCount) 个本地索引已安全合并）。\n")
+                    do {
+                        continuitySync = try service.synchronizeCodexContinuityState(
+                            sourceHome: fallbackHome,
+                            targetHome: account.home,
+                            knownHomes: status.accounts.map(\.home)
+                        )
+                        if let continuitySync {
+                            appendOutput("已同步完整消息投影、目标、记忆及 \(continuitySync.fileCount) 个工作区文件（\(continuitySync.databaseCount) 个本地索引已安全合并）。\n")
+                        }
+                    } catch {
+                        syncWarnings.append(desktopSwitchWarning(
+                            stage: "消息、记忆与工作区文件",
+                            sourcePath: fallbackHome,
+                            targetPath: account.home,
+                            error: error
+                        ))
                     }
-                    threadCatalogSync = try service.synchronizeCodexThreadCatalogState(
-                        sourceHome: fallbackHome,
-                        targetHome: account.home,
-                        knownHomes: status.accounts.map(\.home)
-                    )
-                    if let threadCatalogSync {
-                        appendOutput("已合并 \(threadCatalogSync.rowCount) 条桌面会话目录记录，原目录已备份为 \(threadCatalogSync.backupURL.lastPathComponent)。\n")
+                    do {
+                        threadCatalogSync = try service.synchronizeCodexThreadCatalogState(
+                            sourceHome: fallbackHome,
+                            targetHome: account.home,
+                            knownHomes: status.accounts.map(\.home)
+                        )
+                        if let threadCatalogSync {
+                            appendOutput("已合并 \(threadCatalogSync.rowCount) 条桌面会话目录记录，原目录已备份为 \(threadCatalogSync.backupURL.lastPathComponent)。\n")
+                        }
+                    } catch {
+                        syncWarnings.append(desktopSwitchWarning(
+                            stage: "桌面会话目录",
+                            sourcePath: fallbackHome,
+                            targetPath: account.home,
+                            error: error
+                        ))
                     }
                 }
-                if preserveSessionsOnDesktopSwitch || sessionModeChanged,
-                   let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
-                    threadIndexBackup = backup
-                    appendOutput("已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n")
+                if preserveSessionsOnDesktopSwitch || sessionModeChanged {
+                    do {
+                        if let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
+                            threadIndexBackup = backup
+                            appendOutput("已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n")
+                        }
+                    } catch {
+                        syncWarnings.append(desktopSwitchWarning(
+                            stage: "会话列表重建准备",
+                            sourcePath: account.home,
+                            targetPath: account.home,
+                            error: error
+                        ))
+                    }
                 }
                 try await service.startCodexDesktop(codexHome: account.home)
                 desktopWasStopped = false
                 lastDesktopAccount = account.name
                 defaults.set(account.name, forKey: lastDesktopAccountKey)
+                scheduleUsageRefreshAfterDesktopSwitch(accountName: account.name)
                 appendOutput("已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "项目和会话历史已保留" : "项目和会话保持独立")。\n")
+                if !syncWarnings.isEmpty {
+                    appendOutput("账号切换已完成，但有 \(syncWarnings.count) 项内容未同步；详情已显示在提示中。\n")
+                    desktopSwitchPartialResult = DesktopSwitchPartialResult(
+                        accountName: account.name,
+                        warnings: syncWarnings
+                    )
+                }
             } catch {
                 var message = error.localizedDescription
                 if desktopWasStopped {
@@ -959,10 +1013,15 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func reloadUsage(force: Bool) async {
+    private func reloadUsage(force: Bool, accountNames: [String]? = nil) async {
         let key = currentUsageCacheKey
         var requestedAccountNames: [String]?
-        if let cached = usageCacheByKey[key] {
+        if let accountNames {
+            let loggedInNames = Set(status.accounts.filter(\.isLoggedIn).map(\.name))
+            requestedAccountNames = Array(Set(accountNames).intersection(loggedInNames)).sorted()
+            if requestedAccountNames?.isEmpty == true { return }
+            if let cached = usageCacheByKey[key] { applyUsageCache(cached) }
+        } else if let cached = usageCacheByKey[key] {
             applyUsageCache(cached)
             if !force {
                 requestedAccountNames = usageAccountNamesToRefresh(
@@ -1004,9 +1063,12 @@ final class CABStore: ObservableObject {
             }
             reports = reports.filter { capturedAccountNames.contains($0.key) }
             checkedAtByAccount = checkedAtByAccount.filter { capturedAccountNames.contains($0.key) }
+            let fetchedAt = report.accounts.contains(where: { $0.usage != nil })
+                ? report.fetchedAt
+                : usageCacheByKey[key]?.fetchedAt
             let entry = UsageCacheEntry(
                 reports: reports,
-                fetchedAt: report.fetchedAt,
+                fetchedAt: fetchedAt,
                 checkedAtByAccount: checkedAtByAccount,
                 error: nil
             )
@@ -1035,6 +1097,18 @@ final class CABStore: ObservableObject {
             )
             usageCacheByKey[key] = entry
             if key == currentUsageCacheKey { applyUsageCache(entry) }
+        }
+    }
+
+    private func scheduleUsageRefreshAfterDesktopSwitch(accountName: String) {
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            } catch {
+                return
+            }
+            guard let self, self.target == .local else { return }
+            await self.reloadUsage(force: true, accountNames: [accountName])
         }
     }
 
@@ -1455,6 +1529,20 @@ final class CABStore: ObservableObject {
             isBusy = false
         }
     }
+}
+
+func desktopSwitchWarning(
+    stage: String,
+    sourcePath: String,
+    targetPath: String,
+    error: Error
+) -> DesktopSwitchWarning {
+    DesktopSwitchWarning(
+        stage: stage,
+        sourcePath: URL(fileURLWithPath: sourcePath, isDirectory: true).standardizedFileURL.path,
+        targetPath: URL(fileURLWithPath: targetPath, isDirectory: true).standardizedFileURL.path,
+        detail: error.localizedDescription
+    )
 }
 
 func desktopSwitchStopFailureMessage(

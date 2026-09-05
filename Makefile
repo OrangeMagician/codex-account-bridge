@@ -20,7 +20,7 @@ build: check-go
 	GO="$(GO)" ./scripts/build-cli.sh "$(VERSION)"
 
 macos-app:
-	./scripts/build-macos-app.sh "$(if $(filter dev,$(VERSION)),0.0.0,$(VERSION))" "$(BUILD_NUMBER)"
+	GO="$(GO)" ./scripts/build-macos-app.sh "$(if $(filter dev,$(VERSION)),0.0.0,$(VERSION))" "$(BUILD_NUMBER)"
 
 release: check security-check
 	GO="$(GO)" ./scripts/build-release.sh "$(VERSION)"

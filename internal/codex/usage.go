@@ -16,6 +16,8 @@ import (
 )
 
 const usageReadTimeout = 20 * time.Second
+const usageReadAttempts = 3
+const usageReadRetryDelay = 350 * time.Millisecond
 const usageProbeTimeout = 45 * time.Second
 const usageResetTimeout = 20 * time.Second
 
@@ -82,6 +84,7 @@ type ResetCreditsSummary struct {
 }
 
 type RateLimitCredit struct {
+	ID          string `json:"id"`
 	ResetType   string `json:"reset_type,omitempty"`
 	Status      string `json:"status,omitempty"`
 	GrantedAt   int64  `json:"granted_at"`
@@ -140,6 +143,7 @@ type rpcResetCreditsSummary struct {
 }
 
 type rpcRateLimitCredit struct {
+	ID          string  `json:"id"`
 	ResetType   string  `json:"resetType"`
 	Status      string  `json:"status"`
 	GrantedAt   int64   `json:"grantedAt"`
@@ -171,6 +175,24 @@ func ReadUsage(home string) (UsageSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), usageReadTimeout)
 	defer cancel()
 
+	var lastErr error
+	for attempt := 1; attempt <= usageReadAttempts; attempt++ {
+		usage, err := readUsageOnce(ctx, binary, home)
+		if err == nil {
+			return usage, nil
+		}
+		lastErr = err
+		if attempt == usageReadAttempts || !retryableUsageReadError(err) {
+			return UsageSnapshot{}, err
+		}
+		if err := waitForUsageRetry(ctx, attempt); err != nil {
+			return UsageSnapshot{}, usageRPCError(ctx, "", "read Codex rate limits", err)
+		}
+	}
+	return UsageSnapshot{}, lastErr
+}
+
+func readUsageOnce(ctx context.Context, binary, home string) (UsageSnapshot, error) {
 	cmd := exec.CommandContext(ctx, binary, "app-server")
 	cmd.Env = environment(home)
 	stdin, err := cmd.StdinPipe()
@@ -250,10 +272,46 @@ func ReadUsage(home string) (UsageSnapshot, error) {
 	return result, nil
 }
 
+func waitForUsageRetry(ctx context.Context, attempt int) error {
+	delay := usageReadRetryDelay * time.Duration(attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func retryableUsageReadError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"error sending request",
+		"connection reset",
+		"connection refused",
+		"broken pipe",
+		"temporarily unavailable",
+		"unexpected eof",
+		"timed out",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // ConsumeUsageResetCredit asks the official Codex app-server to redeem one
-// backend-selected rate-limit reset credit. The idempotency key identifies one
-// user-confirmed attempt; CAB never reads or handles the opaque credit ID.
-func ConsumeUsageResetCredit(home, idempotencyKey string) (UsageResetOutcome, error) {
+// rate-limit reset credit. When creditID is non-empty, it must be an opaque ID
+// returned by account/rateLimits/read and selects that exact card.
+func ConsumeUsageResetCredit(home, idempotencyKey, creditID string) (UsageResetOutcome, error) {
 	if !validUsageResetIdempotencyKey(idempotencyKey) {
 		return "", errors.New("usage reset idempotency key is invalid")
 	}
@@ -316,10 +374,14 @@ func ConsumeUsageResetCredit(home, idempotencyKey string) (UsageResetOutcome, er
 		return "", errors.New("ChatGPT login is required to reset Codex usage")
 	}
 
+	params := map[string]string{"idempotencyKey": idempotencyKey}
+	if creditID != "" {
+		params["creditId"] = creditID
+	}
 	if err := encoder.Encode(map[string]any{
 		"method": "account/rateLimitResetCredit/consume",
 		"id":     3,
-		"params": map[string]string{"idempotencyKey": idempotencyKey},
+		"params": params,
 	}); err != nil {
 		return "", err
 	}
@@ -485,7 +547,7 @@ func convertResetCredits(value *rpcResetCreditsSummary) *ResetCreditsSummary {
 	}
 	result := &ResetCreditsSummary{AvailableCount: value.AvailableCount, Credits: make([]RateLimitCredit, 0, len(value.Credits))}
 	for _, credit := range value.Credits {
-		item := RateLimitCredit{ResetType: credit.ResetType, Status: credit.Status, GrantedAt: credit.GrantedAt, ExpiresAt: credit.ExpiresAt}
+		item := RateLimitCredit{ID: credit.ID, ResetType: credit.ResetType, Status: credit.Status, GrantedAt: credit.GrantedAt, ExpiresAt: credit.ExpiresAt}
 		if credit.Title != nil {
 			item.Title = *credit.Title
 		}

@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var pendingBulkAgentBinding: AgentBulkBindingRequest?
     @State private var pendingLegacyImport = false
     @State private var pendingUsageReset: UsageResetConfirmation?
+    @State private var expandedUsageResetAccounts: Set<String> = []
 
     var body: some View {
         withDialogs(baseView)
@@ -98,6 +99,12 @@ struct ContentView: View {
                     store.pendingDesktopSwitchError = nil
                 },
                 onContinue: { store.closeProcessesAndContinueDesktopSwitch(request) }
+            )
+        }
+        .sheet(item: $store.desktopSwitchPartialResult) { result in
+            DesktopSwitchPartialResultSheet(
+                result: result,
+                onDismiss: { store.desktopSwitchPartialResult = nil }
             )
         }
         .confirmationDialog("检测到正在运行的远程 Codex", isPresented: Binding(get: { store.pendingRemoteCodexSwitch != nil }, set: { if !$0 { store.pendingRemoteCodexSwitch = nil } }), titleVisibility: .visible) {
@@ -785,31 +792,10 @@ struct ContentView: View {
                             resetDateLabel(individual.resetDate)
                         }
                     }
-                    if let resetConfirmation = usageResetConfirmation(accountName: account.name, usage: usage),
+                    if usageResetConfirmation(accountName: account.name, usage: usage) != nil,
                        let resetCredits = usage.resetCredits {
                         Divider()
-                        HStack {
-                            Label("可用额度重置次数", systemImage: "arrow.counterclockwise.circle")
-                            Spacer()
-                            Text("\(resetCredits.availableCount)").fontWeight(.semibold)
-                            if let expiry = resetCredits.credits?.compactMap(\.expiresAt).min() {
-                                Text(cabLocalized("最早到期"))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                resetDateLabel(Date(timeIntervalSince1970: TimeInterval(expiry)))
-                            }
-                            Button {
-                                pendingUsageReset = resetConfirmation
-                            } label: {
-                                if store.usageResettingAccount == account.name {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Label("重置额度", systemImage: "arrow.counterclockwise")
-                                }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.orange)
-                            .disabled(store.usageResettingAccount != nil || store.isUsageRefreshing)
-                        }
+                        usageResetSection(account: account, usage: usage, resetCredits: resetCredits)
                     }
                     Divider()
                     HStack {
@@ -818,25 +804,13 @@ struct ContentView: View {
                             Text(fetchedAt.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        Button("刷新额度", action: store.refreshUsage)
+                        Button("刷新额度") { store.refreshUsage(accountName: account.name) }
                             .disabled(store.isUsageRefreshing)
                     }
                 } else if let message = store.usage(for: account.name)?.error {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("无法读取此账号额度", systemImage: "exclamationmark.triangle")
-                            .font(.headline).foregroundStyle(.orange)
-                        Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        Button("重新读取", action: store.refreshUsage)
-                            .disabled(store.isUsageRefreshing)
-                    }
+                    usageFailureView(account: account, title: "无法读取此账号额度", message: message)
                 } else if let message = store.usageLoadError {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("额度服务暂不可用", systemImage: "exclamationmark.triangle")
-                            .font(.headline).foregroundStyle(.orange)
-                        Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        Button("重新读取", action: store.refreshUsage)
-                            .disabled(store.isUsageRefreshing)
-                    }
+                    usageFailureView(account: account, title: "额度服务暂不可用", message: message)
                 } else if account.isLoginUnknown {
                     Label("登录状态暂时无法确认，请刷新状态。", systemImage: "questionmark.circle")
                         .foregroundStyle(.secondary)
@@ -854,7 +828,7 @@ struct ContentView: View {
                         Text("当前没有额度缓存。")
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Button("立即获取", action: store.refreshUsage)
+                        Button("立即获取") { store.refreshUsage(accountName: account.name) }
                     }
                 }
             }
@@ -863,6 +837,139 @@ struct ContentView: View {
             Label("额度与周期", systemImage: "chart.bar.xaxis")
                 .help("官方账号额度，与 API 的 RPM/TPM 限额不同。CAB 只读查询，不直接读取 auth.json、钥匙串令牌或浏览器 Cookie。")
         }
+    }
+
+    @ViewBuilder
+    private func usageFailureView(account: AccountStatus, title: String, message: String) -> some View {
+        let explanation = usageErrorExplanation(message)
+        VStack(alignment: .leading, spacing: 8) {
+            Label(cabLocalized(title), systemImage: "exclamationmark.triangle")
+                .font(.headline).foregroundStyle(.orange)
+            Text(String(format: cabLocalized("账号：%@"), account.name))
+                .font(.callout.weight(.medium))
+            Text(String(format: cabLocalized("配置目录：%@"), account.home))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            Text(explanation)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            if explanation != message {
+                Text(String(format: cabLocalized("错误详情：%@"), message))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Button(cabLocalized("重新读取")) { store.refreshUsage(accountName: account.name) }
+                .disabled(store.isUsageRefreshing)
+        }
+    }
+
+    private func usageResetSection(
+        account: AccountStatus,
+        usage: CodexUsageSnapshot,
+        resetCredits: UsageResetCredits
+    ) -> some View {
+        let isExpanded = expandedUsageResetAccounts.contains(account.name)
+        let credits = (resetCredits.credits ?? []).sorted {
+            let leftExpiry = $0.expiresAt ?? Int64.max
+            let rightExpiry = $1.expiresAt ?? Int64.max
+            return leftExpiry == rightExpiry ? $0.grantedAt < $1.grantedAt : leftExpiry < rightExpiry
+        }
+        let listedAvailableCount = credits.filter(\.isAvailable).count
+        let unlistedCount = Int(min(100, max(0, resetCredits.availableCount - Int64(listedAvailableCount))))
+        return VStack(spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isExpanded {
+                        expandedUsageResetAccounts.remove(account.name)
+                    } else {
+                        expandedUsageResetAccounts.insert(account.name)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Label(cabLocalized("使用额度重置"), systemImage: "arrow.counterclockwise.circle")
+                        .font(.headline)
+                    Spacer()
+                    Text(String(format: cabLocalized("可用 %lld 次"), resetCredits.availableCount))
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(.green.opacity(0.14), in: Capsule())
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(cabLocalized(isExpanded ? "收起全部重置卡" : "展开全部重置卡"))
+
+            if isExpanded {
+                Divider().padding(.top, 12)
+                ForEach(Array(credits.enumerated()), id: \.element.id) { index, credit in
+                    usageResetCreditRow(account: account, usage: usage, credit: credit)
+                    if index < credits.count - 1 || unlistedCount > 0 { Divider() }
+                }
+                ForEach(0..<unlistedCount, id: \.self) { index in
+                    usageResetCreditRow(
+                        account: account,
+                        usage: usage,
+                        credit: nil,
+                        genericPosition: index + 1
+                    )
+                    if index < unlistedCount - 1 { Divider() }
+                }
+            }
+        }
+    }
+
+    private func usageResetCreditRow(
+        account: AccountStatus,
+        usage: CodexUsageSnapshot,
+        credit: UsageResetCredit?,
+        genericPosition: Int? = nil
+    ) -> some View {
+        return HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(cabLocalized(usageResetCreditTitleLocalizationKey(credit?.title)))
+                    .fontWeight(.semibold)
+                if let expiresAt = credit?.expiresAt {
+                    Text(String(
+                        format: cabLocalized("将于 %@ 到期"),
+                        Date(timeIntervalSince1970: TimeInterval(expiresAt)).formatted(date: .abbreviated, time: .shortened)
+                    ))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if credit == nil {
+                    Text(String(
+                        format: cabLocalized("第 %lld 张未返回详情；确认后由官方服务选择一张可用重置卡。"),
+                        Int64(genericPosition ?? 1)
+                    ))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 12)
+            Button(cabLocalized("使用重置")) {
+                pendingUsageReset = usageResetConfirmation(
+                    accountName: account.name,
+                    usage: usage,
+                    credit: credit
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(nsColor: .labelColor))
+            .disabled(
+                credit?.isAvailable == false ||
+                store.usageResettingAccount != nil ||
+                store.isUsageRefreshing
+            )
+        }
+        .padding(.vertical, 14)
     }
 
     private func usageWindowRow(_ title: String, window: UsageWindow) -> some View {
@@ -1033,6 +1140,20 @@ struct ContentView: View {
         if message.localizedCaseInsensitiveContains("not logged in") { return "未登录" }
         if message.localizedCaseInsensitiveContains("unsupported") || message.localizedCaseInsensitiveContains("unknown command") { return "需要更新 cab" }
         return "读取失败"
+    }
+
+    private func usageErrorExplanation(_ message: String) -> String {
+        let transientMarkers = [
+            "error sending request",
+            "connection reset",
+            "connection refused",
+            "temporarily unavailable",
+            "timed out",
+        ]
+        if transientMarkers.contains(where: message.localizedCaseInsensitiveContains) {
+            return cabLocalized("官方 Codex 额度服务暂时无法连接；CAB 已自动重试，请确认网络后再试。")
+        }
+        return message
     }
 
     private var usageResetResultTitle: String {
@@ -1251,6 +1372,75 @@ struct ContentView: View {
     }
 }
 
+private struct DesktopSwitchPartialResultSheet: View {
+    let result: DesktopSwitchPartialResult
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(cabLocalized("账号已切换"))
+                        .font(.title2.bold())
+                    Text(String(
+                        format: cabLocalized("Codex 已使用 %@ 启动；以下内容未同步，不影响本次切换。"),
+                        result.accountName
+                    ))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(result.warnings) { warning in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(cabLocalized(warning.stage), systemImage: "exclamationmark.triangle.fill")
+                                .font(.headline)
+                                .foregroundStyle(.orange)
+                            pathRow("来源账号目录", path: warning.sourcePath)
+                            pathRow("目标账号目录", path: warning.targetPath)
+                            Text(warning.detail)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+            }
+            .frame(maxHeight: 360)
+
+            HStack {
+                Text(cabLocalized("完整路径可以选中复制，便于定位具体项目、文件夹和文件。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(cabLocalized("知道了"), action: onDismiss)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(26)
+        .frame(width: 640, height: 540)
+    }
+
+    private func pathRow(_ label: String, path: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(cabLocalized(label))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(path)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+        }
+    }
+}
+
 private struct UsageResetConfirmationSheet: View {
     let confirmation: UsageResetConfirmation
     let onCancel: () -> Void
@@ -1272,6 +1462,18 @@ private struct UsageResetConfirmationSheet: View {
                 Text(String(format: cabLocalized("可用次数：%lld"), confirmation.availableCount))
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                if let credit = confirmation.credit {
+                    Text(cabLocalized(usageResetCreditTitleLocalizationKey(credit.title)))
+                        .font(.callout.weight(.semibold))
+                    if let expiresAt = credit.expiresAt {
+                        Text(String(
+                            format: cabLocalized("此重置卡将于 %@ 到期"),
+                            Date(timeIntervalSince1970: TimeInterval(expiresAt)).formatted(date: .abbreviated, time: .shortened)
+                        ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if confirmation.hasRemainingUsage {

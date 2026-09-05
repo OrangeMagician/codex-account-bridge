@@ -71,13 +71,20 @@ final class CABService {
         var reports: [AccountUsageReport] = []
         var fetchedAt = Date.distantPast
         for accountName in accountNames.sorted() {
-            let report = try await loadUsage(
-                arguments: ["usage", "--account", accountName, "--json"],
-                target: target,
-                remoteHost: remoteHost
-            )
-            reports.append(contentsOf: report.accounts)
-            fetchedAt = max(fetchedAt, report.fetchedAt)
+            do {
+                let report = try await loadUsage(
+                    arguments: ["usage", "--account", accountName, "--json"],
+                    target: target,
+                    remoteHost: remoteHost
+                )
+                reports.append(contentsOf: report.accounts)
+                fetchedAt = max(fetchedAt, report.fetchedAt)
+            } catch {
+                // Keep one account's transport/auth failure from hiding the
+                // successful reports for the other explicitly requested accounts.
+                reports.append(AccountUsageReport(name: accountName, usage: nil, error: error.localizedDescription))
+                fetchedAt = max(fetchedAt, Date())
+            }
         }
         return UsageReport(fetchedAt: fetchedAt, accounts: reports)
     }
@@ -114,15 +121,25 @@ final class CABService {
         }
     }
 
-    func resetUsage(target: BridgeTarget, remoteHost: String, accountName: String, idempotencyKey: UUID) async throws -> UsageResetResult {
+    func resetUsage(
+        target: BridgeTarget,
+        remoteHost: String,
+        accountName: String,
+        creditID: String?,
+        idempotencyKey: UUID
+    ) async throws -> UsageResetResult {
+        var arguments = [
+            "usage", "reset",
+            "--account", accountName,
+            "--idempotency-key", idempotencyKey.uuidString.lowercased(),
+            "--confirm-reset-usage",
+            "--json",
+        ]
+        if let creditID, !creditID.isEmpty {
+            arguments.append(contentsOf: ["--credit-id", creditID])
+        }
         let result = try await execute(
-            [
-                "usage", "reset",
-                "--account", accountName,
-                "--idempotency-key", idempotencyKey.uuidString.lowercased(),
-                "--confirm-reset-usage",
-                "--json",
-            ],
+            arguments,
             target: target,
             remoteHost: remoteHost
         )
@@ -670,15 +687,11 @@ final class CABService {
     }
 
     private func cabExecutable() -> URL? {
-        var candidates: [String] = []
-        if let configured = ProcessInfo.processInfo.environment["CAB_EXECUTABLE"], !configured.isEmpty {
-            candidates.append(configured)
-        }
-        candidates += [
-            "/opt/homebrew/bin/cab",
-            fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/cab").path,
-            "/usr/local/bin/cab",
-        ]
+        let candidates = cabExecutableCandidates(
+            configured: ProcessInfo.processInfo.environment["CAB_EXECUTABLE"],
+            bundleResourceURL: Bundle.main.resourceURL,
+            homeDirectory: fileManager.homeDirectoryForCurrentUser
+        )
         return candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
     }
 
@@ -702,6 +715,22 @@ final class CABService {
     private func appleScriptQuote(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
+}
+
+func cabExecutableCandidates(
+    configured: String?,
+    bundleResourceURL: URL?,
+    homeDirectory: URL
+) -> [String] {
+    var candidates: [String] = []
+    if let configured, !configured.isEmpty { candidates.append(configured) }
+    if let bundleResourceURL { candidates.append(bundleResourceURL.appendingPathComponent("cab").path) }
+    candidates += [
+        "/opt/homebrew/bin/cab",
+        homeDirectory.appendingPathComponent(".local/bin/cab").path,
+        "/usr/local/bin/cab",
+    ]
+    return candidates
 }
 
 func codexRunTerminalCommand(

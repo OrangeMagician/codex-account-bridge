@@ -98,6 +98,7 @@ printf '%s\n' '{"id":3,"result":{"outcome":"reset"}}'
 	os.Stdout = write
 	code, runErr := Run([]string{
 		"cab", "usage", "reset", "--account", "work",
+		"--credit-id", "RateLimitResetCredit_1",
 		"--idempotency-key", "123e4567-e89b-12d3-a456-426614174000",
 		"--confirm-reset-usage", "--json",
 	}, "test")

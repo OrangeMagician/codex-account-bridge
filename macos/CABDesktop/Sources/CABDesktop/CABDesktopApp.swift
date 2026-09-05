@@ -8,6 +8,7 @@ struct CABDesktopApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                .cabPreservingActiveColors()
         }
         .windowStyle(.titleBar)
         .commands {
@@ -18,12 +19,24 @@ struct CABDesktopApp: App {
             SystemSettingsView()
                 .environmentObject(store)
                 .environment(\.locale, Locale(identifier: store.interfaceLanguage.localeIdentifier))
+                .cabPreservingActiveColors()
         }
 
         MenuBarExtra("app.name", systemImage: "person.2.circle") {
             CABMenuBarView(store: store)
         }
         .environment(\.locale, Locale(identifier: store.interfaceLanguage.localeIdentifier))
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func cabPreservingActiveColors() -> some View {
+        if #available(macOS 15.0, *) {
+            environment(\.appearsActive, true)
+        } else {
+            environment(\.controlActiveState, .active)
+        }
     }
 }
 

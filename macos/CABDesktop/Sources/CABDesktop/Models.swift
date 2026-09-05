@@ -233,7 +233,8 @@ struct UsageResetCredits: Codable, Equatable {
     }
 }
 
-struct UsageResetCredit: Codable, Equatable {
+struct UsageResetCredit: Codable, Equatable, Identifiable {
+    let creditID: String?
     let resetType: String?
     let status: String?
     let grantedAt: Int64
@@ -242,12 +243,37 @@ struct UsageResetCredit: Codable, Equatable {
     let description: String?
 
     enum CodingKeys: String, CodingKey {
+        case creditID = "id"
         case resetType = "reset_type"
         case status
         case grantedAt = "granted_at"
         case expiresAt = "expires_at"
         case title, description
     }
+
+    var id: String {
+        creditID ?? [resetType ?? "reset", String(grantedAt), String(expiresAt ?? 0), title ?? ""]
+            .joined(separator: ":")
+    }
+
+    var isAvailable: Bool {
+        guard let status else { return true }
+        return ["available", "active", "granted"].contains(status.lowercased())
+    }
+}
+
+struct DesktopSwitchWarning: Identifiable, Equatable {
+    let id = UUID()
+    let stage: String
+    let sourcePath: String
+    let targetPath: String
+    let detail: String
+}
+
+struct DesktopSwitchPartialResult: Identifiable, Equatable {
+    let id = UUID()
+    let accountName: String
+    let warnings: [DesktopSwitchWarning]
 }
 
 enum UsageResetOutcome: String, Codable, Equatable {

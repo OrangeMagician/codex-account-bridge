@@ -361,7 +361,7 @@ public enum CodexContinuityState {
     ) throws {
         let values = try source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true else {
-            throw CodexContinuityError.failure("拒绝同步非目录或符号链接形式的工作区内容：\(source.lastPathComponent)")
+            throw CodexContinuityError.failure("拒绝同步非目录或符号链接形式的工作区内容。\n来源目录：\(source.path)")
         }
         guard let enumerator = fileManager.enumerator(
             at: source,
@@ -369,18 +369,18 @@ public enum CodexContinuityState {
             options: []
         ) else { return }
         while let item = enumerator.nextObject() as? URL {
-            if shouldSkipTransientSocket(item, fileManager: fileManager) {
+            if shouldSkipTransientGitItem(item) {
                 continue
             }
             let itemValues = try item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             guard itemValues.isSymbolicLink != true else {
-                throw CodexContinuityError.failure("工作区内容包含符号链接，已停止切换：\(item.lastPathComponent)")
+                throw CodexContinuityError.failure("工作区内容包含符号链接。\n来源目录：\(source.path)\n未同步文件：\(item.path)")
             }
             let resolvedSourcePath = source.resolvingSymlinksInPath().path
             let resolvedItemPath = item.resolvingSymlinksInPath().path
             let relative = resolvedItemPath.replacingOccurrences(of: resolvedSourcePath + "/", with: "", options: [.anchored])
             guard !relative.isEmpty, relative != resolvedItemPath, !relative.hasPrefix("/") else {
-                throw CodexContinuityError.failure("无法确定工作区内容的安全相对路径：\(item.lastPathComponent)")
+                throw CodexContinuityError.failure("无法确定工作区内容的安全相对路径。\n来源目录：\(source.path)\n未同步文件：\(item.path)")
             }
             let target = destination.appendingPathComponent(relative)
             if itemValues.isDirectory == true {
@@ -389,24 +389,26 @@ public enum CodexContinuityState {
                 fileCount += 1
                 totalBytes += Int64(itemValues.fileSize ?? 0)
                 guard fileCount <= maximumFileCount, totalBytes <= maximumTotalBytes else {
-                    throw CodexContinuityError.failure("工作区内容超过安全数量或大小限制，已停止切换。")
+                    throw CodexContinuityError.failure("工作区内容超过安全数量或大小限制。\n来源目录：\(source.path)\n停止位置：\(item.path)")
                 }
                 try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
-                try fileManager.copyItem(at: item, to: target)
+                do {
+                    try fileManager.copyItem(at: item, to: target)
+                } catch {
+                    throw CodexContinuityError.failure(
+                        "复制工作区文件失败。\n来源目录：\(source.path)\n未同步文件：\(item.path)\n目标位置：\(target.path)\n原因：\(error.localizedDescription)"
+                    )
+                }
             } else {
-                throw CodexContinuityError.failure("工作区内容包含不支持的特殊文件，已停止切换：\(item.lastPathComponent)")
+                throw CodexContinuityError.failure("工作区内容包含不支持的特殊文件。\n来源目录：\(source.path)\n未同步文件：\(item.path)")
             }
         }
     }
 
-    private static func shouldSkipTransientSocket(_ url: URL, fileManager: FileManager) -> Bool {
+    private static func shouldSkipTransientGitItem(_ url: URL) -> Bool {
         guard transientSocketNames.contains(url.lastPathComponent) else { return false }
-        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-              let type = attributes[.type] as? FileAttributeType else {
-            return false
-        }
-        return type == .typeSocket
+        return url.pathComponents.contains(".git")
     }
 
     private static func mergeLineFiles(_ sources: [URL], into targetURL: URL, fileManager: FileManager) throws {
@@ -452,7 +454,7 @@ public enum CodexContinuityState {
     private static func validatePortableFile(_ url: URL) throws {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else {
-            throw CodexContinuityError.failure("拒绝同步非普通文件或符号链接形式的工作区内容：\(url.lastPathComponent)")
+            throw CodexContinuityError.failure("拒绝同步非普通文件或符号链接形式的工作区内容。\n未同步文件：\(url.path)")
         }
     }
 

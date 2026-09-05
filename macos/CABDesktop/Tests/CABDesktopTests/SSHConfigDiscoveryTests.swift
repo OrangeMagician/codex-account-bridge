@@ -6,6 +6,17 @@ import Testing
 
 @Suite("SSH config and login URL discovery")
 struct SSHConfigDiscoveryTests {
+    @Test func bundledCABPrecedesInstalledLegacyCLI() {
+        let candidates = cabExecutableCandidates(
+            configured: nil,
+            bundleResourceURL: URL(fileURLWithPath: "/Applications/CodexAccountBridge.app/Contents/Resources"),
+            homeDirectory: URL(fileURLWithPath: "/Users/test")
+        )
+
+        #expect(candidates[0] == "/Applications/CodexAccountBridge.app/Contents/Resources/cab")
+        #expect(candidates.firstIndex(of: "/Applications/CodexAccountBridge.app/Contents/Resources/cab")! < candidates.firstIndex(of: "/opt/homebrew/bin/cab")!)
+    }
+
     @MainActor
     @Test func globalSettingsAndAccountNavigationUseOneSelectionState() {
         let store = CABStore()
@@ -325,6 +336,30 @@ struct SSHConfigDiscoveryTests {
         #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent("vendor_imports/skills/.git/fsmonitor--daemon.ipc").path))
     }
 
+    @Test func ignoresStaleGitFsmonitorFileDuringContinuitySync() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cab-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        let repository = source.appendingPathComponent("vendor_imports/skills/example")
+        try FileManager.default.createDirectory(at: repository.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try "portable".write(to: repository.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "stale socket placeholder".write(
+            to: repository.appendingPathComponent(".git/fsmonitor--daemon.ipc"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        _ = try CodexContinuityState.synchronize(
+            sourceHome: source.path,
+            targetHome: target.path,
+            knownHomes: [source.path, target.path]
+        )
+
+        #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("vendor_imports/skills/example/SKILL.md").path))
+        #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent("vendor_imports/skills/example/.git/fsmonitor--daemon.ipc").path))
+    }
+
     @Test func stillRejectsUnknownSpecialFilesDuringContinuitySync() throws {
         let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("cab-\(UUID().uuidString)")
@@ -346,6 +381,8 @@ struct SSHConfigDiscoveryTests {
             Issue.record("Unknown special files must still stop continuity synchronization")
         } catch {
             #expect(error.localizedDescription.contains("unsupported.fifo"))
+            #expect(error.localizedDescription.contains(fifoURL.path))
+            #expect(error.localizedDescription.contains(sourceSkills.path))
         }
     }
 
@@ -654,9 +691,42 @@ struct SSHConfigDiscoveryTests {
 
         #expect(confirmation?.accountName == "work")
         #expect(confirmation?.availableCount == 2)
+        #expect(confirmation?.credit == nil)
         #expect(confirmation?.fiveHourRemaining == nil)
         #expect(confirmation?.weeklyRemaining == 31)
         #expect(confirmation?.hasRemainingUsage == true)
+    }
+
+    @Test func usageResetConfirmationKeepsSelectedCardDetails() throws {
+        let credit = UsageResetCredit(
+            creditID: "RateLimitResetCredit_1",
+            resetType: "codexRateLimits",
+            status: "available",
+            grantedAt: 2_000_000_000,
+            expiresAt: 2_000_003_600,
+            title: "Complete reset",
+            description: "Weekly and five-hour windows"
+        )
+        let report = usageReportWithLimits(
+            primary: nil,
+            secondary: nil,
+            resetCredits: UsageResetCredits(availableCount: 1, credits: [credit])
+        )
+
+        let usage = try #require(report.usage)
+        let confirmation = try #require(usageResetConfirmation(
+            accountName: "work",
+            usage: usage,
+            credit: credit
+        ))
+
+        #expect(confirmation.credit == credit)
+        #expect(confirmation.id.contains(credit.id))
+    }
+
+    @Test func localizesOfficialUsageResetCardTitle() {
+        #expect(usageResetCreditTitleLocalizationKey("Full reset") == "完全重置（周额度 + 5 小时额度）")
+        #expect(usageResetCreditTitleLocalizationKey("Custom reset") == "Custom reset")
     }
 
     @Test func usageResetConfirmationIsHiddenWithoutAvailableCredits() {
