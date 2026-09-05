@@ -977,10 +977,6 @@ struct ContentView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(cabLocalized(title)).fontWeight(.medium)
-                    if let duration = window.windowDurationMins {
-                        Text("\(durationText(duration)) \(cabLocalized("周期"))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                 }
                 Spacer()
                 Text("\(cabLocalized("已用")) \(percentText(window.usedPercent))")
@@ -1023,6 +1019,12 @@ struct ContentView: View {
                 }
                 ProgressView(value: 100, total: 100)
                     .tint(.green)
+                HStack {
+                    Spacer()
+                    Text(cabLocalized("没有5小时额度限制"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
