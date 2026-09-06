@@ -1005,9 +1005,6 @@ struct ContentView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(cabLocalized(title)).fontWeight(.medium)
-                        Text("没有5小时额度限制")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Text("\(cabLocalized("已用")) 0%")
@@ -1104,6 +1101,9 @@ struct ContentView: View {
                 HStack(spacing: 4) {
                     Text(cabLocalized("重置"))
                     Text(date, style: .relative)
+                    Text("(")
+                    Text(date, format: .dateTime.year().month().day().hour().minute())
+                    Text(")")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
