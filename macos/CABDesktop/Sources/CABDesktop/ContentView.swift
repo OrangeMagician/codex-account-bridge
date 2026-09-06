@@ -1102,7 +1102,7 @@ struct ContentView: View {
                     Text(cabLocalized("重置"))
                     Text(date, style: .relative)
                     Text("(")
-                    Text(date, format: .dateTime.year().month().day().hour().minute())
+                    Text(date, format: resetDateFormat(for: window))
                     Text(")")
                 }
                 .font(.caption)
@@ -1112,6 +1112,13 @@ struct ContentView: View {
                 Text(cabLocalized("重置时间未知")).font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func resetDateFormat(for window: UsageWindow) -> Date.FormatStyle {
+        if window.windowDurationMins == usageFiveHourWindowMinutes {
+            return .dateTime.hour().minute()
+        }
+        return .dateTime.month().day().hour().minute()
     }
 
     private func resetDateLabel(_ date: Date) -> some View {
