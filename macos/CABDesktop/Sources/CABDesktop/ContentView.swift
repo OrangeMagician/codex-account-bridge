@@ -988,7 +988,7 @@ struct ContentView: View {
                 .tint(usageColor(window.remainingPercent))
             HStack {
                 Spacer()
-                resetSummary(window)
+                resetSummary(window, isFiveHour: title == "5 小时额度")
             }
         }
         .padding(12)
@@ -1056,7 +1056,7 @@ struct ContentView: View {
                 .tint(value.remainingPercent.map(usageColor) ?? .gray)
             switch value {
             case let .measured(window):
-                resetSummary(window)
+                resetSummary(window, isFiveHour: title == "5 小时")
             case .unlimited:
                 Text("无限制").font(.caption).foregroundStyle(.secondary)
             case .unavailable:
@@ -1095,14 +1095,14 @@ struct ContentView: View {
         }
     }
 
-    private func resetSummary(_ window: UsageWindow) -> some View {
+    private func resetSummary(_ window: UsageWindow, isFiveHour: Bool = false) -> some View {
         Group {
             if let date = window.resetDate {
                 HStack(spacing: 4) {
                     Text(cabLocalized("重置"))
                     Text(date, style: .relative)
                     Text("(")
-                    Text(date, format: resetDateFormat(for: window))
+                    Text(date, format: resetDateFormat(for: window, isFiveHour: isFiveHour))
                     Text(")")
                 }
                 .font(.caption)
@@ -1114,8 +1114,8 @@ struct ContentView: View {
         }
     }
 
-    private func resetDateFormat(for window: UsageWindow) -> Date.FormatStyle {
-        if window.windowDurationMins == usageFiveHourWindowMinutes {
+    private func resetDateFormat(for window: UsageWindow, isFiveHour: Bool) -> Date.FormatStyle {
+        if isFiveHour || window.windowDurationMins == usageFiveHourWindowMinutes {
             return .dateTime.hour().minute()
         }
         return .dateTime.month().day().hour().minute()
