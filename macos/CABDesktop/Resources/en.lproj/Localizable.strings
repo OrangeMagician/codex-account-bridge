@@ -194,9 +194,6 @@
 "这会关闭正在运行的 Codex 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。%@请先保存正在进行的工作。" = "This closes the running Codex desktop app and its active tasks, then restarts it with the selected account's separate CODEX_HOME. %@Save your work first.";
 
 // Menu bar usage
-"单行" = "Single line";
-"双行" = "Two lines";
-"仅图标" = "Icon only";
 "本机默认账号" = "Local default account";
 "本机当前账号" = "Current local account";
 "无法确认本机当前账号" = "Unable to identify the current local account";
@@ -213,3 +210,6 @@
 "状态栏" = "Menu bar";
 "更多操作" = "More actions";
 "额度周期已重置，等待刷新" = "The usage window reset. Waiting for refresh.";
+"百分比" = "Percentage";
+"进度条" = "Progress bars";
+"上排 5h，下排周额度" = "5h on top, weekly usage below";

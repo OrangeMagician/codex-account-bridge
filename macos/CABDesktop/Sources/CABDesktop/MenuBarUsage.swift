@@ -2,22 +2,24 @@ import AppKit
 import Darwin
 import Foundation
 
-enum MenuBarLayout: String, Codable, CaseIterable, Identifiable {
-    case compact, stacked, icon
+enum MenuBarDisplayStyle: String, Codable, CaseIterable, Identifiable {
+    case percentage, progress
     var id: String { rawValue }
-    var title: String {
-        cabLocalized(self == .compact ? "单行" : self == .stacked ? "双行" : "仅图标")
-    }
+    var title: String { cabLocalized(self == .percentage ? "百分比" : "进度条") }
 }
 
 struct MenuBarPreferences: Codable, Equatable {
-    var layout: MenuBarLayout = .compact
+    var displayStyle: MenuBarDisplayStyle = .percentage
     var showsAccount = false
-    var showsFiveHour = true
-    var showsWeekly = true
 
-    mutating func normalize() {
-        if !showsFiveHour && !showsWeekly { showsFiveHour = true }
+    init() {}
+
+    private enum CodingKeys: String, CodingKey { case displayStyle, showsAccount }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        displayStyle = (try? values.decode(MenuBarDisplayStyle.self, forKey: .displayStyle)) ?? .percentage
+        showsAccount = try values.decodeIfPresent(Bool.self, forKey: .showsAccount) ?? false
     }
 }
 
@@ -163,16 +165,14 @@ final class MenuBarUsageStore: ObservableObject {
         self.service = service
         self.defaults = defaults
         self.desktopHome = desktopHome
-        var preferences = defaults.data(forKey: preferencesKey)
+        let preferences = defaults.data(forKey: preferencesKey)
             .flatMap { try? JSONDecoder().decode(MenuBarPreferences.self, from: $0) } ?? MenuBarPreferences()
-        preferences.normalize()
         self.preferences = preferences
     }
 
     func updatePreferences(_ change: (inout MenuBarPreferences) -> Void) {
         var updated = preferences
         change(&updated)
-        updated.normalize()
         preferences = updated
         if let data = try? JSONEncoder().encode(updated) { defaults.set(data, forKey: preferencesKey) }
     }

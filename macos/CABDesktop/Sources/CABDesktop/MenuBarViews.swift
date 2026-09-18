@@ -6,32 +6,43 @@ import SwiftUI
 @MainActor
 func menuBarLabelImage(snapshot: MenuBarSnapshot, preferences: MenuBarPreferences) -> NSImage {
     let periods = snapshot.periods
-    var lines: [String] = []
-    if preferences.showsFiveHour { lines.append("5h \(menuBarPercent(periods.fiveHour))") }
-    if preferences.showsWeekly { lines.append("\(cabLocalized("周")) \(menuBarPercent(periods.weekly))") }
-    let stacked = preferences.layout == .stacked
-    let font = NSFont.monospacedDigitSystemFont(ofSize: stacked ? 9 : 11, weight: .medium)
+    let values = [periods.fiveHour, periods.weekly]
+    let labels = ["5h", cabLocalized("周")]
+    let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
     let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
-    if !stacked { lines = [lines.joined(separator: "  ·  ")] }
-    let account = preferences.showsAccount && preferences.layout != .icon ? String((snapshot.account?.name ?? "CAB").prefix(10)) : ""
+    let account = preferences.showsAccount ? String((snapshot.account?.name ?? "CAB").prefix(10)) : ""
     let accountAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.black]
     let accountWidth = account.isEmpty ? 0 : ceil((account as NSString).size(withAttributes: accountAttributes).width) + 8
-    let textWidth = preferences.layout == .icon ? 0 : (lines.map { ceil(($0 as NSString).size(withAttributes: attributes).width) }.max() ?? 0) + 7
+    let labelWidth = labels.map { ceil(($0 as NSString).size(withAttributes: attributes).width) }.max() ?? 14
+    let valueWidth: CGFloat = preferences.displayStyle == .progress ? 36 : ceil(("100%" as NSString).size(withAttributes: attributes).width)
+    let valueX = accountWidth + labelWidth + 4
+    let width = valueX + valueWidth + 2
     let warning = snapshot.error != nil || snapshot.unavailableReason != nil || snapshot.hasExpiredWindow
-    let image = NSImage(size: NSSize(width: 18 + accountWidth + textWidth + (warning ? 8 : 0), height: 22), flipped: false) { _ in
-        let icon = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
-        icon?.draw(in: NSRect(x: 0, y: 3, width: 16, height: 16))
+    let image = NSImage(size: NSSize(width: width + (warning ? 8 : 0), height: 22), flipped: false) { _ in
         if !account.isEmpty {
-            (account as NSString).draw(at: NSPoint(x: 22, y: 4), withAttributes: accountAttributes)
+            (account as NSString).draw(at: NSPoint(x: 0, y: 4), withAttributes: accountAttributes)
         }
-        if preferences.layout != .icon {
-            for (index, line) in lines.enumerated() {
-                let y: CGFloat = stacked && lines.count > 1 ? (index == 0 ? 11 : 0) : 4
-                (line as NSString).draw(at: NSPoint(x: 20 + accountWidth, y: y), withAttributes: attributes)
+        for index in 0..<2 {
+            let y: CGFloat = index == 0 ? 11 : 0
+            (labels[index] as NSString).draw(at: NSPoint(x: accountWidth, y: y), withAttributes: attributes)
+            if preferences.displayStyle == .progress,
+               case let .measured(window) = values[index], window.usedPercent.isFinite {
+                let rect = NSRect(x: valueX, y: y + 3.5, width: valueWidth, height: 4)
+                let track = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+                NSColor.black.withAlphaComponent(0.25).setFill()
+                track.fill()
+                let filledWidth = valueWidth * window.remainingPercent / 100
+                if filledWidth > 0 {
+                    NSColor.black.setFill()
+                    NSBezierPath(roundedRect: NSRect(x: rect.minX, y: rect.minY, width: filledWidth, height: rect.height), xRadius: min(2, filledWidth / 2), yRadius: 2).fill()
+                }
+            } else {
+                // Unknown and unlimited remain explicit, even in progress-bar mode.
+                (menuBarPercent(values[index]) as NSString).draw(at: NSPoint(x: valueX, y: y), withAttributes: attributes)
             }
         }
         if warning {
-            ("!" as NSString).draw(at: NSPoint(x: 18 + accountWidth + textWidth, y: 4), withAttributes: accountAttributes)
+            ("!" as NSString).draw(at: NSPoint(x: width, y: 4), withAttributes: accountAttributes)
         }
         return true
     }
@@ -189,21 +200,15 @@ struct MenuBarPreferencesView: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("显示样式").font(.caption).foregroundStyle(.secondary)
-                Picker("显示样式", selection: binding(\.layout)) {
-                    ForEach(MenuBarLayout.allCases) { layout in Text(layout.title).tag(layout) }
+                Picker("显示样式", selection: binding(\.displayStyle)) {
+                    ForEach(MenuBarDisplayStyle.allCases) { style in Text(style.title).tag(style) }
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
             }
             Toggle("显示账号名", isOn: binding(\.showsAccount))
-                .disabled(model.preferences.layout == .icon)
-            HStack(spacing: 16) {
-                Toggle("5 小时额度", isOn: binding(\.showsFiveHour))
-                    .disabled(!model.preferences.showsWeekly)
-                Toggle("周额度", isOn: binding(\.showsWeekly))
-                    .disabled(!model.preferences.showsFiveHour)
-            }
-            .disabled(model.preferences.layout == .icon)
+            Text("上排 5h，下排周额度")
+                .font(.caption).foregroundStyle(.secondary)
             Text("始终显示本机账号的剩余额度，刷新频率跟随额度设置。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }

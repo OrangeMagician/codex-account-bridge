@@ -75,17 +75,21 @@ struct MenuBarUsageTests {
     }
 
     @MainActor
-    @Test func preferencesPersistAndCannotHideBothPeriods() {
+    @Test func preferencesPersistAndMigrateOldLayouts() {
         let suite = "CAB.MenuBar.Tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let model = MenuBarUsageStore(defaults: defaults, desktopHome: { .unknown })
         #expect(model.preferences == MenuBarPreferences())
-        model.updatePreferences { $0.layout = .stacked; $0.showsAccount = true; $0.showsFiveHour = false; $0.showsWeekly = false }
+        model.updatePreferences { $0.displayStyle = .progress; $0.showsAccount = true }
         let restored = MenuBarUsageStore(defaults: defaults, desktopHome: { .unknown })
-        #expect(restored.preferences.layout == .stacked)
+        #expect(restored.preferences.displayStyle == .progress)
         #expect(restored.preferences.showsAccount)
-        #expect(restored.preferences.showsFiveHour)
+        let old = Data(#"{"layout":"icon","showsAccount":true,"showsFiveHour":false,"showsWeekly":false}"#.utf8)
+        defaults.set(old, forKey: "menuBarPreferences.v1")
+        let migrated = MenuBarUsageStore(defaults: defaults, desktopHome: { .unknown })
+        #expect(migrated.preferences.displayStyle == .percentage)
+        #expect(migrated.preferences.showsAccount)
     }
 
     @MainActor
@@ -141,9 +145,9 @@ struct MenuBarUsageTests {
     @Test func rendersNativePanelAndCompactLabels() async throws {
         let model = MenuBarUsageStore(service: MenuBarTestService(), desktopHome: { .running(menuBarTestAccount.home) })
         await model.refresh(now: menuBarTestDate)
-        for layout in MenuBarLayout.allCases {
+        for style in MenuBarDisplayStyle.allCases {
             var preferences = MenuBarPreferences()
-            preferences.layout = layout
+            preferences.displayStyle = style
             let image = menuBarLabelImage(snapshot: model.snapshot, preferences: preferences)
             #expect(image.size.height == 22)
             #expect(image.size.width < 210)
@@ -155,7 +159,7 @@ struct MenuBarUsageTests {
                     image.draw(at: NSPoint(x: 10, y: 5), from: .zero, operation: .sourceOver, fraction: 1)
                     return true
                 }
-                try savePNG(canvas, to: "\(directory)/label-\(layout.rawValue).png")
+                try savePNG(canvas, to: "\(directory)/label-\(style.rawValue).png")
             }
         }
         if let directory = ProcessInfo.processInfo.environment["CAB_MENU_BAR_RENDER_DIR"] {
