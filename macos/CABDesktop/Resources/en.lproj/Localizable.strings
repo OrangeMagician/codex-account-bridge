@@ -1,6 +1,7 @@
 "app.name" = "CodexAccountBridge";
 "刷新" = "Refresh";
 "刷新状态" = "Refresh status";
+"更新于 %@" = "Updated %@";
 "打开 CAB Desktop" = "Open CAB Desktop";
 "启动 Codex" = "Launch Codex";
 "退出" = "Quit";

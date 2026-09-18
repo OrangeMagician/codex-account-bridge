@@ -42,6 +42,7 @@ extension View {
 
 private struct CABMenuBarView: View {
     @ObservedObject var store: CABStore
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button("打开 CAB Desktop") {
@@ -66,7 +67,9 @@ private struct CABMenuBarView: View {
         Button("刷新额度") { store.refreshUsage() }
             .disabled(store.isUsageRefreshing)
         if let fetchedAt = store.usageFetchedAt {
-            Text("更新于 \(fetchedAt, style: .relative)")
+            // Live relative-date Text can recursively invalidate the native menu
+            // on macOS 15. Format a static timestamp; usage refreshes still update it.
+            Text("更新于 \(fetchedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .standard).locale(locale)))")
         }
         Text(cabLocalized(store.status.rotation.enabled ? "轮换：已开启" : "轮换：已关闭"))
         Divider()
