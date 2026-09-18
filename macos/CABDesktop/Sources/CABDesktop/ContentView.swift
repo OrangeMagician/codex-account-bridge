@@ -1542,6 +1542,7 @@ private struct UsageResetConfirmationSheet: View {
 
 struct SystemSettingsView: View {
     @EnvironmentObject private var store: CABStore
+    @EnvironmentObject private var menuBar: MenuBarUsageStore
     @State private var pendingUsageWakeEnable = false
     @State private var usageWakeExpanded = false
 
@@ -1569,6 +1570,12 @@ struct SystemSettingsView: View {
                     .padding(8)
                 } label: {
                     Text("通用")
+                }
+
+                GroupBox {
+                    MenuBarPreferencesView(model: menuBar).padding(8)
+                } label: {
+                    Label("状态栏", systemImage: "menubar.rectangle")
                 }
 
                 GroupBox {

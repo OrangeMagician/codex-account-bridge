@@ -192,3 +192,24 @@
 "会先检查 CLI 和编辑器扩展，再安全同步项目、完整消息与目录、记忆、目标、个人技能、附件、侧栏状态和未发送草稿；预检不通过时不会关闭桌面端。" = "CAB first checks the CLI and editor extensions, then safely syncs projects, complete messages and catalogs, memories, goals, personal skills, attachments, sidebar state, and unsent drafts. The desktop app stays open if the preflight check fails.";
 "如果当前正在共享，会先恢复各账号独立的会话副本；项目列表也保持账号独立。" = "If sharing is currently enabled, CAB first restores each account's separate session copy; project lists also remain account-specific.";
 "这会关闭正在运行的 Codex 桌面客户端和其中的活动任务，再以所选账号的独立 CODEX_HOME 重新启动。%@请先保存正在进行的工作。" = "This closes the running Codex desktop app and its active tasks, then restarts it with the selected account's separate CODEX_HOME. %@Save your work first.";
+
+// Menu bar usage
+"单行" = "Single line";
+"双行" = "Two lines";
+"仅图标" = "Icon only";
+"本机默认账号" = "Local default account";
+"本机当前账号" = "Current local account";
+"无法确认本机当前账号" = "Unable to identify the current local account";
+"当前账号尚未纳入 CAB" = "This account is not registered in CAB";
+"登录状态未知" = "Sign-in status unknown";
+"暂时无法获取额度" = "Usage is temporarily unavailable";
+"正在刷新…" = "Refreshing…";
+"尚未获取额度" = "Usage not loaded yet";
+"自定义状态栏" = "Customize menu bar";
+"重置于 %@" = "Resets %@";
+"显示样式" = "Display style";
+"显示账号名" = "Show account name";
+"始终显示本机账号的剩余额度，刷新频率跟随额度设置。" = "Always shows local remaining usage. Follows the usage refresh interval.";
+"状态栏" = "Menu bar";
+"更多操作" = "More actions";
+"额度周期已重置，等待刷新" = "The usage window reset. Waiting for refresh.";
