@@ -250,7 +250,7 @@ struct SSHConfigDiscoveryTests {
         let targetDatabase = targetSQLite.appendingPathComponent("codex-dev.db")
         try createThreadCatalogForTest(sourceDatabase)
         try createThreadCatalogForTest(targetDatabase)
-        try runSQLiteForTest(sourceDatabase, sql: "INSERT INTO local_thread_catalog_hosts VALUES ('host-a','local'); INSERT INTO local_thread_catalog (host_id,thread_id,display_title) VALUES ('host-a','shared','Source title'),('host-a','source-only','Source only');")
+        try runSQLiteForTest(sourceDatabase, sql: "INSERT INTO local_thread_catalog_hosts VALUES ('host-a','local'); INSERT INTO local_thread_catalog (host_id,thread_id,display_title) VALUES ('host-a','shared','Source title'),('host-a','source-only','Source only'); UPDATE local_thread_catalog SET source_updated_at=20;")
         try runSQLiteForTest(targetDatabase, sql: "INSERT INTO local_thread_catalog_hosts VALUES ('host-a','local'); INSERT INTO local_thread_catalog (host_id,thread_id,display_title) VALUES ('host-a','shared','Target title'),('host-a','target-only','Target only'); INSERT INTO unrelated_state VALUES (1,'keep-me');")
 
         let synchronized = try CodexThreadCatalogState.synchronize(
@@ -266,6 +266,56 @@ struct SSHConfigDiscoveryTests {
         try CodexThreadCatalogState.restore(result)
         #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT count(*) FROM local_thread_catalog;") == "2")
         #expect(try sqliteScalarForTest(targetDatabase, sql: "SELECT display_title FROM local_thread_catalog WHERE thread_id='shared';") == "Target title")
+    }
+
+    @Test func catalogMergePreservesFreshRowsAndMeaningfulTitles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        for home in [source, target] {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent("sqlite"), withIntermediateDirectories: true)
+            try createThreadCatalogForTest(home.appendingPathComponent("sqlite/codex-dev.db"))
+        }
+        let src = source.appendingPathComponent("sqlite/codex-dev.db")
+        let dst = target.appendingPathComponent("sqlite/codex-dev.db")
+        try runSQLiteForTest(dst, sql: """
+        INSERT INTO local_thread_catalog_hosts VALUES ('remote','ssh');
+        INSERT INTO local_thread_catalog (host_id,thread_id,display_title,cwd,source_updated_at,source_recency_at,observation_sequence) VALUES
+        ('remote','stale','Latest name','/project',20,30,7),
+        ('remote','placeholder','Real name','/project',20,30,7),
+        ('remote','repair','/project','/project',20,30,7),
+        ('remote','tie','Destination','/project',20,30,7),
+        ('remote','rename','Old name','/project',20,30,7),
+        ('remote','null','Known name','/project',NULL,NULL,7);
+        """)
+        try runSQLiteForTest(src, sql: """
+        INSERT INTO local_thread_catalog_hosts VALUES ('remote','ssh'),('other','ssh');
+        INSERT INTO local_thread_catalog (host_id,thread_id,display_title,cwd,source_updated_at,source_recency_at,observation_sequence) VALUES
+        ('remote','stale','Stale name','/old',10,10,999),
+        ('remote','placeholder','/project','/project',40,40,999),
+        ('remote','repair','Recovered name','/project',10,10,999),
+        ('remote','tie','Source','/project',20,20,999),
+        ('remote','rename','New name','/project',40,25,999),
+        ('remote','null','   ','/project',NULL,NULL,999),
+        ('other','stale','Different host','/project',50,50,999),
+        ('remote','new','New task','/project',50,50,999);
+        """)
+        for _ in 0..<2 {
+            _ = try CodexThreadCatalogState.synchronize(sourceHome: source.path, targetHome: target.path, knownHomes: [source.path])
+            #expect(try sqliteScalarForTest(dst, sql: "SELECT thread_id || ':' || display_title FROM local_thread_catalog WHERE host_id='remote' ORDER BY thread_id;") == """
+            new:New task
+            null:Known name
+            placeholder:Real name
+            rename:New name
+            repair:Recovered name
+            stale:Latest name
+            tie:Destination
+            """)
+            #expect(try sqliteScalarForTest(dst, sql: "SELECT source_updated_at || ':' || source_recency_at || ':' || observation_sequence FROM local_thread_catalog WHERE host_id='remote' AND thread_id='rename';") == "40:30:7")
+            #expect(try sqliteScalarForTest(dst, sql: "SELECT cwd FROM local_thread_catalog WHERE host_id='remote' AND thread_id='stale';") == "/project")
+            #expect(try sqliteScalarForTest(dst, sql: "SELECT count(*) FROM local_thread_catalog;") == "8")
+        }
     }
 
     @Test func synchronizesAndRestoresCompletePortableContinuityState() throws {

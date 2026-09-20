@@ -58,7 +58,6 @@ enum CodexThreadCatalogState {
         try fileManager.copyItem(at: targetURL, to: backupURL)
 
         do {
-            let columns = catalogColumns.joined(separator: ", ")
             var sql = "PRAGMA busy_timeout=5000;"
             for (index, sourceURL) in sourceURLs.enumerated() {
                 let alias = "cab_source_\(index)"
@@ -68,7 +67,7 @@ enum CodexThreadCatalogState {
             for index in sourceURLs.indices {
                 let alias = "cab_source_\(index)"
                 sql += " INSERT OR IGNORE INTO main.local_thread_catalog_hosts (host_id, host_kind) SELECT host_id, host_kind FROM \(alias).local_thread_catalog_hosts;"
-                sql += " INSERT OR REPLACE INTO main.local_thread_catalog (\(columns)) SELECT \(columns) FROM \(alias).local_thread_catalog;"
+                sql += catalogMergeSQL(sourceAlias: alias)
             }
             sql += " UPDATE main.local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1 WHERE id = 1; COMMIT;"
             for index in sourceURLs.indices { sql += " DETACH DATABASE cab_source_\(index);" }
@@ -83,6 +82,31 @@ enum CodexThreadCatalogState {
             try? restore(CodexThreadCatalogSyncResult(targetURL: targetURL, backupURL: backupURL, rowCount: 0))
             throw BridgeError.commandFailed("无法安全同步 Codex 会话目录；已尝试恢复原索引。\n\(error.localizedDescription)")
         }
+    }
+
+    // Compare source timestamps, never observation_sequence: it belongs to each local catalog.
+    // On ties keep the destination stable. A useful title can repair a placeholder even
+    // when its row is older, but a placeholder must never erase a useful title.
+    private static func catalogMergeSQL(sourceAlias: String) -> String {
+        let current = "local_thread_catalog"
+        let newer = "(excluded.source_updated_at IS NOT NULL AND (\(current).source_updated_at IS NULL OR excluded.source_updated_at > \(current).source_updated_at))"
+        func usefulTitle(_ row: String) -> String {
+            "(trim(coalesce(\(row).display_title, '')) <> '' AND trim(\(row).display_title) <> trim(coalesce(\(row).cwd, '')))"
+        }
+        let takeTitle = "(\(usefulTitle("excluded")) AND (NOT \(usefulTitle(current)) OR \(newer)))"
+        var updates = [
+            "display_title = CASE WHEN \(takeTitle) THEN excluded.display_title ELSE \(current).display_title END",
+        ]
+        for column in ["source_updated_at", "source_recency_at"] {
+            updates.append("\(column) = CASE WHEN \(current).\(column) IS NULL OR excluded.\(column) > \(current).\(column) THEN excluded.\(column) ELSE \(current).\(column) END")
+        }
+        for column in ["source_created_at", "cwd", "source_kind", "source_detail", "model_provider", "git_branch", "thread_source", "project_id", "conversation_origin"] {
+            updates.append("\(column) = CASE WHEN \(newer) THEN excluded.\(column) ELSE \(current).\(column) END")
+        }
+        // Keep destination observation/missing/pending flags; another account's cache
+        // cannot establish what this desktop has observed or which tasks disappeared.
+        let columns = catalogColumns.joined(separator: ", ")
+        return " INSERT INTO main.local_thread_catalog (\(columns)) SELECT \(columns) FROM \(sourceAlias).local_thread_catalog WHERE 1 ON CONFLICT(host_id, thread_id) DO UPDATE SET \(updates.joined(separator: ", "));"
     }
 
     static func restore(_ result: CodexThreadCatalogSyncResult, fileManager: FileManager = .default) throws {
