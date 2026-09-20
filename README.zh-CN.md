@@ -262,3 +262,7 @@ make macos-app VERSION=0.1.0 BUILD_NUMBER=1
 ## License
 
 Apache License 2.0。Codex 和 ChatGPT 是其各自权利人的产品与商标，本项目未获得 OpenAI 官方背书。
+
+### Token 活动
+
+通过 `cab tokens --json`（可选 `--account NAME`）或 macOS 管理概览查看 Token 用量，需要 Python 3 标准库。只读会话索引定位 `token_count` 事件，按实际事件日期（UTC）统计增量，不再将整个会话用量归到最后活动日。重复快照、共享历史去重；总量包含缓存输入，界面分别展示非缓存输入、缓存输入、输出（含推理）。缺失或不完整的历史会明确提示。全年点阵适应可用宽度，悬停或点击日期可查看准确数量及会话数。

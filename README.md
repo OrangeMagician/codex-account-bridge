@@ -258,3 +258,7 @@ This repository does not use GitHub Actions. Release binaries and SHA-256 files 
 ## License
 
 Apache License 2.0. Codex and ChatGPT are trademarks of their respective owners. This project is not affiliated with or endorsed by OpenAI.
+
+### Token activity
+
+Use `cab tokens --json` (optionally `--account NAME`) or the macOS overview to inspect recorded token usage. Python 3 is required (standard library only). The read-only index locates session token events; daily usage is attributed to the actual UTC event date, not the thread's last update. Repeated snapshots and shared histories are deduplicated. Totals include cached input; the dashboard separates uncached input, cached input, and output (including reasoning). Missing or incomplete histories are disclosed. The yearly activity grid fits the available width and exposes date, exact tokens, and session count on hover or selection.

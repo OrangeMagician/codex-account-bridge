@@ -213,3 +213,57 @@
 "百分比" = "Percentage";
 "进度条" = "Progress bars";
 "上排 5h，下排周额度" = "5h on top, weekly usage below";
+
+"累计 Token" = "Total tokens";
+
+"峰值日" = "Peak day";
+
+"活跃天数" = "Active days";
+
+"当前连续" = "Current streak";
+
+"最长连续" = "Longest streak";
+
+"输入（不含缓存）" = "Uncached input";
+
+"缓存输入" = "Cached input";
+
+"输出" = "Output";
+
+"每日" = "Daily";
+
+"每周" = "Weekly";
+
+"累计" = "Total";
+
+"Token 活动" = "Token activity";
+
+"Token 活动范围" = "Token activity range";
+
+"Token 使用量" = "Token usage";
+
+"刷新 Token" = "Refresh tokens";
+
+"少" = "Less";
+
+"多" = "More";
+
+"一" = "M";
+
+"三" = "W";
+
+"五" = "F";
+
+"按实际记录日期统计（UTC）；总量含缓存输入，输出已含推理 Token。" = "Grouped by recorded event date (UTC). Total includes cached input; output includes reasoning tokens.";
+
+"部分会话缺少完整 Token 记录，统计仅包含可读取的用量。" = "Some sessions have incomplete token records. Only available usage is included.";
+
+"缺少记录的会话：%d；不完整文件：%d" = "Sessions without records: %d; incomplete files: %d";
+
+"当前为旧版索引估算，请更新目标端 CAB 后刷新。" = "Legacy index estimate. Update CAB on the target and refresh.";
+
+"%@ · %@ Token · %lld 个会话" = "%@ · %@ tokens · %lld sessions";
+
+"按已记录的 Token 增量统计，缓存输入包含在总量内。" = "Based on recorded token increments. Total includes cached input.";
+
+"尚无已记录的会话 Token。" = "No recorded session token usage yet.";

@@ -139,6 +139,48 @@ struct UsageReport: Codable, Equatable {
     }
 }
 
+struct TokenUsageReport: Codable, Equatable {
+    var source: String? = nil
+    var inputTokens: Int64? = nil
+    var cachedInputTokens: Int64? = nil
+    var outputTokens: Int64? = nil
+    var unavailableThreads: Int? = nil
+    var incompleteFiles: Int? = nil
+    let fetchedAt: Date
+    let totalTokens: Int64
+    let maxDailyTokens: Int64
+    let activeDays: Int
+    let currentStreak: Int
+    let longestStreak: Int
+    let threadCount: Int64
+    let daily: [DailyTokenUsage]
+
+    enum CodingKeys: String, CodingKey {
+        case source
+        case inputTokens = "input_tokens"
+        case cachedInputTokens = "cached_input_tokens"
+        case outputTokens = "output_tokens"
+        case unavailableThreads = "unavailable_threads"
+        case incompleteFiles = "incomplete_files"
+        case fetchedAt = "fetched_at"
+        case totalTokens = "total_tokens"
+        case maxDailyTokens = "max_daily_tokens"
+        case activeDays = "active_days"
+        case currentStreak = "current_streak"
+        case longestStreak = "longest_streak"
+        case threadCount = "thread_count"
+        case daily
+    }
+}
+
+struct DailyTokenUsage: Codable, Equatable, Identifiable {
+    let date: String
+    let tokens: Int64
+    let threads: Int64
+
+    var id: String { date }
+}
+
 struct AccountUsageReport: Codable, Equatable, Identifiable {
     var id: String { name }
     let name: String
@@ -397,6 +439,7 @@ enum BridgeError: LocalizedError {
     case commandFailed(String)
     case invalidStatus(String)
     case invalidUsage(String)
+    case invalidTokens(String)
 
     var errorDescription: String? {
         switch self {
@@ -404,7 +447,7 @@ enum BridgeError: LocalizedError {
             return "找不到 cab。请先安装到 ~/.local/bin 或 /opt/homebrew/bin。"
         case .invalidAccountName:
             return "账号名称只能包含字母、数字、点、下划线和短横线，最长 64 个字符。"
-        case .commandFailed(let message), .invalidStatus(let message), .invalidUsage(let message):
+        case .commandFailed(let message), .invalidStatus(let message), .invalidUsage(let message), .invalidTokens(let message):
             return message
         }
     }

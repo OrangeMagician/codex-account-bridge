@@ -42,3 +42,5 @@ find . -type f \( -name auth.json -o -name config.toml -o -name '*.pem' -o -name
 ```
 
 发现隐私数据时不要仅依赖后续删除；如果已经提交或推送，应立即撤销相关凭据并清理 Git 历史。
+
+The Token dashboard uses read-only `state_5.sqlite` indexes to locate regular `rollout-*.jsonl` files under configured session directories. It scans token-event timestamps and counters locally, without returning conversation content. UTC daily usage is based on recorded increments, not index update dates. Cached input is included in total tokens. Missing or incomplete histories are disclosed. No authorization files are opened.

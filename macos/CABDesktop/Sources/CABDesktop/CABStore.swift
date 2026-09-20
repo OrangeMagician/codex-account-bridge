@@ -45,6 +45,9 @@ final class CABStore: ObservableObject {
     @Published var isUsageRefreshing = false
     @Published var usageResettingAccount: String?
     @Published var usageResetResult: UsageResetResult?
+    @Published var tokenUsage: TokenUsageReport?
+    @Published var tokenUsageLoadError: String?
+    @Published var isTokenUsageRefreshing = false
     @Published private(set) var loginAccountName: String?
     @Published private(set) var loginStatusConfirmed = false
     @Published private(set) var canManuallyCheckLogin = false
@@ -81,6 +84,10 @@ final class CABStore: ObservableObject {
     private var usageWakeState = UsageWakeState()
     private var usageWakeInFlightKeys: Set<String> = []
     private var usageSchedulerTask: Task<Void, Never>?
+
+    private var tokenUsageByKey: [String: TokenUsageReport] = [:]
+    private var tokenUsageErrorByKey: [String: String] = [:]
+    private var tokenUsageRefreshingKeys: Set<String> = []
 
     init() {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
@@ -174,6 +181,10 @@ final class CABStore: ObservableObject {
 
     func refreshUsage() {
         Task { await reloadUsage(force: true) }
+    }
+
+    func refreshTokenUsage() {
+        Task { await reloadTokenUsage(force: true) }
     }
 
     func refreshUsage(accountName: String) {
@@ -352,6 +363,7 @@ final class CABStore: ObservableObject {
         target = next
         selectedAccount = nil
         restoreUsageForCurrentTarget()
+        restoreTokenUsageForCurrentTarget()
         if next == .remote && remoteServers.isEmpty {
             status = Self.emptyStatus
             showServerManager = true
@@ -365,6 +377,7 @@ final class CABStore: ObservableObject {
         if let id { defaults.set(id.uuidString, forKey: selectedRemoteKey) }
         selectedAccount = nil
         restoreUsageForCurrentTarget()
+        restoreTokenUsageForCurrentTarget()
         refresh()
     }
 
@@ -1007,6 +1020,7 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             isBusy = false
             await reloadUsage(force: forceUsage)
+            await reloadTokenUsage(force: forceUsage)
         } catch {
             errorMessage = error.localizedDescription
             isBusy = false
@@ -1276,6 +1290,48 @@ final class CABStore: ObservableObject {
     private func persistUsageWakeState() {
         guard let data = try? JSONEncoder().encode(usageWakeState) else { return }
         defaults.set(data, forKey: usageWakeStateKey)
+    }
+
+    private func reloadTokenUsage(force: Bool) async {
+        let key = currentUsageCacheKey
+        if let cached = tokenUsageByKey[key] {
+            tokenUsage = cached
+            tokenUsageLoadError = tokenUsageErrorByKey[key]
+            if !force && Date().timeIntervalSince(cached.fetchedAt) < 300 { return }
+        } else if !force {
+            tokenUsage = nil
+            tokenUsageLoadError = nil
+        }
+        guard !tokenUsageRefreshingKeys.contains(key) else { return }
+        tokenUsageRefreshingKeys.insert(key)
+        isTokenUsageRefreshing = true
+        defer {
+            tokenUsageRefreshingKeys.remove(key)
+            isTokenUsageRefreshing = tokenUsageRefreshingKeys.contains(currentUsageCacheKey)
+        }
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        do {
+            let report = try await service.loadTokenUsage(target: capturedTarget, remoteHost: capturedHost)
+            tokenUsageByKey[key] = report
+            tokenUsageErrorByKey.removeValue(forKey: key)
+            if key == currentUsageCacheKey {
+                tokenUsage = report
+                tokenUsageLoadError = nil
+            }
+        } catch {
+            tokenUsageErrorByKey[key] = error.localizedDescription
+            if key == currentUsageCacheKey {
+                tokenUsageLoadError = error.localizedDescription
+            }
+        }
+    }
+
+    private func restoreTokenUsageForCurrentTarget() {
+        let key = currentUsageCacheKey
+        tokenUsage = tokenUsageByKey[key]
+        tokenUsageLoadError = tokenUsageErrorByKey[key]
+        isTokenUsageRefreshing = tokenUsageRefreshingKeys.contains(key)
     }
 
     private var currentUsageCacheKey: String {

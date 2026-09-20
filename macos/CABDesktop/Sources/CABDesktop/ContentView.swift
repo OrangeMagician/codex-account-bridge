@@ -303,6 +303,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 20) {
             globalOverviewCard
             usageOverviewCard
+            tokenActivityCard
             if store.target == .local { desktopSwitcherCard }
             sessionSharingCard
             if store.target == .remote { agentBindingsCard }
@@ -524,6 +525,60 @@ struct ContentView: View {
         } label: {
             Label("额度概览", systemImage: "gauge.with.dots.needle.50percent")
                 .help("额度来自官方 Codex app-server；重置时间不是 ChatGPT 订阅续费或会员到期日。")
+        }
+    }
+
+    private var tokenActivityCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                if let report = store.tokenUsage {
+                    TokenUsageDetails(report: report)
+                } else if store.isTokenUsageRefreshing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(store.target == .local ? "正在读取本机 Codex 会话 Token…" : "正在读取远程服务器 Codex 会话 Token…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
+                } else {
+                    HStack {
+                        Label(
+                            store.tokenUsageLoadError ?? "尚无已记录的会话 Token。",
+                            systemImage: store.tokenUsageLoadError == nil ? "chart.bar" : "exclamationmark.triangle"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(store.tokenUsageLoadError == nil ? Color.secondary : Color.orange)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                if store.tokenUsage != nil, let error = store.tokenUsageLoadError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    if let fetchedAt = store.tokenUsage?.fetchedAt {
+                        Text("更新于 \(fetchedAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(fetchedAt.formatted(date: .abbreviated, time: .standard))
+                    }
+                    Spacer()
+                    Button(action: store.refreshTokenUsage) {
+                        if store.isTokenUsageRefreshing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("刷新 Token", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(store.isTokenUsageRefreshing)
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("Token 使用量", systemImage: "chart.bar.xaxis")
+                .help("按已记录的 Token 增量统计，缓存输入包含在总量内。")
         }
     }
 

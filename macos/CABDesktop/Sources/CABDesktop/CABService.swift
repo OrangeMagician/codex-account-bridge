@@ -89,6 +89,21 @@ final class CABService {
         return UsageReport(fetchedAt: fetchedAt, accounts: reports)
     }
 
+    func loadTokenUsage(target: BridgeTarget, remoteHost: String) async throws -> TokenUsageReport {
+        let result = try await execute(["tokens", "--json"], target: target, remoteHost: remoteHost)
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed(preferredMessage(result))
+        }
+        guard let data = result.output.data(using: .utf8) else {
+            throw BridgeError.invalidTokens("cab 返回了无法读取的 Token 统计。")
+        }
+        do {
+            return try cabDateDecoder().decode(TokenUsageReport.self, from: data)
+        } catch {
+            throw BridgeError.invalidTokens("无法解析 Token 统计：\(error.localizedDescription)")
+        }
+    }
+
     private func loadUsage(
         arguments: [String],
         target: BridgeTarget,
@@ -108,6 +123,28 @@ final class CABService {
         } catch {
             throw BridgeError.invalidUsage("无法解析 cab 额度信息：\(error.localizedDescription)")
         }
+    }
+
+    private func cabDateDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) {
+                return date
+            }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "无法解析 ISO 8601 时间：\(value)"
+            )
+        }
+        return decoder
     }
 
     func probeUsage(target: BridgeTarget, remoteHost: String, accountName: String) async throws {

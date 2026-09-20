@@ -111,6 +111,8 @@ func Run(argv []string, version string) (int, error) {
 		return rotationCommand(paths, &cfg, args)
 	case "status":
 		return statusCommand(cfg, args)
+	case "tokens":
+		return tokensCommand(cfg, args)
 	case "usage":
 		return usageCommand(cfg, args)
 	case "agent":
@@ -143,6 +145,7 @@ Commands:
   cab app-server [--account NAME] -- [app-server arguments]
   cab status [--json]
   cab usage [--account NAME] [--json]
+  cab tokens [--account NAME] [--json]
   cab usage probe --account NAME [--model MODEL] [--json]
   cab usage reset --account NAME [--credit-id ID] --idempotency-key KEY --confirm-reset-usage [--json]
   cab agent list [--json]
@@ -465,6 +468,39 @@ func usageCommand(cfg config.Config, args []string) (int, error) {
 		}
 		fmt.Printf("%s\t%s\t%.1f%% remaining\tresets %s\n", item.Name, item.Usage.PlanType, remaining, reset)
 	}
+	return 0, nil
+}
+
+func tokensCommand(cfg config.Config, args []string) (int, error) {
+	flags := newFlags("tokens")
+	accountName := flags.String("account", "", "configured account name")
+	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+	if err := flags.Parse(args); err != nil {
+		return 2, err
+	}
+	if flags.NArg() != 0 {
+		return 2, errors.New("usage: cab tokens [--account NAME] [--json]")
+	}
+	homes := make([]string, 0, len(cfg.Accounts))
+	if *accountName != "" {
+		account, ok := cfg.Find(*accountName)
+		if !ok {
+			return 2, fmt.Errorf("unknown account %q", *accountName)
+		}
+		homes = append(homes, account.Home)
+	} else {
+		for _, account := range cfg.Accounts {
+			homes = append(homes, account.Home)
+		}
+	}
+	report, err := codex.ReadTokenUsage(homes)
+	if err != nil {
+		return 1, err
+	}
+	if *jsonOutput {
+		return printJSON(report)
+	}
+	fmt.Printf("total tokens: %d\nactive days: %d\nthreads: %d\n", report.TotalTokens, report.ActiveDays, report.ThreadCount)
 	return 0, nil
 }
 
