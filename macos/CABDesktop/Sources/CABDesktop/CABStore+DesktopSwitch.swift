@@ -3,6 +3,8 @@ import Foundation
 
 extension CABStore {
     func switchCodexDesktop(to account: AccountStatus) {
+        refreshLocalDesktopAccount()
+        guard !isCurrentDesktopAccount(account) else { return }
         guard target == .local, account.isLoggedIn else {
             errorMessage = "只能用这台 Mac 上已登录的账号启动 Codex 桌面客户端。"
             return
@@ -49,11 +51,13 @@ extension CABStore {
     }
 
     func performDesktopSwitch(to account: AccountStatus, checkProcesses: Bool) {
-        guard !isBusy else { return }
+        refreshLocalDesktopAccount()
+        guard !isBusy, !isCurrentDesktopAccount(account) else { return }
         Task {
             isBusy = true
             errorMessage = nil
             desktopSwitchPartialResult = nil
+            defer { refreshLocalDesktopAccount() }
             var switchRecordID: UUID?
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
@@ -69,6 +73,11 @@ extension CABStore {
             do {
                 let liveStatus = try await service.loadStatus(target: .local, remoteHost: "")
                 status = liveStatus
+                refreshLocalDesktopAccount()
+                if isCurrentDesktopAccount(account) {
+                    isBusy = false
+                    return
+                }
                 originalSharedSessions = liveStatus.sharedSessions
                 fallbackHome = previousDesktopHome(fallback: account.home)
                 if checkProcesses && (preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != liveStatus.sharedSessions) {

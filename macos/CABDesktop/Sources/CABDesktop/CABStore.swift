@@ -32,6 +32,8 @@ final class CABStore: ObservableObject {
     @Published var remoteServers: [RemoteServer] = []
     @Published var selectedRemoteID: UUID?
     @Published var showServerManager = false
+    @Published private(set) var localDesktopHome: LocalDesktopHome = .unknown
+    let desktopHome: @MainActor () -> LocalDesktopHome
     @Published var lastDesktopAccount: String?
     @Published var preserveSessionsOnDesktopSwitch = false
     @Published var interfaceLanguage: InterfaceLanguage = .system
@@ -98,7 +100,9 @@ final class CABStore: ObservableObject {
     var codexUpdateErrorByKey: [String: String] = [:]
     var codexUpdateCheckingKeys: Set<String> = []
 
-    init() {
+    init(desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome) {
+        self.desktopHome = desktopHome
+        localDesktopHome = desktopHome()
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
         hasSavedDesktopSessionPreference = defaults.object(forKey: preserveSessionsKey) != nil
         preserveSessionsOnDesktopSwitch = defaults.bool(forKey: preserveSessionsKey)
@@ -161,6 +165,29 @@ final class CABStore: ObservableObject {
     }
 
     var defaultDesktopAccount: String? { status.currentLogin?.registeredAs }
+
+    var currentDesktopAccount: AccountStatus? {
+        guard target == .local, case .running = localDesktopHome else { return nil }
+        return menuBarAccount(in: status, desktop: localDesktopHome)
+    }
+
+    var currentDesktopAccountDescription: String {
+        if let account = currentDesktopAccount { return account.name }
+        switch localDesktopHome {
+        case .notRunning: return cabLocalized("Codex 桌面端未运行")
+        case .unknown: return cabLocalized("无法确认本机当前账号")
+        case .running: return cabLocalized("当前账号尚未纳入 CAB")
+        }
+    }
+
+    func isCurrentDesktopAccount(_ account: AccountStatus) -> Bool {
+        currentDesktopAccount?.name == account.name
+    }
+
+    func refreshLocalDesktopAccount() {
+        let detected = desktopHome()
+        if detected != localDesktopHome { localDesktopHome = detected }
+    }
 
     func usesDefaultCodexHome(_ account: AccountStatus) -> Bool {
         account.home == status.currentLogin?.home
@@ -264,6 +291,7 @@ final class CABStore: ObservableObject {
                     return
                 }
                 guard let self, !Task.isCancelled else { return }
+                self.refreshLocalDesktopAccount()
                 await self.runUsageRefreshSchedulerTick()
             }
         }
@@ -766,6 +794,7 @@ final class CABStore: ObservableObject {
     }
 
     func previousDesktopHome(fallback: String) -> String {
+        if case let .running(home) = desktopHome() { return home }
         if let lastDesktopAccount,
            let account = status.accounts.first(where: { $0.name == lastDesktopAccount }) {
             return account.home
@@ -774,6 +803,7 @@ final class CABStore: ObservableObject {
     }
 
     func reload(forceUsage: Bool = false) async {
+        refreshLocalDesktopAccount()
         statusRefreshGeneration += 1
         let generation = statusRefreshGeneration
         isStatusRefreshing = true
@@ -789,6 +819,7 @@ final class CABStore: ObservableObject {
                 return
             }
             status = loaded
+            refreshLocalDesktopAccount()
             if capturedTarget == .remote {
                 do {
                     let report = try await service.loadAgentBindings(remoteHost: capturedHost)

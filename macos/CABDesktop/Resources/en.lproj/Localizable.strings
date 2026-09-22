@@ -380,3 +380,7 @@
 "筛选账号或文件名" = "Filter by account or filename";
 "显示更多备份" = "Show more backups";
 "未同步" = "Not synchronized";
+
+"本机正在使用" = "In use on this Mac";
+
+"Codex 桌面端未运行" = "Codex desktop is not running";

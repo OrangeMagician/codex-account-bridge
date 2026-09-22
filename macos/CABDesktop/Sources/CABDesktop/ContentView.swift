@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    var performsLiveChecks = true
     @EnvironmentObject private var store: CABStore
     @State private var pendingDesktopSwitchConfirmation: AccountStatus?
     @State private var pendingSessionSharing: Bool?
@@ -77,7 +78,17 @@ struct ContentView: View {
             ServerManagerView()
                 .environmentObject(store)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if performsLiveChecks { store.refreshLocalDesktopAccount() }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
+            if performsLiveChecks { store.refreshLocalDesktopAccount() }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in
+            if performsLiveChecks { store.refreshLocalDesktopAccount() }
+        }
         .task {
+            guard performsLiveChecks else { return }
             store.startUsageRefreshScheduler()
             store.refresh()
         }
@@ -259,6 +270,12 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
                                     Text(account.name)
+                                    if store.isCurrentDesktopAccount(account) {
+                                        Image(systemName: "desktopcomputer")
+                                            .foregroundStyle(.green)
+                                            .help("本机正在使用")
+                                            .accessibilityLabel("本机正在使用")
+                                    }
                                     if account.default {
                                         Image(systemName: "star.fill")
                                             .foregroundStyle(.orange)
@@ -391,6 +408,9 @@ struct ContentView: View {
             HStack(spacing: 28) {
                 summaryValue("账号", value: "\(store.status.accounts.count)")
                 summaryValue("CLI 默认", value: store.status.defaultAccount ?? "未设置")
+                if store.target == .local {
+                    summaryValue("本机当前账号", value: store.currentDesktopAccountDescription)
+                }
                 if store.target == .remote {
                     summaryValue("远程 Codex", value: store.status.remoteAccount ?? "未设置")
                 }
@@ -407,6 +427,13 @@ struct ContentView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
                 Text("切换 Codex 桌面端账号").font(.headline)
+                Label {
+                    Text("本机当前账号") + Text("：") + Text(store.currentDesktopAccountDescription)
+                } icon: {
+                    Image(systemName: "desktopcomputer")
+                }
+                .font(.callout)
+                .foregroundStyle(store.currentDesktopAccount == nil ? Color.secondary : Color.primary)
                 if let name = store.defaultDesktopAccount {
                     Label("系统默认 ~/.codex 当前登记为 \(name)", systemImage: "house")
                         .font(.callout)
@@ -441,8 +468,13 @@ struct ContentView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Button("用此账号启动") { pendingDesktopSwitchConfirmation = account }
-                                    .disabled(store.isUsageRefreshing || store.isBusy)
+                                if store.isCurrentDesktopAccount(account) {
+                                    Label("本机正在使用", systemImage: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Button("用此账号启动") { pendingDesktopSwitchConfirmation = account }
+                                        .disabled(store.isUsageRefreshing || store.isBusy)
+                                }
                             }
                             .padding(.vertical, 9)
                             if account.id != loggedInAccounts.last?.id { Divider() }
@@ -878,9 +910,14 @@ struct ContentView: View {
                             Spacer()
                             reauthenticationMenu(account)
                             if store.target == .local {
-                                Button("切换 Codex 桌面端") { pendingDesktopSwitchConfirmation = account }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(store.isUsageRefreshing || store.isBusy)
+                                if store.isCurrentDesktopAccount(account) {
+                                    Label("本机正在使用", systemImage: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Button("切换 Codex 桌面端") { pendingDesktopSwitchConfirmation = account }
+                                        .buttonStyle(.borderedProminent)
+                                        .disabled(store.isUsageRefreshing || store.isBusy)
+                                }
                             } else if account.remote {
                                 Label("远程新连接账号", systemImage: "checkmark.circle.fill")
                                     .foregroundStyle(.green)
