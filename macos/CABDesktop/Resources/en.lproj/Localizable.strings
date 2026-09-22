@@ -35,6 +35,9 @@
 "官方接口暂未返回" = "Not reported by the official API";
 "无限制" = "Unlimited";
 "暂未返回" = "Not reported";
+"备用模型" = "Reserve model";
+"高级模型将于" = "Advanced models reset at";
+"高级模型重置时间未知" = "Advanced model reset time unknown";
 "重置额度" = "Reset usage";
 "额度已重置" = "Usage reset";
 "当前无需重置" = "Nothing to reset";
@@ -214,6 +217,12 @@
 "进度条" = "Progress bars";
 "上排 5h，下排周额度" = "5h on top, weekly usage below";
 
+/* Safe remote account switching */
+"新连接使用 %@" = "Use %@ for new connections";
+"远程新连接将使用 %@；正在运行的任务保留原账号并继续执行。请在任务完成后重新连接以使用新账号。\n" = "New remote connections will use %@. Running tasks continue with their original account. Reconnect after tasks finish to use the selected account.\n";
+"以下远程任务将继续运行：\n%@\n\n新连接将使用 %@。现有连接和任务保持原账号，CAB 不会关闭或强制重启这些进程。请等任务完成后重新连接。" = "These remote tasks will keep running:\n%@\n\nNew connections will use %@. Existing connections and tasks keep their original account; CAB will not stop or force restart them. Reconnect after tasks finish.";
+"远程新连接账号" = "Account for new remote connections";
+
 "累计 Token" = "Total tokens";
 
 "峰值日" = "Peak day";
@@ -267,3 +276,107 @@
 "按已记录的 Token 增量统计，缓存输入包含在总量内。" = "Based on recorded token increments. Total includes cached input.";
 
 "尚无已记录的会话 Token。" = "No recorded session token usage yet.";
+
+/* Diagnostics, maintenance, project launch and low quota alerts. */
+"操作超时。请检查连接后重试；远程操作的结果请刷新确认。" = "The operation timed out. Check the connection, then refresh to confirm the remote result.";
+"SSH 认证失败。请在终端确认此主机的 SSH 登录配置。" = "SSH authentication failed. Verify this host’s SSH login in Terminal.";
+"SSH 主机身份尚未确认或已改变。请在终端核对主机密钥。" = "The SSH host identity is unconfirmed or has changed. Verify its host key in Terminal.";
+"无法连接服务器。请检查主机地址、网络与 SSH 服务。" = "Cannot connect. Check the host address, network, and SSH service.";
+"服务器 CAB 不支持此功能，请先更新服务器 CAB。" = "This CAB version does not support the feature. Update CAB on the selected target.";
+"服务器找不到 CAB。请安装到 SSH 登录 PATH 后重试。" = "CAB was not found on the server. Install it in the SSH login PATH.";
+"Codex 额度偏低" = "Codex quota is running low";
+"%@ · %@ 的 %@ 额度剩余 %d%%。" = "%1$@ · %2$@ has %4$d%% remaining in the %3$@ window.";
+"低额度提醒" = "Low quota alerts";
+"每个账号的每个额度周期最多提醒一次。提醒不会切换账号或启动任务。" = "At most one alert per account and quota window. Alerts never switch accounts or start tasks.";
+"剩余额度阈值" = "Remaining quota threshold";
+"静默时段" = "Quiet hours";
+"按本机时区生效；跨午夜时段也受支持。静默结束后在下一次额度刷新时检查。" = "Uses this Mac’s time zone and supports overnight periods. Checks resume at the next quota refresh.";
+"请填写名称、绝对项目路径并显式选择账号。" = "Enter a name, an absolute project path, and an explicit account.";
+"进行中" = "In progress";
+"结果待确认" = "Result needs verification";
+"备份恢复完成" = "Backup restored";
+"已完成" = "Completed";
+"恢复已完成。当前工作区的回退备份可在列表中查看。" = "Restore completed. The previous workspace version is available in the backup list.";
+"所选备份已删除，当前工作区未改变。" = "The selected backup was deleted. The current workspace is unchanged.";
+"此启动配置的账号已移除或尚未登录，请先编辑配置。" = "The account was removed or is not signed in. Edit this launch profile first.";
+"恢复备份" = "Restore backup";
+"删除备份" = "Delete backup";
+"目标" = "Target";
+"大小" = "Size";
+"恢复会覆盖此账号的对应内容；CAB 会先备份当前版本。请先退出所有 Codex 进程。" = "Restoring replaces the corresponding account data. CAB backs up the current version first. Quit all Codex processes before continuing.";
+"这会永久删除所选备份，当前工作区不会改变。" = "This permanently deletes the selected backup. The current workspace stays unchanged.";
+"确认恢复" = "Restore";
+"确认删除" = "Delete permanently";
+"检查执行路径、账号路由、运行进程与功能兼容性。" = "Inspect executable paths, account routing, running processes, and compatibility.";
+"取消检查" = "Cancel check";
+"重新诊断" = "Run diagnostics";
+"CAB 版本" = "CAB version";
+"Codex 版本" = "Codex version";
+"实际执行路径" = "Resolved executable";
+"PATH 入口" = "PATH entry";
+"新 CLI 账号" = "New CLI account";
+"未设置" = "Not set";
+"当前桌面账号" = "Current desktop account";
+"新连接账号" = "New connection account";
+"已有连接继续使用原账号；选择新账号仅影响后续连接。" = "Existing connections keep their original account. The selection applies to future connections.";
+"运行中的 Codex 进程" = "Running Codex processes";
+"未发现运行中的 Codex 进程" = "No running Codex processes found";
+"点击重新诊断以检查当前目标。" = "Run diagnostics to inspect the selected target.";
+"诊断中心" = "Diagnostics";
+"桌面客户端未运行" = "Desktop app is not running";
+"无法确认" = "Unknown";
+"仅列出 CAB 创建且可识别归属的备份。恢复会保留当前版本；清理前逐项预览。" = "Only identifiable CAB backups are listed. Restoring preserves the current version. Preview each backup before cleanup.";
+"未发现备份" = "No backups found";
+"预览恢复" = "Preview restore";
+"预览删除" = "Preview deletion";
+"备份管理" = "Backups";
+"保留最近 200 次操作的阶段与备份位置，不保存任务正文和登录凭据。" = "Stores the stages and backup locations of the last 200 operations, without task content or credentials.";
+"暂无切换记录" = "No switch history yet";
+"切换记录" = "Switch history";
+"为项目保存明确的账号与运行位置。启动时仍使用 Codex 原有审批与沙箱设置。" = "Save an explicit account and target for each project. Codex approval and sandbox settings remain in effect.";
+"添加启动配置" = "Add profile";
+"当前目标暂无启动配置" = "No launch profiles for this target";
+"启动" = "Launch";
+"编辑" = "Edit";
+"移除配置" = "Remove profile";
+"管理启动配置" = "Manage launch profile";
+"项目启动" = "Project launcher";
+"项目启动配置" = "Project launch profile";
+"名称" = "Name";
+"项目绝对路径" = "Absolute project path";
+"运行位置" = "Target";
+"预检通过" = "Preflight passed";
+"桌面客户端已退出" = "Desktop app exited";
+"同步与备份阶段结束" = "Sync and backup stages finished";
+"目标账号已启动" = "Target account launched";
+"部分完成" = "Partially completed";
+"切换失败，尝试恢复原状态" = "Switch failed; restoring the previous state";
+"原账号已重新启动" = "Original account relaunched";
+"未完成" = "Incomplete";
+"部分账号刷新失败，正在显示上次成功获取的额度。" = "Some accounts failed to refresh. Showing their last successful quota values.";
+"取消刷新" = "Cancel refresh";
+"诊断与备份" = "Diagnostics & backups";
+"新连接账号已更新，现有任务继续运行" = "New connection account updated; existing tasks continue";
+"账号选择未完成，请刷新确认" = "Account selection did not complete; refresh to verify";
+
+
+"支持的功能" = "Supported capabilities";
+"官方 Codex 可执行文件可用" = "Official Codex executable is available";
+"已登记账号" = "At least one account is registered";
+"配置路径已解析" = "Configuration path resolved";
+"会话事务日志有效" = "Session transaction journal is valid";
+"没有待恢复的会话事务" = "No interrupted session transaction requires recovery";
+"官方 Codex 版本查询" = "Official Codex version query";
+"服务器 CAB 需要更新" = "Server CAB update required";
+"账号目录有效" = "Account directory is valid";
+"账号目录权限仅限当前用户" = "Account directory is private to this user";
+"官方登录状态有效" = "Official login status is valid";
+"认证文件类型有效（未读取内容）" = "Credential file type is valid (contents not read)";
+"认证文件权限仅限当前用户（未读取内容）" = "Credential permissions are private (contents not read)";
+"会话链接指向共享库" = "Sessions link points to the shared store";
+"归档会话链接指向共享库" = "Archived sessions link points to the shared store";
+
+
+"筛选账号或文件名" = "Filter by account or filename";
+"显示更多备份" = "Show more backups";
+"未同步" = "Not synchronized";

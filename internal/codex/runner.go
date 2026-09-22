@@ -3,13 +3,17 @@ package codex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +21,16 @@ import (
 
 const loginStatusTimeout = 10 * time.Second
 const loginStatusOutputLimit = 4096
+const updateCheckTimeout = 8 * time.Second
+
+var latestCodexVersionURL = "https://registry.npmjs.org/@openai%2fcodex/latest"
+
+type UpdateStatus struct {
+	CurrentVersion  string `json:"current_version"`
+	LatestVersion   string `json:"latest_version,omitempty"`
+	UpdateAvailable bool   `json:"update_available"`
+	CheckError      string `json:"check_error,omitempty"`
+}
 
 type cappedBuffer struct {
 	bytes.Buffer
@@ -177,9 +191,13 @@ func Run(home string, args []string) (int, error) {
 	if err != nil {
 		return 127, err
 	}
+	return runOfficial(binary, args, environment(home))
+}
+
+func runOfficial(binary string, args []string, env []string) (int, error) {
 	cmd := exec.Command(binary, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Env = environment(home)
+	cmd.Env = env
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
@@ -196,7 +214,7 @@ func Run(home string, args []string) (int, error) {
 		case <-done:
 		}
 	}()
-	err = cmd.Wait()
+	err := cmd.Wait()
 	close(done)
 	if err == nil {
 		return 0, nil
@@ -206,6 +224,149 @@ func Run(home string, args []string) (int, error) {
 		return exitErr.ExitCode(), nil
 	}
 	return 1, err
+}
+
+// Update asks the official Codex executable to update its own installation.
+// It intentionally goes through the same real-binary resolver as normal runs,
+// so a CAB shim never updates itself or another wrapper. CODEX_HOME is cleared
+// because the installer metadata belongs to the global CLI installation, not
+// to one of CAB's account homes.
+func Update() (int, error) {
+	binary, err := FindReal("codex")
+	if err != nil {
+		return 127, err
+	}
+	return runOfficial(binary, []string{"update"}, globalCodexEnvironment())
+}
+
+// CheckUpdate reads the installed official CLI version and compares it with
+// the latest published @openai/codex package. A registry failure is returned
+// in CheckError so callers can keep the current version visible and decide
+// how to present an indeterminate update state.
+func CheckUpdate() (UpdateStatus, error) {
+	binary, err := FindReal("codex")
+	if err != nil {
+		return UpdateStatus{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+	defer cancel()
+	current, err := readCodexVersion(ctx, binary)
+	if err != nil {
+		return UpdateStatus{}, err
+	}
+	status := UpdateStatus{CurrentVersion: current}
+	latest, err := readLatestCodexVersion(ctx)
+	if err != nil {
+		status.CheckError = err.Error()
+		return status, nil
+	}
+	status.LatestVersion = latest
+	status.UpdateAvailable = versionGreater(latest, current)
+	return status, nil
+}
+
+func globalCodexEnvironment() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, value := range os.Environ() {
+		if hasEnvKey(value, "CODEX_HOME") || hasEnvKey(value, "CODEX_THREAD_ID") {
+			continue
+		}
+		env = append(env, value)
+	}
+	return env
+}
+
+func readCodexVersion(ctx context.Context, binary string) (string, error) {
+	cmd := exec.CommandContext(ctx, binary, "--version")
+	cmd.Env = globalCodexEnvironment()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("codex --version failed: %s", message)
+	}
+	version, ok := extractVersion(stdout.String())
+	if !ok {
+		return "", fmt.Errorf("unable to parse Codex version from %q", strings.TrimSpace(stdout.String()))
+	}
+	return version, nil
+}
+
+func readLatestCodexVersion(ctx context.Context) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, latestCodexVersionURL, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "codex-account-bridge")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("read latest Codex version: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("read latest Codex version: registry returned HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode latest Codex version: %w", err)
+	}
+	version, ok := extractVersion(payload.Version)
+	if !ok {
+		return "", fmt.Errorf("registry returned invalid Codex version %q", payload.Version)
+	}
+	return version, nil
+}
+
+func extractVersion(value string) (string, bool) {
+	for _, field := range strings.Fields(value) {
+		field = strings.Trim(field, "()[]{}:,;")
+		field = strings.TrimPrefix(field, "v")
+		if _, ok := parseVersion(field); ok {
+			return field, true
+		}
+	}
+	return "", false
+}
+
+func parseVersion(value string) ([3]int, bool) {
+	var parsed [3]int
+	core := strings.SplitN(strings.TrimSpace(value), "-", 2)[0]
+	parts := strings.Split(core, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return parsed, false
+	}
+	for index, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 {
+			return parsed, false
+		}
+		parsed[index] = number
+	}
+	return parsed, true
+}
+
+func versionGreater(left, right string) bool {
+	lhs, leftOK := parseVersion(left)
+	rhs, rightOK := parseVersion(right)
+	if !leftOK || !rightOK {
+		return false
+	}
+	for index := range lhs {
+		if lhs[index] != rhs[index] {
+			return lhs[index] > rhs[index]
+		}
+	}
+	return false
 }
 
 func LoggedIn(home string) (bool, error) {

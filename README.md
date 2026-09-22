@@ -262,3 +262,60 @@ Apache License 2.0. Codex and ChatGPT are trademarks of their respective owners.
 ### Token activity
 
 Use `cab tokens --json` (optionally `--account NAME`) or the macOS overview to inspect recorded token usage. Python 3 is required (standard library only). The read-only index locates session token events; daily usage is attributed to the actual UTC event date, not the thread's last update. Repeated snapshots and shared histories are deduplicated. Totals include cached input; the dashboard separates uncached input, cached input, and output (including reasoning). Missing or incomplete histories are disclosed. The yearly activity grid fits the available width and exposes date, exact tokens, and session count on hover or selection.
+
+## Diagnostics, backups, and project launches
+
+The macOS sidebar now provides **Diagnostics & backups**, **Project launcher**, and
+**Switch history**. Diagnostics show CAB/Codex versions, the resolved executable,
+PATH entry, account routing, Python/SQLite availability, and running Codex processes.
+The desktop checks remote CAB capabilities before using maintenance features; older
+servers receive an update message instead of an unsupported operation.
+
+```bash
+cab capabilities
+cab doctor --json
+cab backups list --json
+cab backups preview --id BACKUP_ID --action restore --json
+# Only after quitting Codex and reviewing the preview:
+cab backups restore --id BACKUP_ID --confirm --confirm-codex-stopped --json
+cab backups preview --id BACKUP_ID --action delete --json
+cab backups delete --id BACKUP_ID --confirm --json
+cab run --account work --directory /absolute/project/path
+```
+
+Backup IDs are derived from the listed file's identity metadata; arbitrary input
+paths are not accepted. Only recognized CAB backups under registered account homes
+and uniquely attributable index backups are listed. Symlinks, special files, and
+credential filenames are rejected before content access. Restoring requires Codex
+to be stopped, obtains an exclusive CAB session lease, and backs up the current
+target first. SQLite restore uses the online backup API, including current WAL
+contents in the rollback backup. Shared session links must be disabled before
+restoring independent session directories. Deletion is permanent and applies only
+to the explicitly previewed backup. There is no automatic cleanup.
+
+Project launch profiles are saved on this Mac and always specify an account, target,
+and absolute directory. Launching revalidates the account and remote capability;
+it preserves official approval, sandbox, and project-trust settings. Switch history
+retains at most 200 operations with stage results and backup locations. An interrupted
+CAB operation is shown as needing verification; history never stores raw command
+output, conversation content, or credentials.
+
+**Low quota alerts** in Settings are off by default. Choose a remaining-quota threshold,
+5-hour/weekly windows, and optional quiet hours in this Mac's time zone. Each account
+and quota cycle alerts once; stale or failed reports are ignored. Quiet periods defer
+evaluation until the next successful refresh. Alerts never launch requests or switch
+accounts. Notification permission is requested only when enabling the feature.
+
+Window and menu-bar quota requests share an in-flight registry and short-lived cache,
+with at most four concurrent account reads. Manual refresh bypasses completed cache
+entries. Failed account refreshes keep the last successful values and timestamp.
+Read-only operations can be cancelled; SSH uses bounded connection/keepalive timeouts.
+A timeout does not prove a remote mutation was rolled back: refresh to verify its result.
+
+Token statistics cache only normalized event timestamps and numerical counters in
+`$CAB_DATA_HOME/token-cache-v1.sqlite` (the default CAB data directory otherwise).
+Unchanged files reuse cached events; appended files resume at a validated byte boundary.
+Truncated, replaced, or rewritten files are rescanned. Shared history remains deduplicated
+on every aggregation, and incomplete final lines are retried on the next refresh.
+The cache contains no conversation text and can be removed while CAB is idle to force
+reconstruction. `scanned_bytes` in `cab tokens --json` reports newly scanned event bytes.

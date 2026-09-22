@@ -522,6 +522,11 @@ func lock(dataDir string) (func(), error) {
 	return lockWithMode(dataDir, syscall.LOCK_EX)
 }
 
+// AcquireMaintenanceLease refuses changes while a CAB-launched task holds a run lease.
+func AcquireMaintenanceLease(paths config.Paths) (func(), error) {
+	return lockWithMode(paths.DataDir, syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
 // AcquireRunLease prevents a session-layout transaction from starting while a
 // CAB-launched Codex process may be reading or writing session history.
 func AcquireRunLease(paths config.Paths) (func(), error) {

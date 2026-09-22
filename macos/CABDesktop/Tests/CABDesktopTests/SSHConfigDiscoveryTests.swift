@@ -41,6 +41,16 @@ struct SSHConfigDiscoveryTests {
         #expect(InterfaceLanguage.system.localeIdentifier == "en" || InterfaceLanguage.system.localeIdentifier == "zh-Hans")
     }
 
+    @Test func decodesCodexUpdateStatusFromCabJSON() throws {
+        let data = Data("{\"current_version\":\"0.137.0\",\"latest_version\":\"0.153.4\",\"update_available\":true}".utf8)
+        let status = try JSONDecoder().decode(CodexUpdateStatus.self, from: data)
+
+        #expect(status.currentVersion == "0.137.0")
+        #expect(status.latestVersion == "0.153.4")
+        #expect(status.updateAvailable)
+        #expect(status.checkError == nil)
+    }
+
     @Test func classifiesEditorCodexProcessesAndExcludesDesktopChildren() {
         let vscode = "/Users/test/.vscode/extensions/openai.chatgpt/bin/codex"
         let desktop = "/Applications/ChatGPT.app/Contents/Resources/codex"
@@ -91,20 +101,28 @@ struct SSHConfigDiscoveryTests {
         #expect(parsed["openclaw.service"] == 922_674)
     }
 
-    @Test func remoteSwitchChecksOnlyTheStoppedSnapshotAfterAutomaticReconnect() {
-        let stoppedSnapshot = [
-            CodexProcessStatus(pid: 101, parentPID: 1, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
-            CodexProcessStatus(pid: 102, parentPID: 2, elapsed: "1:00", tty: "?", state: "Sl", executable: "codex"),
-        ]
-        let afterReconnect = [
-            CodexProcessStatus(pid: 102, parentPID: 2, elapsed: "1:01", tty: "?", state: "Sl", executable: "codex"),
-            CodexProcessStatus(pid: 201, parentPID: 3, elapsed: "0:01", tty: "?", state: "Sl", executable: "codex"),
-        ]
+    @Test func remoteAccountSwitchOnlySelectsNewConnections() async throws {
+        var commands: [[String]] = []
+        let result = try await switchRemoteAccountSafely("work") { arguments in
+            commands.append(arguments)
+            return CommandResult(output: "selected", errorOutput: "", exitCode: 0)
+        }
+        #expect(commands == [["remote", "use", "work"]])
+        #expect(result.exitCode == 0)
+    }
 
-        let remainingOriginals = codexProcesses(afterReconnect, matchingPIDsFrom: stoppedSnapshot)
-
-        #expect(remainingOriginals.map(\.pid) == [102])
-        #expect(!remainingOriginals.contains(where: { $0.pid == 201 }))
+    @Test func remoteIndexRepairFailureDoesNotStopOrRetryTasks() async {
+        var commands: [[String]] = []
+        do {
+            _ = try await switchRemoteAccountSafely("work") { arguments in
+                commands.append(arguments)
+                return CommandResult(output: "", errorOutput: "index repair failed", exitCode: 1)
+            }
+            Issue.record("A failed index repair must fail the switch")
+        } catch {
+            #expect(error.localizedDescription.contains("index repair failed"))
+        }
+        #expect(commands == [["remote", "use", "work"]])
     }
 
     @Test func finderLaunchEnvironmentCanResolveHomebrewCodex() {
@@ -727,6 +745,79 @@ struct SSHConfigDiscoveryTests {
 
         #expect(periods.fiveHour == .unavailable)
         #expect(periods.weekly == .unavailable)
+    }
+
+    @Test func usageDisplayFindsNamedReserveBucket() {
+        let fiveHour = UsageWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: 2_000_000_600)
+        let reserveWindow = UsageWindow(usedPercent: 46, windowDurationMins: 300, resetsAt: 2_000_001_200)
+        let primary = UsageRateLimitSnapshot(
+            limitID: "codex",
+            limitName: nil,
+            primary: fiveHour,
+            secondary: nil,
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        let reserve = UsageRateLimitSnapshot(
+            limitID: "codex_other",
+            limitName: "codex_other",
+            primary: reserveWindow,
+            secondary: nil,
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        let snapshot = CodexUsageSnapshot(
+            planType: nil,
+            rateLimits: primary,
+            rateLimitsByLimitID: ["codex": primary, "codex_other": reserve],
+            resetCredits: nil
+        )
+
+        let displays = usageReserveDisplays(for: snapshot)
+
+        #expect(displays.count == 1)
+        #expect(displays[0].name == "Luna Reserve")
+        #expect(displays[0].remainingPercent == 54)
+        #expect(displays[0].resetDate == Date(timeIntervalSince1970: 2_000_001_200))
+    }
+
+    @Test func usageDisplayIgnoresUnrelatedRateLimitBuckets() {
+        let primary = UsageRateLimitSnapshot(
+            limitID: "codex",
+            limitName: nil,
+            primary: UsageWindow(usedPercent: 25, windowDurationMins: 300, resetsAt: nil),
+            secondary: nil,
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        let unrelated = UsageRateLimitSnapshot(
+            limitID: "api",
+            limitName: "API requests",
+            primary: UsageWindow(usedPercent: 25, windowDurationMins: 60, resetsAt: nil),
+            secondary: nil,
+            credits: nil,
+            individualLimit: nil,
+            spendControlReached: nil,
+            planType: nil,
+            rateLimitReachedType: nil
+        )
+        let snapshot = CodexUsageSnapshot(
+            planType: nil,
+            rateLimits: primary,
+            rateLimitsByLimitID: ["codex": primary, "api": unrelated],
+            resetCredits: nil
+        )
+
+        #expect(usageReserveDisplays(for: snapshot).isEmpty)
     }
 
     @Test func usageResetConfirmationIncludesOnlyMeasuredRemainingWindows() {

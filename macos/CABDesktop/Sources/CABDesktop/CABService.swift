@@ -6,21 +6,40 @@ final class CommandOutputBuffer: @unchecked Sendable {
     private static let maximumCharactersPerStream = 2_000_000
     private static let truncationMarker = "\n… CAB 已截断过长的命令输出 …\n"
     private let lock = NSLock()
+    private var standardPending = Data()
+    private var errorPending = Data()
     private var standardText = ""
     private var errorText = ""
     private var standardTruncated = false
     private var errorTruncated = false
 
     func append(_ data: Data, toStandardOutput: Bool) -> String? {
-        guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return nil }
+        guard !data.isEmpty else { return nil }
         lock.lock()
+        defer { lock.unlock() }
+        let chunk: String
         if toStandardOutput {
+            standardPending.append(data)
+            chunk = decodeCompleteUTF8(&standardPending)
             appendLimited(chunk, text: &standardText, truncated: &standardTruncated)
         } else {
+            errorPending.append(data)
+            chunk = decodeCompleteUTF8(&errorPending)
             appendLimited(chunk, text: &errorText, truncated: &errorTruncated)
         }
-        lock.unlock()
-        return chunk
+        return chunk.isEmpty ? nil : chunk
+    }
+
+    private func decodeCompleteUTF8(_ pending: inout Data) -> String {
+        for trailing in 0...min(3, pending.count) {
+            if let text = String(data: pending.dropLast(trailing), encoding: .utf8) {
+                pending = Data(pending.suffix(trailing))
+                return text
+            }
+        }
+        let text = String(decoding: pending, as: UTF8.self)
+        pending.removeAll(keepingCapacity: true)
+        return text
     }
 
     private func appendLimited(_ chunk: String, text: inout String, truncated: inout Bool) {
@@ -38,12 +57,17 @@ final class CommandOutputBuffer: @unchecked Sendable {
     func result(exitCode: Int32) -> CommandResult {
         lock.lock()
         defer { lock.unlock() }
+        appendLimited(String(decoding: standardPending, as: UTF8.self), text: &standardText, truncated: &standardTruncated)
+        appendLimited(String(decoding: errorPending, as: UTF8.self), text: &errorText, truncated: &errorTruncated)
+        standardPending.removeAll(); errorPending.removeAll()
         return CommandResult(output: standardText, errorOutput: errorText, exitCode: exitCode)
     }
 }
 
 final class CABService {
     private let fileManager = FileManager.default
+    private let executionLock = NSLock()
+    private var readExecutions: [UUID: CommandExecution] = [:]
 
     func loadStatus(target: BridgeTarget, remoteHost: String) async throws -> BridgeStatus {
         let result = try await execute(["status", "--json"], target: target, remoteHost: remoteHost)
@@ -65,28 +89,37 @@ final class CABService {
         remoteHost: String,
         accountNames: [String]? = nil
     ) async throws -> UsageReport {
-        guard let accountNames else {
-            return try await loadUsage(arguments: ["usage", "--json"], target: target, remoteHost: remoteHost)
-        }
-        var reports: [AccountUsageReport] = []
-        var fetchedAt = Date.distantPast
-        for accountName in accountNames.sorted() {
-            do {
-                let report = try await loadUsage(
-                    arguments: ["usage", "--account", accountName, "--json"],
-                    target: target,
-                    remoteHost: remoteHost
-                )
-                reports.append(contentsOf: report.accounts)
-                fetchedAt = max(fetchedAt, report.fetchedAt)
-            } catch {
-                // Keep one account's transport/auth failure from hiding the
-                // successful reports for the other explicitly requested accounts.
-                reports.append(AccountUsageReport(name: accountName, usage: nil, error: error.localizedDescription))
-                fetchedAt = max(fetchedAt, Date())
+        try await loadUsage(target: target, remoteHost: remoteHost, accountNames: accountNames, force: false)
+    }
+
+    func loadUsage(target: BridgeTarget, remoteHost: String, accountNames: [String]?, force: Bool) async throws -> UsageReport {
+        let names: [String]
+        if let accountNames { names = accountNames }
+        else { names = try await loadStatus(target: target, remoteHost: remoteHost).accounts.filter(\.isLoggedIn).map(\.name) }
+        return await withTaskGroup(of: UsageReport.self) { group in
+            for name in Set(names) {
+                group.addTask {
+                    do {
+                        return try await UsageRepository.shared.read(
+                            key: .init(target: target == .local ? "local" : "ssh:" + remoteHost, account: name),
+                            maximumAge: force ? 0 : 30
+                        ) {
+                            try Task.checkCancellation()
+                            return try await self.loadUsage(arguments: ["usage", "--account", name, "--json"], target: target, remoteHost: remoteHost)
+                        }
+                    } catch {
+                        return UsageReport(fetchedAt: Date(), accounts: [AccountUsageReport(name: name, usage: nil, error: error.localizedDescription)])
+                    }
+                }
             }
+            var reports: [AccountUsageReport] = []
+            var fetchedAt = Date.distantPast
+            for await result in group {
+                fetchedAt = max(fetchedAt, result.fetchedAt)
+                reports += result.accounts.map { preservingUsage($0, previous: nil, fetchedAt: result.fetchedAt) }
+            }
+            return UsageReport(fetchedAt: fetchedAt, accounts: reports.sorted { $0.name < $1.name })
         }
-        return UsageReport(fetchedAt: fetchedAt, accounts: reports)
     }
 
     func loadTokenUsage(target: BridgeTarget, remoteHost: String) async throws -> TokenUsageReport {
@@ -104,6 +137,33 @@ final class CABService {
         }
     }
 
+    func updateCodex(
+        target: BridgeTarget,
+        remoteHost: String,
+        onOutput: (@Sendable (String) -> Void)? = nil
+    ) async throws -> CommandResult {
+        let result = try await execute(["update"], target: target, remoteHost: remoteHost, onOutput: onOutput)
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed(preferredMessage(result))
+        }
+        return result
+    }
+
+    func loadCodexUpdateStatus(target: BridgeTarget, remoteHost: String) async throws -> CodexUpdateStatus {
+        let result = try await execute(["update", "--check", "--json"], target: target, remoteHost: remoteHost)
+        guard result.exitCode == 0 else {
+            throw BridgeError.commandFailed(preferredMessage(result))
+        }
+        guard let data = result.output.data(using: .utf8) else {
+            throw BridgeError.invalidUpdate("cab 返回了无法读取的 Codex 版本信息。")
+        }
+        do {
+            return try JSONDecoder().decode(CodexUpdateStatus.self, from: data)
+        } catch {
+            throw BridgeError.invalidUpdate("无法解析 Codex 版本信息：\(error.localizedDescription)")
+        }
+    }
+
     private func loadUsage(
         arguments: [String],
         target: BridgeTarget,
@@ -117,15 +177,13 @@ final class CABService {
             throw BridgeError.invalidUsage("cab 返回了无法读取的额度信息。")
         }
         do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(UsageReport.self, from: data)
+            return try cabDateDecoder().decode(UsageReport.self, from: data)
         } catch {
             throw BridgeError.invalidUsage("无法解析 cab 额度信息：\(error.localizedDescription)")
         }
     }
 
-    private func cabDateDecoder() -> JSONDecoder {
+    func cabDateDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -280,7 +338,7 @@ final class CABService {
             let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            var sshArguments: [String] = []
+            var sshArguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=12", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2"]
             if arguments.contains("--browser-auth") {
                 sshArguments += [
                     "-o", "ExitOnForwardFailure=yes",
@@ -288,38 +346,34 @@ final class CABService {
                     "-L", "127.0.0.1:1457:127.0.0.1:1457",
                 ]
             }
-            process.arguments = sshArguments + ["--", host, "cab"] + arguments
+            process.arguments = sshArguments + ["--", host, (["cab"] + arguments).map(cabShellQuote).joined(separator: " ")]
         }
 
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let buffer = CommandOutputBuffer()
-
-            stdout.fileHandleForReading.readabilityHandler = { handle in
-                if let chunk = buffer.append(handle.availableData, toStandardOutput: true) { onOutput?(chunk) }
-            }
-            stderr.fileHandleForReading.readabilityHandler = { handle in
-                if let chunk = buffer.append(handle.availableData, toStandardOutput: false) { onOutput?(chunk) }
-            }
-            process.terminationHandler = { finished in
-                stdout.fileHandleForReading.readabilityHandler = nil
-                stderr.fileHandleForReading.readabilityHandler = nil
-                if let chunk = buffer.append(stdout.fileHandleForReading.readDataToEndOfFile(), toStandardOutput: true) { onOutput?(chunk) }
-                if let chunk = buffer.append(stderr.fileHandleForReading.readDataToEndOfFile(), toStandardOutput: false) { onOutput?(chunk) }
-                continuation.resume(returning: buffer.result(exitCode: finished.terminationStatus))
-            }
-            do {
-                try process.run()
-            } catch {
-                stdout.fileHandleForReading.readabilityHandler = nil
-                stderr.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: error)
-            }
+        let execution = CommandExecution(process: process)
+        let id = UUID()
+        let readOnly = isReadOnlyCommand(arguments)
+        if readOnly { register(execution, id: id) }
+        defer { unregister(id) }
+        let result = try await execution.run(timeout: commandTimeout(arguments), onOutput: onOutput)
+        if target == .remote, result.exitCode != 0 {
+            return CommandResult(output: result.output, errorOutput: remoteCommandFailure(result), exitCode: result.exitCode)
         }
+        return result
+    }
+
+    private func register(_ execution: CommandExecution, id: UUID) {
+        executionLock.lock(); defer { executionLock.unlock() }
+        readExecutions[id] = execution
+    }
+    private func unregister(_ id: UUID) {
+        executionLock.lock(); defer { executionLock.unlock() }
+        readExecutions[id] = nil
+    }
+    func cancelReadOperations() {
+        executionLock.lock()
+        let operations = Array(readExecutions.values)
+        executionLock.unlock()
+        operations.forEach { $0.cancel() }
     }
 
     private func executeRemoteProgram(_ executable: String, arguments: [String], remoteHost: String) async throws -> CommandResult {
@@ -327,11 +381,11 @@ final class CABService {
         guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
         return try await runLocalProcess(
             "/usr/bin/ssh",
-            arguments: ["--", host, executable] + arguments
+            arguments: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=12", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "--", host, ([executable] + arguments).map(cabShellQuote).joined(separator: " ")]
         )
     }
 
-    func launchCodexInTerminal(target: BridgeTarget, remoteHost: String, accountName: String? = nil) throws {
+    func launchCodexInTerminal(target: BridgeTarget, remoteHost: String, accountName: String? = nil, directory: String? = nil) throws {
         let environment = localCABEnvironment(
             baseEnvironment: ProcessInfo.processInfo.environment,
             homeDirectory: fileManager.homeDirectoryForCurrentUser,
@@ -342,7 +396,8 @@ final class CABService {
             remoteHost: remoteHost,
             cabExecutablePath: cabExecutable()?.path,
             realCodexPath: environment["CAB_REAL_CODEX"],
-            accountName: accountName
+            accountName: accountName,
+            directory: directory
         )
         let script = "tell application \"Terminal\" to do script \(appleScriptQuote(command))"
         let process = Process()
@@ -636,27 +691,10 @@ final class CABService {
     }
 
     private func runLocalProcess(_ executable: String, arguments: [String]) async throws -> CommandResult {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
-            process.standardOutput = stdout
-            process.standardError = stderr
-            process.terminationHandler = { finished in
-                continuation.resume(returning: CommandResult(
-                    output: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-                    errorOutput: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-                    exitCode: finished.terminationStatus
-                ))
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        return try await CommandExecution(process: process).run(timeout: 60)
     }
 
     func discoverSSHHosts() throws -> [String] {
@@ -775,17 +813,24 @@ func codexRunTerminalCommand(
     remoteHost: String,
     cabExecutablePath: String?,
     realCodexPath: String?,
-    accountName: String?
+    accountName: String?,
+    directory: String? = nil
 ) throws -> String {
+    let directoryArgument = directory.map { " --directory \(cabShellQuote($0))" } ?? ""
     let accountArgument = accountName.map { " --account \(cabShellQuote($0))" } ?? ""
     if target == .local {
         guard let cabExecutablePath else { throw BridgeError.executableMissing }
         let codexPrefix = realCodexPath.map { "CAB_REAL_CODEX=\(cabShellQuote($0)) " } ?? ""
-        return "\(codexPrefix)\(cabShellQuote(cabExecutablePath)) run\(accountArgument)"
+        return "\(codexPrefix)\(cabShellQuote(cabExecutablePath)) run\(accountArgument)\(directoryArgument)"
     }
 
     let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
+    if let directory {
+        guard let accountName else { throw BridgeError.invalidAccountName }
+        let remote = ["cab", "run", "--account", accountName, "--directory", directory].map(cabShellQuote).joined(separator: " ")
+        return "ssh -tt -- \(cabShellQuote(host)) \(cabShellQuote(remote))"
+    }
     return "ssh -tt -- \(cabShellQuote(host)) cab run\(accountArgument)"
 }
 
@@ -877,9 +922,17 @@ func remoteUserCodexProcesses(_ processes: [CodexProcessStatus], excludingParent
     return processes.filter { !agentProcessPIDs.contains($0.pid) }
 }
 
-func codexProcesses(_ current: [CodexProcessStatus], matchingPIDsFrom snapshot: [CodexProcessStatus]) -> [CodexProcessStatus] {
-    let targetPIDs = Set(snapshot.map(\.pid))
-    return current.filter { targetPIDs.contains($0.pid) }
+// Account selection only affects future connections. This operation deliberately
+// has no process-stop capability; active tasks retain their existing account.
+func switchRemoteAccountSafely(
+    _ name: String,
+    execute: ([String]) async throws -> CommandResult
+) async throws -> CommandResult {
+    let result = try await execute(["remote", "use", name])
+    guard result.exitCode == 0 else {
+        throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+    }
+    return result
 }
 
 private extension String {

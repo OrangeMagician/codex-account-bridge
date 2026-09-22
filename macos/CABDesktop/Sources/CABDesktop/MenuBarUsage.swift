@@ -144,6 +144,13 @@ struct MenuBarSnapshot: Equatable {
 protocol MenuBarUsageService {
     func loadStatus(target: BridgeTarget, remoteHost: String) async throws -> BridgeStatus
     func loadUsage(target: BridgeTarget, remoteHost: String, accountNames: [String]?) async throws -> UsageReport
+    func loadUsage(target: BridgeTarget, remoteHost: String, accountNames: [String]?, force: Bool) async throws -> UsageReport
+}
+
+extension MenuBarUsageService {
+    func loadUsage(target: BridgeTarget, remoteHost: String, accountNames: [String]?, force: Bool) async throws -> UsageReport {
+        try await loadUsage(target: target, remoteHost: remoteHost, accountNames: accountNames)
+    }
 }
 
 extension CABService: MenuBarUsageService {}
@@ -233,7 +240,7 @@ final class MenuBarUsageStore: ObservableObject {
                 return
             }
             guard force || interval != .manual else { return }
-            let report = try await service.loadUsage(target: .local, remoteHost: "", accountNames: [account.name])
+            let report = try await service.loadUsage(target: .local, remoteHost: "", accountNames: [account.name], force: force)
             guard desktopHome() == desktop else {
                 snapshot = MenuBarSnapshot(desktop: desktopHome(), checkedAt: now)
                 lastAttempt = nil
@@ -246,6 +253,7 @@ final class MenuBarUsageStore: ObservableObject {
             snapshot.usage = usage
             snapshot.fetchedAt = report.fetchedAt
             snapshot.error = nil
+            await LowQuotaMonitor.shared.evaluate(UsageNotificationSource(key: "local", title: cabLocalized("这台 Mac"), reports: [result]))
         } catch {
             if desktopHome() != desktop {
                 snapshot = MenuBarSnapshot(desktop: desktopHome(), checkedAt: now)

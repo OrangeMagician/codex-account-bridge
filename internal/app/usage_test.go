@@ -118,3 +118,30 @@ printf '%s\n' '{"id":3,"result":{"outcome":"reset"}}'
 		t.Fatalf("unexpected reset output: %#v", output)
 	}
 }
+
+func TestUpdateCommandInvokesOfficialCLI(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	observed := filepath.Join(root, "observed")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAB_TEST_OUTPUT\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_OUTPUT", observed)
+	t.Setenv("CAB_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("CAB_DATA_HOME", filepath.Join(root, "data"))
+	if code, err := Run([]string{"cab", "init"}, "test"); err != nil || code != 0 {
+		t.Fatalf("init: code=%d err=%v", code, err)
+	}
+	if code, err := Run([]string{"cab", "update"}, "test"); err != nil || code != 0 {
+		t.Fatalf("update: code=%d err=%v", code, err)
+	}
+	data, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "update\n" {
+		t.Fatalf("official args = %q", data)
+	}
+}

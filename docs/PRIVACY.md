@@ -44,3 +44,16 @@ find . -type f \( -name auth.json -o -name config.toml -o -name '*.pem' -o -name
 发现隐私数据时不要仅依赖后续删除；如果已经提交或推送，应立即撤销相关凭据并清理 Git 历史。
 
 The Token dashboard uses read-only `state_5.sqlite` indexes to locate regular `rollout-*.jsonl` files under configured session directories. It scans token-event timestamps and counters locally, without returning conversation content. UTC daily usage is based on recorded increments, not index update dates. Cached input is included in total tokens. Missing or incomplete histories are disclosed. No authorization files are opened.
+
+## Maintenance metadata and incremental usage cache
+
+CAB stores project launch profiles and up to 200 switch/restore records locally in
+macOS UserDefaults. These records contain account labels, target hosts, project or
+backup paths, timestamps, and fixed stage outcomes; they exclude raw command output,
+conversation content, and credentials. Low-quota notification deduplication stores
+hashed source/account/cycle identifiers and expiry dates. Diagnostic reports contain
+paths, versions, process metadata, and file-permission checks, never credential contents.
+
+The optional CAB-owned Token cache stores only normalized event times and numerical
+usage counters with file identity/offset metadata. It does not cache conversation text.
+No new network service, telemetry endpoint, or credential synchronization is introduced.

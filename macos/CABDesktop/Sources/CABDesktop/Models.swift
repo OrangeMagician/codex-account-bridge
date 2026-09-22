@@ -139,6 +139,20 @@ struct UsageReport: Codable, Equatable {
     }
 }
 
+struct CodexUpdateStatus: Codable, Equatable {
+    let currentVersion: String
+    let latestVersion: String?
+    let updateAvailable: Bool
+    let checkError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case currentVersion = "current_version"
+        case latestVersion = "latest_version"
+        case updateAvailable = "update_available"
+        case checkError = "check_error"
+    }
+}
+
 struct TokenUsageReport: Codable, Equatable {
     var source: String? = nil
     var inputTokens: Int64? = nil
@@ -186,6 +200,7 @@ struct AccountUsageReport: Codable, Equatable, Identifiable {
     let name: String
     let usage: CodexUsageSnapshot?
     let error: String?
+    var fetchedAt: Date? = nil
 }
 
 struct CodexUsageSnapshot: Codable, Equatable {
@@ -440,6 +455,7 @@ enum BridgeError: LocalizedError {
     case invalidStatus(String)
     case invalidUsage(String)
     case invalidTokens(String)
+    case invalidUpdate(String)
 
     var errorDescription: String? {
         switch self {
@@ -447,7 +463,7 @@ enum BridgeError: LocalizedError {
             return "找不到 cab。请先安装到 ~/.local/bin 或 /opt/homebrew/bin。"
         case .invalidAccountName:
             return "账号名称只能包含字母、数字、点、下划线和短横线，最长 64 个字符。"
-        case .commandFailed(let message), .invalidStatus(let message), .invalidUsage(let message), .invalidTokens(let message):
+        case .commandFailed(let message), .invalidStatus(let message), .invalidUsage(let message), .invalidTokens(let message), .invalidUpdate(let message):
             return message
         }
     }

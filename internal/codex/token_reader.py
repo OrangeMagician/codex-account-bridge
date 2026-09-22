@@ -4,6 +4,8 @@ The index's tokens_used is cumulative and updated_at can change on import or
 pinning. Neither is a daily usage record. Dates below are explicitly UTC.
 """
 import datetime as dt
+import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -32,7 +34,162 @@ def regular(path):
         raise ValueError("not a regular usage source")
 
 
-def read_report(paths):
+class EventCache:
+    """CAB-owned cache of counters only, never message text or credentials."""
+    def __init__(self, path):
+        self.db = None
+        self.scanned_bytes = 0
+        if not path:
+            return
+        try:
+            path = Path(path)
+            if path.name != "token-cache-v1.sqlite":
+                return
+            for parent in (path.parent, *path.parents):
+                if parent.is_symlink():
+                    return
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if path.parent.stat().st_mode & 0o077:
+                return
+            for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+                if candidate.exists() or candidate.is_symlink():
+                    regular(candidate)
+            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            os.close(fd)
+            self.db = sqlite3.connect(path, timeout=1)
+            self.db.execute("CREATE TABLE IF NOT EXISTS events (path TEXT PRIMARY KEY, state TEXT NOT NULL)")
+        except (OSError, ValueError, sqlite3.Error):
+            self.close()
+
+    def close(self):
+        if self.db is not None:
+            self.db.close()
+            self.db = None
+
+    def get(self, path):
+        if self.db is None:
+            return None
+        try:
+            row = self.db.execute("SELECT state FROM events WHERE path=?", (str(path),)).fetchone()
+            state = json.loads(row[0]) if row else None
+            if not isinstance(state, dict) or not isinstance(state.get("events"), list):
+                return None
+            for event in state["events"]:
+                if not isinstance(event, list) or len(event) != 3 or not isinstance(event[0], str):
+                    return None
+                for values in event[1:]:
+                    if values is not None and (not isinstance(values, (list, tuple)) or len(values) != 4 or any(type(n) is not int or n < 0 for n in values)):
+                        return None
+                if event[1] is None:
+                    return None
+            return state
+        except (sqlite3.Error, ValueError):
+            return None
+
+    def put(self, path, state):
+        if self.db is not None:
+            try:
+                with self.db:
+                    self.db.execute("INSERT OR REPLACE INTO events VALUES (?,?)", (str(path), json.dumps(state, separators=(",", ":"))))
+            except sqlite3.Error:
+                pass  # An optional cache must never make statistics unavailable.
+
+    def prune(self, paths):
+        if self.db is not None:
+            try:
+                with self.db:
+                    for (path,) in self.db.execute("SELECT path FROM events").fetchall():
+                        if path not in paths:
+                            self.db.execute("DELETE FROM events WHERE path=?", (path,))
+            except sqlite3.Error:
+                pass
+
+
+def boundary(stream, offset):
+    """Validate the prefix and append boundary before trusting saved offsets."""
+    digest = hashlib.sha256()
+    stream.seek(0)
+    digest.update(stream.read(min(offset, 4096)))
+    stream.seek(max(0, offset - 4096))
+    digest.update(stream.read(min(offset, 4096)))
+    return digest.hexdigest()
+
+
+def usage_events(stream, thread_id, path, cache):
+    info = os.fstat(stream.fileno())
+    old = cache.get(path)
+    offset, events, damaged = 0, [], False
+    if isinstance(old, dict) and old.get("version") == 1 and old.get("thread") == thread_id:
+        same_file = old.get("device") == info.st_dev and old.get("inode") == info.st_ino
+        unchanged = old.get("size") == info.st_size and old.get("modified") == info.st_mtime_ns and old.get("changed") == info.st_ctime_ns
+        appended = info.st_size > old.get("size", info.st_size)
+        saved_offset = old.get("offset", -1)
+        if same_file and (unchanged or appended) and 0 <= saved_offset <= info.st_size and boundary(stream, saved_offset) == old.get("boundary"):
+            offset, events, damaged = saved_offset, old["events"], old["damaged"]
+    stream.seek(offset)
+    if offset == 0:
+        line = stream.readline(MAX_LINE)
+        cache.scanned_bytes += len(line)
+        meta = json.loads(line)
+        if meta.get("type") != "session_meta" or meta.get("payload", {}).get("id") != thread_id:
+            raise ValueError("wrong session identity")
+        offset = stream.tell()
+    remaining = info.st_size - offset
+    partial = False
+    while remaining > 0:
+        line = stream.readline(min(MAX_LINE, remaining))
+        cache.scanned_bytes += len(line)
+        remaining -= len(line)
+        if not line:
+            break
+        if not line.endswith(b"\n"):
+            if len(line) < MAX_LINE:
+                partial = True
+                break  # Re-read the unfinished event on the next refresh.
+            while remaining > 0 and line and not line.endswith(b"\n"):
+                line = stream.readline(min(MAX_LINE, remaining))
+                cache.scanned_bytes += len(line)
+                remaining -= len(line)
+            damaged = True
+            offset = stream.tell()
+            continue
+        offset = stream.tell()
+        if b'"token_count"' not in line or b'"event_msg"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+            payload = event.get("payload", {})
+            if event.get("type") != "event_msg" or payload.get("type") != "token_count":
+                continue
+            details = payload.get("info")
+            if not isinstance(details, dict):
+                continue
+            current = counters(details.get("total_token_usage"))
+            if current is None:
+                damaged = True
+                continue
+            timestamp = dt.datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                raise ValueError("missing timezone")
+            # Store only normalized time and numerical counters.
+            events.append([timestamp.astimezone(UTC).isoformat(), current, counters(details.get("last_token_usage"))])
+        except (ValueError, TypeError, KeyError, AttributeError):
+            damaged = True
+    cache.put(path, {"version": 1, "thread": thread_id, "device": info.st_dev, "inode": info.st_ino,
+                     "size": info.st_size, "modified": info.st_mtime_ns, "changed": info.st_ctime_ns,
+                     "offset": offset, "boundary": boundary(stream, offset), "events": events, "damaged": damaged})
+    return events, damaged or partial
+
+
+def read_report(paths, cache_path=None):
+    cache = EventCache(cache_path)
+    try:
+        return _read_report(paths, cache)
+    finally:
+        cache.close()
+
+
+def _read_report(paths, cache):
     threads = {}
     roots = set()
     for path in map(Path, paths):
@@ -78,48 +235,16 @@ def read_report(paths):
                 with os.fdopen(fd, "rb") as stream:
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                         continue
-                    # Bound the scan to the snapshot even if Codex is appending.
-                    remaining = os.fstat(stream.fileno()).st_size
-                    meta = stream.readline(min(MAX_LINE, remaining))
-                    remaining -= len(meta)
-                    record = json.loads(meta)
-                    if record.get("type") != "session_meta" or record.get("payload", {}).get("id") != thread_id:
-                        continue
+                    events, damaged = usage_events(stream, thread_id, resolved, cache)
                     read_paths.add(resolved)
-                    while remaining > 0:
-                        line = stream.readline(min(MAX_LINE, remaining))
-                        remaining -= len(line)
-                        if not line:
-                            break
-                        if not line.endswith(b"\n"):
-                            # Discard oversized records and in-progress appends.
-                            while remaining > 0 and line and not line.endswith(b"\n"):
-                                line = stream.readline(min(MAX_LINE, remaining))
-                                remaining -= len(line)
-                            damaged = True
-                            continue
-                        if b'"token_count"' not in line or b'"event_msg"' not in line:
-                            continue
+                    for timestamp_text, values, last_values in events:
                         try:
-                            event = json.loads(line)
-                            payload = event.get("payload", {})
-                            if event.get("type") != "event_msg" or payload.get("type") != "token_count":
-                                continue
-                            info = payload.get("info")
-                            if not isinstance(info, dict):
-                                continue
-                            current = counters(info.get("total_token_usage"))
-                            if current is None:
-                                damaged = True
-                                continue
-                            timestamp = dt.datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
-                            if timestamp.tzinfo is None:
-                                raise ValueError("usage timestamp has no timezone")
-                            timestamp = timestamp.astimezone(UTC)
+                            current = tuple(values)
+                            timestamp = dt.datetime.fromisoformat(timestamp_text)
                             covered.add(thread_id)
                             if current == previous:
                                 continue  # Codex repeats snapshots after responses.
-                            last = counters(info.get("last_token_usage"))
+                            last = tuple(last_values) if last_values is not None else None
                             if previous == (0, 0, 0, 0) and last is not None and last[3] < current[3]:
                                 # Imported/truncated logs can begin with an inherited
                                 # lifetime total. Only this request belongs to this day.
@@ -127,7 +252,7 @@ def read_report(paths):
                                 damaged = True
                             elif current[3] < previous[3]:
                                 # A resumed/reset counter must not re-charge its history.
-                                delta = counters(info.get("last_token_usage"))
+                                delta = tuple(last_values) if last_values is not None else None
                                 if delta is None:
                                     damaged = True
                                     previous = current
@@ -137,7 +262,7 @@ def read_report(paths):
                             previous = current
                             # Copies and forked histories retain original event timestamps
                             # and counters. Count their shared prefix exactly once.
-                            key = (timestamp.isoformat(), current, counters(info.get("last_token_usage")))
+                            key = (timestamp.isoformat(), current, tuple(last_values) if last_values is not None else None)
                             if key in seen:
                                 continue
                             seen.add(key)
@@ -154,6 +279,7 @@ def read_report(paths):
                 damaged = True
             incomplete += int(damaged)
 
+    # Other account selections may share this cache; retain their entries.
     dates = sorted(daily)
     longest = run = 0
     previous_date = None
@@ -169,7 +295,7 @@ def read_report(paths):
         streak += 1
         cursor -= dt.timedelta(days=1)
     return {
-        "source": "session_events",
+        "source": "session_events", "scanned_bytes": cache.scanned_bytes,
         "fetched_at": dt.datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "total_tokens": totals[3], "input_tokens": totals[0],
         "cached_input_tokens": totals[1], "output_tokens": totals[2],
@@ -183,6 +309,8 @@ def read_report(paths):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(read_report(sys.argv[1:]), separators=(",", ":")))
+        args = sys.argv[1:]
+        cache_path = args[1] if len(args) >= 2 and args[0] == "--cache" else None
+        print(json.dumps(read_report(args[2:] if cache_path else args, cache_path), separators=(",", ":")))
     except (OSError, ValueError, sqlite3.Error):
         sys.exit("Cannot read the Codex usage index; no statistics were fabricated.")

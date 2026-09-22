@@ -61,6 +61,9 @@ func Run(argv []string, version string) (int, error) {
 		fmt.Printf("cab %s\n", version)
 		return 0, nil
 	}
+	if command == "capabilities" {
+		return printJSON(map[string]any{"protocol_version": 1, "cab_version": version, "capabilities": supportedCapabilities})
+	}
 	if command == "init" {
 		if err := config.EnsureDataDir(paths); err != nil {
 			return 1, err
@@ -74,8 +77,9 @@ func Run(argv []string, version string) (int, error) {
 	if command == "doctor" {
 		flags := newFlags("doctor")
 		repair := flags.Bool("repair", false, "recover an interrupted CAB session transaction")
+		jsonOutput := flags.Bool("json", false, "print structured diagnostics")
 		if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-			return 2, errors.New("usage: cab doctor [--repair]")
+			return 2, errors.New("usage: cab doctor [--repair] [--json]")
 		}
 		cfg, err := config.ReadLocked(paths, func(latest config.Config) error {
 			if *repair {
@@ -86,7 +90,7 @@ func Run(argv []string, version string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		return doctor(paths, cfg)
+		return doctorOutput(paths, cfg, version, *jsonOutput)
 	}
 	cfg, err := config.ReadLocked(paths, func(latest config.Config) error {
 		return session.Recover(paths, latest)
@@ -95,6 +99,8 @@ func Run(argv []string, version string) (int, error) {
 		return 1, err
 	}
 	switch command {
+	case "backups":
+		return backupsCommand(paths, cfg, args)
 	case "account":
 		return accountCommand(paths, &cfg, args)
 	case "use":
@@ -111,6 +117,8 @@ func Run(argv []string, version string) (int, error) {
 		return rotationCommand(paths, &cfg, args)
 	case "status":
 		return statusCommand(cfg, args)
+	case "update":
+		return updateCommand(cfg, args)
 	case "tokens":
 		return tokensCommand(cfg, args)
 	case "usage":
@@ -146,6 +154,7 @@ Commands:
   cab status [--json]
   cab usage [--account NAME] [--json]
   cab tokens [--account NAME] [--json]
+  cab update [--check] [--json]
   cab usage probe --account NAME [--model MODEL] [--json]
   cab usage reset --account NAME [--credit-id ID] --idempotency-key KEY --confirm-reset-usage [--json]
   cab agent list [--json]
@@ -164,7 +173,12 @@ Commands:
   cab sessions import-current --acknowledge-cross-account-context --confirm-codex-stopped
   cab shim install [--dir PATH] [--force]
   cab shim remove [--dir PATH]
-  cab doctor [--repair]
+  cab doctor [--repair] [--json]
+  cab capabilities
+  cab backups list [--json]
+  cab backups preview --id ID [--action restore|delete] [--json]
+  cab backups restore --id ID --confirm --confirm-codex-stopped [--json]
+  cab backups delete --id ID --confirm [--json]
   cab version
 
 Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
@@ -504,6 +518,41 @@ func tokensCommand(cfg config.Config, args []string) (int, error) {
 	return 0, nil
 }
 
+func updateCommand(_ config.Config, args []string) (int, error) {
+	flags := newFlags("update")
+	check := flags.Bool("check", false, "check the installed and latest Codex CLI versions")
+	jsonOutput := flags.Bool("json", false, "print machine-readable JSON (with --check)")
+	if err := flags.Parse(args); err != nil {
+		return 2, err
+	}
+	if flags.NArg() != 0 {
+		return 2, errors.New("usage: cab update [--check] [--json]")
+	}
+	if *check {
+		status, err := codex.CheckUpdate()
+		if err != nil {
+			return 1, err
+		}
+		if *jsonOutput {
+			return printJSON(status)
+		}
+		if status.CheckError != "" {
+			fmt.Printf("codex %s; latest version unavailable: %s\n", status.CurrentVersion, status.CheckError)
+			return 0, nil
+		}
+		if status.UpdateAvailable {
+			fmt.Printf("codex %s; update available: %s\n", status.CurrentVersion, status.LatestVersion)
+		} else {
+			fmt.Printf("codex %s is up to date\n", status.CurrentVersion)
+		}
+		return 0, nil
+	}
+	if *jsonOutput {
+		return 2, errors.New("usage: cab update --check [--json]")
+	}
+	return codex.Update()
+}
+
 func usageResetCommand(cfg config.Config, args []string) (int, error) {
 	flags := newFlags("usage reset")
 	accountName := flags.String("account", "", "configured account name")
@@ -773,6 +822,7 @@ func loginCommand(cfg config.Config, args []string) (int, error) {
 
 func runCommand(paths config.Paths, cfg config.Config, args []string, appServer bool) (int, error) {
 	flags := newFlags("run")
+	directory := flags.String("directory", "", "explicit absolute project directory")
 	accountName := flags.String("account", "", "configured account name")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
@@ -791,6 +841,19 @@ func runCommand(paths config.Paths, cfg config.Config, args []string, appServer 
 		return 2, err
 	}
 	commandArgs := flags.Args()
+	if *directory != "" {
+		if !filepath.IsAbs(*directory) {
+			return 2, errors.New("project directory must be absolute")
+		}
+		info, err := os.Stat(*directory)
+		if err != nil || !info.IsDir() {
+			return 2, errors.New("project directory does not exist")
+		}
+		if appServer {
+			return 2, errors.New("project directory only applies to interactive run")
+		}
+		commandArgs = append([]string{"--cd", *directory}, commandArgs...)
+	}
 	if appServer {
 		commandArgs = append([]string{"app-server"}, commandArgs...)
 	}
@@ -1193,8 +1256,20 @@ func shimCommand(paths config.Paths, args []string) (int, error) {
 }
 
 func doctor(paths config.Paths, cfg config.Config) (int, error) {
+	return doctorOutput(paths, cfg, "dev", false)
+}
+
+func doctorOutput(paths config.Paths, cfg config.Config, version string, jsonOutput bool) (int, error) {
+	checks := []diagnosticCheck{}
 	issues := 0
 	check := func(ok bool, message string) {
+		checks = append(checks, diagnosticCheck{ID: fmt.Sprintf("check-%d", len(checks)), OK: ok, Detail: message})
+		if jsonOutput {
+			if !ok {
+				issues++
+			}
+			return
+		}
 		if ok {
 			fmt.Printf("OK   %s\n", message)
 		} else {
@@ -1239,6 +1314,9 @@ func doctor(paths config.Paths, cfg config.Config) (int, error) {
 	pendingRecovery, recoveryErr := session.RecoveryStatus(paths, cfg)
 	check(recoveryErr == nil, "session transaction journal is valid")
 	check(!pendingRecovery, "no interrupted session transaction requires recovery")
+	if jsonOutput {
+		return printJSON(diagnostics(paths, cfg, version, checks))
+	}
 	if issues > 0 {
 		return 1, fmt.Errorf("doctor found %d issue(s)", issues)
 	}

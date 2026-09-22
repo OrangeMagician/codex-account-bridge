@@ -12,11 +12,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/OrangeMagician/codex-account-bridge/internal/config"
 )
 
 // TokenUsageReport aggregates persisted token_count increments by their UTC event date.
 // Cached input is a subset of input; reasoning is already included in output.
 type TokenUsageReport struct {
+	ScannedBytes       int64             `json:"scanned_bytes"`
 	Source             string            `json:"source"`
 	InputTokens        int64             `json:"input_tokens"`
 	CachedInputTokens  int64             `json:"cached_input_tokens"`
@@ -59,6 +62,11 @@ func ReadTokenUsage(homes []string) (TokenUsageReport, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tokenReadTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, python, "-c", tokenReaderScript)
+	if cachePaths, err := config.DefaultPaths(); err == nil {
+		if err := config.EnsureDataDir(cachePaths); err == nil {
+			cmd.Args = append(cmd.Args, "--cache", filepath.Join(cachePaths.DataDir, "token-cache-v1.sqlite"))
+		}
+	}
 	cmd.Args = append(cmd.Args, paths...)
 	cmd.Env = os.Environ()
 	data, err := cmd.Output()

@@ -2,12 +2,12 @@ import CABContinuity
 import Foundation
 import SwiftUI
 
-private enum LoginBrowser {
+enum LoginBrowser {
     case systemDefault
     case selected(BrowserChoice, privateWindow: Bool)
 }
 
-private struct UsageCacheEntry {
+struct UsageCacheEntry {
     let reports: [String: AccountUsageReport]
     let fetchedAt: Date?
     let checkedAtByAccount: [String: Date]
@@ -16,7 +16,7 @@ private struct UsageCacheEntry {
 
 @MainActor
 final class CABStore: ObservableObject {
-    private static let maximumOutputCharacters = 500_000
+    static let maximumOutputCharacters = 500_000
     @Published var target: BridgeTarget = .local
     @Published var status = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
     @Published var sidebarSelection = CABStore.globalSettingsSelection
@@ -27,6 +27,8 @@ final class CABStore: ObservableObject {
     @Published var output = ""
     @Published var errorMessage: String?
     @Published var isBusy = false
+    @Published var isStatusRefreshing = false
+    var statusRefreshGeneration = 0
     @Published var remoteServers: [RemoteServer] = []
     @Published var selectedRemoteID: UUID?
     @Published var showServerManager = false
@@ -48,6 +50,10 @@ final class CABStore: ObservableObject {
     @Published var tokenUsage: TokenUsageReport?
     @Published var tokenUsageLoadError: String?
     @Published var isTokenUsageRefreshing = false
+    @Published var isCodexUpdating = false
+    @Published var codexUpdateStatus: CodexUpdateStatus?
+    @Published var codexUpdateError: String?
+    @Published var isCodexUpdateChecking = false
     @Published private(set) var loginAccountName: String?
     @Published private(set) var loginStatusConfirmed = false
     @Published private(set) var canManuallyCheckLogin = false
@@ -63,31 +69,34 @@ final class CABStore: ObservableObject {
     @Published var pendingDesktopSwitchError: String?
     @Published var desktopSwitchPartialResult: DesktopSwitchPartialResult?
 
-    private let service = CABService()
-    private lazy var usageResetNotificationService = UsageResetNotificationService()
-    private let defaults = UserDefaults.standard
-    private let remoteServersKey = "remoteServers.v1"
-    private let selectedRemoteKey = "selectedRemoteServer.v1"
-    private let lastDesktopAccountKey = "lastDesktopAccount.v1"
-    private let preserveSessionsKey = "preserveSessionsOnDesktopSwitch.v1"
-    private let interfaceLanguageKey = "interfaceLanguage.v1"
-    private let usageRefreshIntervalKey = "usageRefreshInterval.v1"
-    private let usageWakeSettingsKey = "usageWakeSettings.v1"
-    private let usageWakeStateKey = "usageWakeState.v1"
-    private let usageResetNotificationsKey = "usageResetNotifications.v1"
-    private var hasSavedDesktopSessionPreference = false
-    private var loginOutputBuffer = ""
-    private var loginBrowserOpened = false
-    private var loginStatusMonitor: Task<Void, Never>?
-    private var usageCacheByKey: [String: UsageCacheEntry] = [:]
-    private var usageRefreshingKeys: Set<String> = []
-    private var usageWakeState = UsageWakeState()
-    private var usageWakeInFlightKeys: Set<String> = []
-    private var usageSchedulerTask: Task<Void, Never>?
-
-    private var tokenUsageByKey: [String: TokenUsageReport] = [:]
-    private var tokenUsageErrorByKey: [String: String] = [:]
-    private var tokenUsageRefreshingKeys: Set<String> = []
+    let tools = ManagementToolsStore()
+    let service = CABService()
+    lazy var usageResetNotificationService = UsageResetNotificationService()
+    let defaults = UserDefaults.standard
+    let remoteServersKey = "remoteServers.v1"
+    let selectedRemoteKey = "selectedRemoteServer.v1"
+    let lastDesktopAccountKey = "lastDesktopAccount.v1"
+    let preserveSessionsKey = "preserveSessionsOnDesktopSwitch.v1"
+    let interfaceLanguageKey = "interfaceLanguage.v1"
+    let usageRefreshIntervalKey = "usageRefreshInterval.v1"
+    let usageWakeSettingsKey = "usageWakeSettings.v1"
+    let usageWakeStateKey = "usageWakeState.v1"
+    let usageResetNotificationsKey = "usageResetNotifications.v1"
+    var hasSavedDesktopSessionPreference = false
+    var loginOutputBuffer = ""
+    var loginBrowserOpened = false
+    var loginStatusMonitor: Task<Void, Never>?
+    var usageCacheByKey: [String: UsageCacheEntry] = [:]
+    var usageRefreshingKeys: Set<String> = []
+    var usageWakeState = UsageWakeState()
+    var usageWakeInFlightKeys: Set<String> = []
+    var usageSchedulerTask: Task<Void, Never>?
+    var tokenUsageByKey: [String: TokenUsageReport] = [:]
+    var tokenUsageErrorByKey: [String: String] = [:]
+    var tokenUsageRefreshingKeys: Set<String> = []
+    var codexUpdateStatusByKey: [String: CodexUpdateStatus] = [:]
+    var codexUpdateErrorByKey: [String: String] = [:]
+    var codexUpdateCheckingKeys: Set<String> = []
 
     init() {
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
@@ -137,9 +146,11 @@ final class CABStore: ObservableObject {
     }
 
     var selectedAccount: String? {
-        get { showingGlobalSettings ? nil : sidebarSelection }
+        get { showingGlobalSettings || showingTools ? nil : sidebarSelection }
         set { sidebarSelection = newValue ?? Self.globalSettingsSelection }
     }
+
+    var showingTools: Bool { ["cab.tools", "cab.projects", "cab.history"].contains(sidebarSelection) }
 
     var showingGlobalSettings: Bool {
         sidebarSelection == Self.globalSettingsSelection
@@ -175,6 +186,11 @@ final class CABStore: ObservableObject {
         try service.discoverSSHHosts()
     }
 
+    func cancelRefresh() {
+        service.cancelReadOperations()
+        Task { await UsageRepository.shared.cancel() }
+    }
+
     func refresh() {
         Task { await reload() }
     }
@@ -185,6 +201,18 @@ final class CABStore: ObservableObject {
 
     func refreshTokenUsage() {
         Task { await reloadTokenUsage(force: true) }
+    }
+
+    func refreshCodexUpdateStatus() {
+        Task { await reloadCodexUpdateStatus(force: true) }
+    }
+
+    func updateLocalCodex() {
+        updateCodex(target: .local, remoteHost: "", label: "本机 Codex CLI")
+    }
+
+    func updateRemoteCodex() {
+        updateCodex(target: .remote, remoteHost: remoteHost, label: "远程 Codex CLI")
     }
 
     func refreshUsage(accountName: String) {
@@ -361,9 +389,10 @@ final class CABStore: ObservableObject {
 
     func changeTarget(_ next: BridgeTarget) {
         target = next
-        selectedAccount = nil
+        if !showingTools { selectedAccount = nil }
         restoreUsageForCurrentTarget()
         restoreTokenUsageForCurrentTarget()
+        restoreCodexUpdateStatusForCurrentTarget()
         if next == .remote && remoteServers.isEmpty {
             status = Self.emptyStatus
             showServerManager = true
@@ -375,9 +404,10 @@ final class CABStore: ObservableObject {
     func selectRemoteServer(_ id: UUID?) {
         selectedRemoteID = id
         if let id { defaults.set(id.uuidString, forKey: selectedRemoteKey) }
-        selectedAccount = nil
+        if !showingTools { selectedAccount = nil }
         restoreUsageForCurrentTarget()
         restoreTokenUsageForCurrentTarget()
+        restoreCodexUpdateStatusForCurrentTarget()
         refresh()
     }
 
@@ -488,7 +518,7 @@ final class CABStore: ObservableObject {
         }
     }
 
-    func stopProcessesAndSwitchRemoteCodex(_ request: RemoteCodexSwitchRequest) {
+    func confirmRemoteCodexSwitch(_ request: RemoteCodexSwitchRequest) {
         guard target == .remote, !isBusy else { return }
         guard remoteHost == request.remoteHost else {
             pendingRemoteCodexSwitch = nil
@@ -500,19 +530,9 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             defer { isBusy = false }
             do {
-                try await stopRemoteCodexSnapshot(request.processes, remoteHost: request.remoteHost)
                 try await selectRemoteCodexAccount(request.accountName, remoteHost: request.remoteHost)
-
-                // Remote projects reconnect automatically. Snapshot everything that is alive
-                // after the account selection, restart that snapshot once, and allow later
-                // reconnects to stay up because they inherit the newly selected account.
-                let reconnected = try await service.loadRemoteSwitchCodexProcesses(remoteHost: request.remoteHost)
-                if !reconnected.isEmpty {
-                    appendOutput("检测到远程项目自动重连，正在用新账号重启 \(reconnected.count) 个 Codex 进程…\n")
-                    try await stopRemoteCodexSnapshot(reconnected, remoteHost: request.remoteHost)
-                }
                 pendingRemoteCodexSwitch = nil
-                appendOutput("远程 Codex 已切换到 \(request.accountName)；自动重连的新进程会继续运行。\n")
+                appendOutput(String(format: cabLocalized("远程新连接将使用 %@；正在运行的任务保留原账号并继续执行。请在任务完成后重新连接以使用新账号。\n"), request.accountName))
                 await reload()
             } catch {
                 errorMessage = error.localizedDescription
@@ -520,40 +540,25 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func applyRemoteCodexSwitch(_ name: String, remoteHost: String) async throws {
+    func applyRemoteCodexSwitch(_ name: String, remoteHost: String) async throws {
         try await selectRemoteCodexAccount(name, remoteHost: remoteHost)
         await reload()
     }
 
-    private func selectRemoteCodexAccount(_ name: String, remoteHost: String) async throws {
+    func selectRemoteCodexAccount(_ name: String, remoteHost: String) async throws {
         let arguments = ["remote", "use", name]
         output = "$ cab \(arguments.joined(separator: " "))\n"
-        let result = try await service.execute(arguments, target: .remote, remoteHost: remoteHost) { [weak self] chunk in
-            Task { @MainActor in self?.appendOutput(chunk) }
-        }
-        guard result.exitCode == 0 else {
-            throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
-        }
-    }
-
-    private func stopRemoteCodexSnapshot(_ processes: [CodexProcessStatus], remoteHost: String) async throws {
-        guard !processes.isEmpty else { return }
-        var stopError: Error?
+        let recordID = tools.beginRecord(host: remoteHost, source: status.remoteAccount ?? "", destination: name)
         do {
-            try await service.stopCodexProcesses(
-                processes.map(\.pid),
-                target: .remote,
-                remoteHost: remoteHost,
-                forceAfterTimeout: true
-            )
+            _ = try await switchRemoteAccountSafely(name) { arguments in
+                try await service.execute(arguments, target: .remote, remoteHost: remoteHost) { [weak self] chunk in
+                    Task { @MainActor in self?.appendOutput(chunk) }
+                }
+            }
+            tools.record(recordID, stage: "新连接账号已更新，现有任务继续运行", outcome: "已完成")
         } catch {
-            stopError = error
-        }
-        let current = try await service.loadRemoteSwitchCodexProcesses(remoteHost: remoteHost)
-        let remaining = codexProcesses(current, matchingPIDsFrom: processes)
-        guard remaining.isEmpty else {
-            if let stopError { throw stopError }
-            throw BridgeError.commandFailed("部分远程 Codex 进程仍未退出：\(remaining.map { String($0.pid) }.joined(separator: ", "))。")
+            tools.record(recordID, stage: "账号选择未完成，请刷新确认", outcome: "结果待确认")
+            throw error
         }
     }
 
@@ -576,235 +581,6 @@ final class CABStore: ObservableObject {
     func applyAllAgentBindings(account: String) {
         guard target == .remote, !isBusy, !account.isEmpty else { return }
         run(["agent", "bind-all", "--account", account, "--confirm-restart-agent"])
-    }
-
-    func switchCodexDesktop(to account: AccountStatus) {
-        guard target == .local, account.isLoggedIn else {
-            errorMessage = "只能用这台 Mac 上已登录的账号启动 Codex 桌面客户端。"
-            return
-        }
-        guard !isUsageRefreshing else {
-            errorMessage = "正在读取额度，请等待当前官方 Codex 查询结束后再切换桌面账号。"
-            return
-        }
-        guard !isBusy else { return }
-        performDesktopSwitch(to: account, checkProcesses: true)
-    }
-
-    func closeProcessesAndContinueDesktopSwitch(_ request: DesktopSwitchProcessRequest) {
-        guard !isBusy else { return }
-        Task {
-            isBusy = true
-            errorMessage = nil
-            pendingDesktopSwitchError = nil
-            var stopError: Error?
-            do {
-                try await service.stopLocalCodexProcesses(request.processes.map(\.pid))
-            } catch {
-                stopError = error
-            }
-            do {
-                let remaining = try await service.runningNonDesktopCodexProcesses(knownHomes: status.accounts.map(\.home))
-                isBusy = false
-                if remaining.isEmpty {
-                    pendingDesktopSwitch = nil
-                    pendingDesktopSwitchError = nil
-                    performDesktopSwitch(to: request.account, checkProcesses: true)
-                } else {
-                    pendingDesktopSwitch = DesktopSwitchProcessRequest(account: request.account, processes: remaining)
-                    pendingDesktopSwitchError = desktopSwitchStopFailureMessage(
-                        stopError: stopError,
-                        remaining: remaining
-                    )
-                }
-            } catch {
-                isBusy = false
-                pendingDesktopSwitchError = "无法重新检查 Codex 进程：\(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func performDesktopSwitch(to account: AccountStatus, checkProcesses: Bool) {
-        guard !isBusy else { return }
-        Task {
-            isBusy = true
-            errorMessage = nil
-            desktopSwitchPartialResult = nil
-            var desktopWasStopped = false
-            var workspaceSync: CodexWorkspaceSyncResult?
-            var continuitySync: CodexContinuitySyncResult?
-            var threadCatalogSync: CodexThreadCatalogSyncResult?
-            var threadIndexBackup: URL?
-            var syncWarnings: [DesktopSwitchWarning] = []
-            var sessionModeChanged = false
-            var originalSharedSessions = status.sharedSessions
-            var fallbackHome = previousDesktopHome(fallback: account.home)
-            let sessionMode = preserveSessionsOnDesktopSwitch ? "保留项目与共享会话" : "保持项目与会话独立"
-            output = "正在检查切换条件，准备应用“\(sessionMode)”设置…\n"
-            do {
-                let liveStatus = try await service.loadStatus(target: .local, remoteHost: "")
-                status = liveStatus
-                originalSharedSessions = liveStatus.sharedSessions
-                fallbackHome = previousDesktopHome(fallback: account.home)
-                if checkProcesses && (preserveSessionsOnDesktopSwitch || preserveSessionsOnDesktopSwitch != liveStatus.sharedSessions) {
-                    let conflicts = try await service.runningNonDesktopCodexProcesses(knownHomes: liveStatus.accounts.map(\.home))
-                    if !conflicts.isEmpty {
-                        pendingDesktopSwitchError = nil
-                        pendingDesktopSwitch = DesktopSwitchProcessRequest(account: account, processes: conflicts)
-                        isBusy = false
-                        return
-                    }
-                }
-                appendOutput("预检通过，正在关闭 Codex 桌面客户端并切换账号…\n")
-                try await service.stopCodexDesktop()
-                desktopWasStopped = true
-                sessionModeChanged = try await applyDesktopSessionPreferenceIfNeeded(currentSharedSessions: originalSharedSessions)
-                if preserveSessionsOnDesktopSwitch {
-                    do {
-                        workspaceSync = try service.synchronizeCodexWorkspaceState(
-                            sourceHome: fallbackHome,
-                            targetHome: account.home,
-                            knownHomes: status.accounts.map(\.home)
-                        )
-                        if let workspaceSync {
-                            let backupMessage = workspaceSync.backupURL.map { "，原状态已备份为 \($0.lastPathComponent)" } ?? ""
-                            appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目、会话归属及未发送草稿\(backupMessage)。\n")
-                        }
-                    } catch {
-                        syncWarnings.append(desktopSwitchWarning(
-                            stage: "桌面项目与草稿",
-                            sourcePath: fallbackHome,
-                            targetPath: account.home,
-                            error: error
-                        ))
-                    }
-                    do {
-                        continuitySync = try service.synchronizeCodexContinuityState(
-                            sourceHome: fallbackHome,
-                            targetHome: account.home,
-                            knownHomes: status.accounts.map(\.home)
-                        )
-                        if let continuitySync {
-                            appendOutput("已同步完整消息投影、目标、记忆及 \(continuitySync.fileCount) 个工作区文件（\(continuitySync.databaseCount) 个本地索引已安全合并）。\n")
-                        }
-                    } catch {
-                        syncWarnings.append(desktopSwitchWarning(
-                            stage: "消息、记忆与工作区文件",
-                            sourcePath: fallbackHome,
-                            targetPath: account.home,
-                            error: error
-                        ))
-                    }
-                    do {
-                        threadCatalogSync = try service.synchronizeCodexThreadCatalogState(
-                            sourceHome: fallbackHome,
-                            targetHome: account.home,
-                            knownHomes: status.accounts.map(\.home)
-                        )
-                        if let threadCatalogSync {
-                            appendOutput("已合并 \(threadCatalogSync.rowCount) 条桌面会话目录记录，原目录已备份为 \(threadCatalogSync.backupURL.lastPathComponent)。\n")
-                        }
-                    } catch {
-                        syncWarnings.append(desktopSwitchWarning(
-                            stage: "桌面会话目录",
-                            sourcePath: fallbackHome,
-                            targetPath: account.home,
-                            error: error
-                        ))
-                    }
-                }
-                if preserveSessionsOnDesktopSwitch || sessionModeChanged {
-                    do {
-                        if let backup = try await service.prepareCodexThreadIndexRebuild(codexHome: account.home) {
-                            threadIndexBackup = backup
-                            appendOutput("已备份线程索引到 \(backup.lastPathComponent)，官方 Codex 将从会话文件重建可见对话列表。\n")
-                        }
-                    } catch {
-                        syncWarnings.append(desktopSwitchWarning(
-                            stage: "会话列表重建准备",
-                            sourcePath: account.home,
-                            targetPath: account.home,
-                            error: error
-                        ))
-                    }
-                }
-                try await service.startCodexDesktop(codexHome: account.home)
-                desktopWasStopped = false
-                lastDesktopAccount = account.name
-                defaults.set(account.name, forKey: lastDesktopAccountKey)
-                scheduleUsageRefreshAfterDesktopSwitch(accountName: account.name)
-                appendOutput("已使用账号 \(account.name) 启动 Codex 桌面客户端；\(preserveSessionsOnDesktopSwitch ? "项目和会话历史已保留" : "项目和会话保持独立")。\n")
-                if !syncWarnings.isEmpty {
-                    appendOutput("账号切换已完成，但有 \(syncWarnings.count) 项内容未同步；详情已显示在提示中。\n")
-                    desktopSwitchPartialResult = DesktopSwitchPartialResult(
-                        accountName: account.name,
-                        warnings: syncWarnings
-                    )
-                }
-            } catch {
-                var message = error.localizedDescription
-                if desktopWasStopped {
-                    if let threadIndexBackup {
-                        do {
-                            try service.restoreCodexThreadIndex(backupURL: threadIndexBackup, codexHome: account.home)
-                            appendOutput("切换未完成，已恢复目标账号原有的线程索引。\n")
-                        } catch {
-                            message += "\n同时无法自动恢复目标账号的线程索引：\(error.localizedDescription)"
-                        }
-                    }
-                    if let threadCatalogSync {
-                        do {
-                            try service.restoreCodexThreadCatalogState(threadCatalogSync)
-                            appendOutput("切换未完成，已恢复目标账号原有的桌面会话目录。\n")
-                        } catch {
-                            message += "\n同时无法自动恢复目标账号的桌面会话目录：\(error.localizedDescription)"
-                        }
-                    }
-                    if let continuitySync {
-                        do {
-                            try service.restoreCodexContinuityState(continuitySync)
-                            appendOutput("切换未完成，已恢复目标账号原有的消息、记忆、目标和工作区文件。\n")
-                        } catch {
-                            message += "\n同时无法自动恢复目标账号的完整工作区状态：\(error.localizedDescription)"
-                        }
-                    }
-                    if let workspaceSync {
-                        do {
-                            try service.restoreCodexWorkspaceState(workspaceSync)
-                            appendOutput("切换未完成，已恢复目标账号原有的项目状态。\n")
-                        } catch {
-                            message += "\n同时无法自动恢复目标账号的项目状态：\(error.localizedDescription)"
-                        }
-                    }
-                    if sessionModeChanged {
-                        let arguments = originalSharedSessions
-                            ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
-                            : ["sessions", "disable", "--confirm-codex-stopped"]
-                        do {
-                            let result = try await service.execute(arguments, target: .local, remoteHost: "")
-                            if result.exitCode != 0 {
-                                let loaded = try? await service.loadStatus(target: .local, remoteHost: "")
-                                guard loaded?.sharedSessions == originalSharedSessions else {
-                                    throw BridgeError.commandFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
-                                }
-                            }
-                            if let loaded = try? await service.loadStatus(target: .local, remoteHost: "") { status = loaded }
-                            appendOutput("切换未完成，已恢复原有的项目与会话保留设置。\n")
-                        } catch {
-                            message += "\n同时无法自动恢复会话保留设置：\(error.localizedDescription)"
-                        }
-                    }
-                    do {
-                        try await service.startCodexDesktop(codexHome: fallbackHome)
-                        appendOutput("切换未完成，已重新启动原 Codex 桌面账号。\n")
-                    } catch {
-                        message += "\n同时无法自动恢复 Codex 桌面客户端：\(error.localizedDescription)"
-                    }
-                }
-                errorMessage = message
-            }
-            isBusy = false
-        }
     }
 
     func prepareSessionSharingChange(_ enabled: Bool) {
@@ -838,7 +614,7 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func applySessionSharingChange(_ enabled: Bool) async throws {
+    func applySessionSharingChange(_ enabled: Bool) async throws {
         let arguments = enabled ? ["sessions", "enable", "--acknowledge-cross-account-context", "--confirm-codex-stopped"] : ["sessions", "disable", "--confirm-codex-stopped"]
         output = "$ cab \(arguments.joined(separator: " "))\n"
         let result = try await service.execute(arguments, target: target, remoteHost: remoteHost) { [weak self] chunk in Task { @MainActor in self?.appendOutput(chunk) } }
@@ -867,7 +643,7 @@ final class CABStore: ObservableObject {
         } catch { errorMessage = error.localizedDescription } }
     }
 
-    private func applyLegacyImport() async throws {
+    func applyLegacyImport() async throws {
         let arguments = ["sessions", "import-current", "--acknowledge-cross-account-context", "--confirm-codex-stopped"]
         output = "$ cab \(arguments.joined(separator: " "))\n"
         let result = try await service.execute(arguments, target: target, remoteHost: remoteHost)
@@ -932,7 +708,39 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func applyDesktopSessionPreferenceIfNeeded(currentSharedSessions: Bool) async throws -> Bool {
+    func updateCodex(target: BridgeTarget, remoteHost: String, label: String) {
+        guard !isBusy, !isCodexUpdating else { return }
+        let capturedTarget = target
+        let capturedHost = remoteHost
+        isCodexUpdating = true
+        isBusy = true
+        errorMessage = nil
+        output = "$ cab update\n"
+        Task {
+            defer {
+                isCodexUpdating = false
+                isBusy = false
+            }
+            do {
+                let result = try await service.updateCodex(
+                    target: capturedTarget,
+                    remoteHost: capturedHost,
+                    onOutput: { [weak self] chunk in
+                        Task { @MainActor in self?.appendOutput(chunk) }
+                    }
+                )
+                appendOutput("\n\(label)更新完成。\n")
+                if result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    appendOutput("官方 Codex 没有返回额外信息。\n")
+                }
+                await reload()
+            } catch {
+                errorMessage = "\(label)更新失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func applyDesktopSessionPreferenceIfNeeded(currentSharedSessions: Bool) async throws -> Bool {
         let modeChanged = preserveSessionsOnDesktopSwitch != currentSharedSessions
         guard modeChanged else { return false }
         if try await service.hasRunningCodexProcesses(target: .local, remoteHost: "") {
@@ -957,7 +765,7 @@ final class CABStore: ObservableObject {
         return modeChanged
     }
 
-    private func previousDesktopHome(fallback: String) -> String {
+    func previousDesktopHome(fallback: String) -> String {
         if let lastDesktopAccount,
            let account = status.accounts.first(where: { $0.name == lastDesktopAccount }) {
             return account.home
@@ -965,22 +773,26 @@ final class CABStore: ObservableObject {
         return status.currentLogin?.home ?? fallback
     }
 
-    private func reload(forceUsage: Bool = false) async {
+    func reload(forceUsage: Bool = false) async {
+        statusRefreshGeneration += 1
+        let generation = statusRefreshGeneration
+        isStatusRefreshing = true
+        defer { if generation == statusRefreshGeneration { isStatusRefreshing = false } }
         isBusy = true
         let key = currentUsageCacheKey
         let capturedTarget = target
         let capturedHost = remoteHost
         do {
             let loaded = try await service.loadStatus(target: capturedTarget, remoteHost: capturedHost)
-            guard key == currentUsageCacheKey else {
-                isBusy = false
+            guard key == currentUsageCacheKey, generation == statusRefreshGeneration else {
+                if generation == statusRefreshGeneration { isBusy = false }
                 return
             }
             status = loaded
             if capturedTarget == .remote {
                 do {
                     let report = try await service.loadAgentBindings(remoteHost: capturedHost)
-                    guard key == currentUsageCacheKey else { isBusy = false; return }
+                    guard key == currentUsageCacheKey, generation == statusRefreshGeneration else { if generation == statusRefreshGeneration { isBusy = false }; return }
                     agentBindings = report.agents
                     agentSelections = Dictionary(uniqueKeysWithValues: report.agents.map { ($0.service, $0.account ?? "") })
                     let loggedInNames = Set(loaded.accounts.filter(\.isLoggedIn).map(\.name))
@@ -993,6 +805,7 @@ final class CABStore: ObservableObject {
                     agentBindingError = nil
                     legacySessions = loaded.sharedSessions ? try? await service.loadLegacySessions(remoteHost: capturedHost) : nil
                 } catch {
+                    guard key == currentUsageCacheKey, generation == statusRefreshGeneration else { return }
                     agentBindings = []
                     agentBindingError = error.localizedDescription
                     legacySessions = nil
@@ -1004,6 +817,7 @@ final class CABStore: ObservableObject {
                 agentBindingError = nil
                 legacySessions = nil
             }
+            guard key == currentUsageCacheKey, generation == statusRefreshGeneration else { return }
             if let loginAccountName,
                loaded.accounts.first(where: { $0.name == loginAccountName })?.isLoggedIn == true {
                 markLoginStatusConfirmed(accountName: loginAccountName)
@@ -1011,7 +825,7 @@ final class CABStore: ObservableObject {
             if !hasSavedDesktopSessionPreference && capturedTarget == .local {
                 preserveSessionsOnDesktopSwitch = loaded.sharedSessions
             }
-            if !showingGlobalSettings && !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
+            if !showingGlobalSettings && !showingTools && !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
                 selectedAccount = loaded.defaultAccount ?? loaded.accounts.first?.name
             }
             let configured = loaded.rotation.orderedAccounts
@@ -1019,381 +833,19 @@ final class CABStore: ObservableObject {
             rotationIncluded = Set(configured)
             errorMessage = nil
             isBusy = false
-            await reloadUsage(force: forceUsage)
-            await reloadTokenUsage(force: forceUsage)
+            async let usage: () = reloadUsage(force: forceUsage)
+            async let tokens: () = reloadTokenUsage(force: forceUsage)
+            async let update: () = reloadCodexUpdateStatus(force: forceUsage)
+            _ = await (usage, tokens, update)
         } catch {
+            guard key == currentUsageCacheKey, generation == statusRefreshGeneration else { return }
+            if error is CancellationError { isBusy = false; return }
             errorMessage = error.localizedDescription
             isBusy = false
         }
     }
 
-    private func reloadUsage(force: Bool, accountNames: [String]? = nil) async {
-        let key = currentUsageCacheKey
-        var requestedAccountNames: [String]?
-        if let accountNames {
-            let loggedInNames = Set(status.accounts.filter(\.isLoggedIn).map(\.name))
-            requestedAccountNames = Array(Set(accountNames).intersection(loggedInNames)).sorted()
-            if requestedAccountNames?.isEmpty == true { return }
-            if let cached = usageCacheByKey[key] { applyUsageCache(cached) }
-        } else if let cached = usageCacheByKey[key] {
-            applyUsageCache(cached)
-            if !force {
-                requestedAccountNames = usageAccountNamesToRefresh(
-                    accountNames: status.accounts.filter(\.isLoggedIn).map(\.name),
-                    reports: cached.reports,
-                    checkedAtByAccount: cached.checkedAtByAccount,
-                    interval: usageRefreshInterval
-                )
-                if requestedAccountNames?.isEmpty == true { return }
-            }
-        } else if !force && usageRefreshInterval == .manual {
-            applyUsageCache(nil)
-            return
-        }
-        guard !usageRefreshingKeys.contains(key) else { return }
-        usageRefreshingKeys.insert(key)
-        isUsageRefreshing = true
-        defer {
-            usageRefreshingKeys.remove(key)
-            isUsageRefreshing = !usageRefreshingKeys.isEmpty
-        }
-        let capturedTarget = target
-        let capturedHost = remoteHost
-        let capturedAccountNames = Set(status.accounts.map(\.name))
-        let attemptedAccountNames = requestedAccountNames ?? Array(capturedAccountNames)
-        let previousReports = usageCacheByKey[key]?.reports ?? [:]
-        do {
-            let report = try await service.loadUsage(
-                target: capturedTarget,
-                remoteHost: capturedHost,
-                accountNames: requestedAccountNames
-            )
-            let checkedAt = Date()
-            var reports = usageCacheByKey[key]?.reports ?? [:]
-            var checkedAtByAccount = usageCacheByKey[key]?.checkedAtByAccount ?? [:]
-            for accountReport in report.accounts {
-                reports[accountReport.name] = accountReport
-                checkedAtByAccount[accountReport.name] = checkedAt
-            }
-            reports = reports.filter { capturedAccountNames.contains($0.key) }
-            checkedAtByAccount = checkedAtByAccount.filter { capturedAccountNames.contains($0.key) }
-            let fetchedAt = report.accounts.contains(where: { $0.usage != nil })
-                ? report.fetchedAt
-                : usageCacheByKey[key]?.fetchedAt
-            let entry = UsageCacheEntry(
-                reports: reports,
-                fetchedAt: fetchedAt,
-                checkedAtByAccount: checkedAtByAccount,
-                error: nil
-            )
-            usageCacheByKey[key] = entry
-            if key == currentUsageCacheKey { applyUsageCache(entry) }
-            await evaluateUsageWakeRecovery(
-                previousReports: previousReports,
-                currentReports: reports,
-                cacheKey: key,
-                target: capturedTarget,
-                remoteHost: capturedHost
-            )
-            await refreshUsageResetNotificationsIfNeeded(replacingCacheKeys: [key])
-        } catch {
-            let previous = usageCacheByKey[key]
-            let checkedAt = Date()
-            var checkedAtByAccount = previous?.checkedAtByAccount ?? [:]
-            for accountName in attemptedAccountNames {
-                checkedAtByAccount[accountName] = checkedAt
-            }
-            let entry = UsageCacheEntry(
-                reports: previous?.reports ?? [:],
-                fetchedAt: previous?.fetchedAt,
-                checkedAtByAccount: checkedAtByAccount,
-                error: error.localizedDescription
-            )
-            usageCacheByKey[key] = entry
-            if key == currentUsageCacheKey { applyUsageCache(entry) }
-        }
-    }
-
-    private func scheduleUsageRefreshAfterDesktopSwitch(accountName: String) {
-        Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 1_500_000_000)
-            } catch {
-                return
-            }
-            guard let self, self.target == .local else { return }
-            await self.reloadUsage(force: true, accountNames: [accountName])
-        }
-    }
-
-    private func runUsageRefreshSchedulerTick() async {
-        let cacheKey = currentUsageCacheKey
-        let capturedTarget = target
-        let capturedHost = remoteHost
-        guard !isBusy, !usageRefreshingKeys.contains(cacheKey) else { return }
-        let now = Date()
-        switch usageWakeTickMode(at: now, settings: usageWakeSettings) {
-        case let .scheduled(slot):
-            await reloadUsage(force: true)
-            guard cacheKey == currentUsageCacheKey else { return }
-            await evaluateScheduledUsageWake(
-                slot: slot,
-                cacheKey: cacheKey,
-                target: capturedTarget,
-                remoteHost: capturedHost
-            )
-        case .paused:
-            return
-        case .automatic:
-            await reloadUsage(force: false)
-        }
-    }
-
-    private func evaluateUsageWakeRecovery(
-        previousReports: [String: AccountUsageReport],
-        currentReports: [String: AccountUsageReport],
-        cacheKey: String,
-        target: BridgeTarget,
-        remoteHost: String
-    ) async {
-        guard usageWakeSettings.enabled, usageWakeSettings.wakeOnRecovery else { return }
-        for accountName in currentReports.keys.sorted() {
-            let current = currentReports[accountName]
-            let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: accountName)
-            let fingerprint = usageWakeRecoveryFingerprint(previousReports[accountName])
-            let isPendingRecovery = usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] == fingerprint
-            let needsProbe = UsagePeriodKind.allCases.contains {
-                usageWakeNeedsProbe(report: current, period: $0)
-            }
-            guard usageWakeNeedsProbeAfterRecovery(
-                previous: previousReports[accountName],
-                current: current
-            ) || (isPendingRecovery && needsProbe) else { continue }
-            if usageWakeState.lastRecoveryFingerprintByAccount[stateKey] == fingerprint && !isPendingRecovery { continue }
-            if usageIsWithinQuietPeriod(Date(), periods: usageWakeSettings.quietPeriods) {
-                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = fingerprint
-                persistUsageWakeState()
-                continue
-            }
-            guard canAttemptUsageWake(stateKey: stateKey) else { continue }
-            usageWakeState.lastRecoveryFingerprintByAccount[stateKey] = fingerprint
-            usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-            persistUsageWakeState()
-            await performUsageWake(
-                accountName: accountName,
-                stateKey: stateKey,
-                cacheKey: cacheKey,
-                target: target,
-                remoteHost: remoteHost,
-                reason: "recovery"
-            )
-        }
-    }
-
-    private func evaluateScheduledUsageWake(
-        slot: UsageTimeOfDay?,
-        cacheKey: String,
-        target: BridgeTarget,
-        remoteHost: String
-    ) async {
-        guard usageWakeSettings.enabled, let slot else { return }
-        let now = Date()
-        let slotID = usageScheduledProbeSlotIdentifier(at: now, time: slot)
-        for account in status.accounts where account.isLoggedIn {
-            let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: account.name)
-            guard usageWakeState.lastScheduledSlotByAccount[stateKey] != slotID else { continue }
-            guard let report = usageByAccount[account.name], report.error == nil, report.usage != nil else { continue }
-            usageWakeState.lastScheduledSlotByAccount[stateKey] = slotID
-            persistUsageWakeState()
-            guard usageWakeNeedsScheduledProbe(report: report, now: now) else {
-                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-                persistUsageWakeState()
-                recordUsageWakeResult("额度周期均在计时，无需请求", for: stateKey)
-                continue
-            }
-            guard canAttemptUsageWake(stateKey: stateKey) else { continue }
-            usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-            persistUsageWakeState()
-            await performUsageWake(
-                accountName: account.name,
-                stateKey: stateKey,
-                cacheKey: cacheKey,
-                target: target,
-                remoteHost: remoteHost,
-                reason: "scheduled-period-start"
-            )
-        }
-    }
-
-    private func performUsageWake(
-        accountName: String,
-        stateKey: String,
-        cacheKey: String,
-        target: BridgeTarget,
-        remoteHost: String,
-        reason: String
-    ) async {
-        guard !usageWakeInFlightKeys.contains(stateKey) else { return }
-        usageWakeInFlightKeys.insert(stateKey)
-        defer { usageWakeInFlightKeys.remove(stateKey) }
-        let now = Date()
-        usageWakeState.lastProbeAtByAccount[stateKey] = now
-        persistUsageWakeState()
-        do {
-            try await service.probeUsage(
-                target: target,
-                remoteHost: remoteHost,
-                accountName: accountName
-            )
-            recordUsageWakeResult("已发送最低消耗请求（\(reason)）", for: stateKey)
-            if cacheKey == currentUsageCacheKey {
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    guard let self else { return }
-                    await self.reloadUsage(force: true)
-                }
-            }
-        } catch {
-            recordUsageWakeResult("唤醒请求失败，未自动重试", for: stateKey)
-        }
-    }
-
-    private func canAttemptUsageWake(stateKey: String, now: Date = Date()) -> Bool {
-        guard let previous = usageWakeState.lastProbeAtByAccount[stateKey] else { return true }
-        return now.timeIntervalSince(previous) >= usageWakeProbeCooldown
-    }
-
-    private func recordUsageWakeResult(_ result: String, for stateKey: String) {
-        usageWakeState.lastResultByAccount[stateKey] = result
-        usageWakeState.lastResultAtByAccount[stateKey] = Date()
-        persistUsageWakeState()
-    }
-
-    private func usageWakeStateKey(cacheKey: String, accountName: String) -> String {
-        "\(cacheKey)|\(accountName)"
-    }
-
-    private func usageWakeRecoveryFingerprint(_ report: AccountUsageReport?) -> String {
-        guard let report, let usage = report.usage else { return "unknown" }
-        let limits = usageCodexRateLimits(for: usage)
-        let windows = [limits.primary, limits.secondary].compactMap { $0 }.map {
-            "\($0.windowDurationMins ?? 0):\($0.resetsAt ?? 0):\(Int($0.usedPercent * 10))"
-        }.sorted().joined(separator: ",")
-        return "\(limits.rateLimitReachedType ?? "")|\(windows)"
-    }
-
-    private func persistUsageWakeSettings() {
-        guard let data = try? JSONEncoder().encode(usageWakeSettings) else { return }
-        defaults.set(data, forKey: usageWakeSettingsKey)
-    }
-
-    private func persistUsageWakeState() {
-        guard let data = try? JSONEncoder().encode(usageWakeState) else { return }
-        defaults.set(data, forKey: usageWakeStateKey)
-    }
-
-    private func reloadTokenUsage(force: Bool) async {
-        let key = currentUsageCacheKey
-        if let cached = tokenUsageByKey[key] {
-            tokenUsage = cached
-            tokenUsageLoadError = tokenUsageErrorByKey[key]
-            if !force && Date().timeIntervalSince(cached.fetchedAt) < 300 { return }
-        } else if !force {
-            tokenUsage = nil
-            tokenUsageLoadError = nil
-        }
-        guard !tokenUsageRefreshingKeys.contains(key) else { return }
-        tokenUsageRefreshingKeys.insert(key)
-        isTokenUsageRefreshing = true
-        defer {
-            tokenUsageRefreshingKeys.remove(key)
-            isTokenUsageRefreshing = tokenUsageRefreshingKeys.contains(currentUsageCacheKey)
-        }
-        let capturedTarget = target
-        let capturedHost = remoteHost
-        do {
-            let report = try await service.loadTokenUsage(target: capturedTarget, remoteHost: capturedHost)
-            tokenUsageByKey[key] = report
-            tokenUsageErrorByKey.removeValue(forKey: key)
-            if key == currentUsageCacheKey {
-                tokenUsage = report
-                tokenUsageLoadError = nil
-            }
-        } catch {
-            tokenUsageErrorByKey[key] = error.localizedDescription
-            if key == currentUsageCacheKey {
-                tokenUsageLoadError = error.localizedDescription
-            }
-        }
-    }
-
-    private func restoreTokenUsageForCurrentTarget() {
-        let key = currentUsageCacheKey
-        tokenUsage = tokenUsageByKey[key]
-        tokenUsageLoadError = tokenUsageErrorByKey[key]
-        isTokenUsageRefreshing = tokenUsageRefreshingKeys.contains(key)
-    }
-
-    private var currentUsageCacheKey: String {
-        switch target {
-        case .local:
-            return "local"
-        case .remote:
-            return "remote:\(selectedRemoteID?.uuidString ?? remoteHost)"
-        }
-    }
-
-    private func restoreUsageForCurrentTarget() {
-        applyUsageCache(usageCacheByKey[currentUsageCacheKey])
-    }
-
-    private func applyUsageCache(_ entry: UsageCacheEntry?) {
-        usageByAccount = entry?.reports ?? [:]
-        usageFetchedAt = entry?.fetchedAt
-        usageLoadError = entry?.error
-    }
-
-    private func refreshUsageResetNotificationsIfNeeded(replacingCacheKeys: Set<String>? = nil) async {
-        guard usageResetNotificationsEnabled else { return }
-        do {
-            scheduledUsageResetNotificationCount = try await scheduleUsageResetNotifications(
-                replacingCacheKeys: replacingCacheKeys
-            )
-            usageResetNotificationError = nil
-        } catch {
-            scheduledUsageResetNotificationCount = 0
-            usageResetNotificationError = error.localizedDescription
-        }
-    }
-
-    private func scheduleUsageResetNotifications(replacingCacheKeys: Set<String>? = nil) async throws -> Int {
-        let sources = usageCacheByKey.compactMap { key, entry -> UsageNotificationSource? in
-            if let replacingCacheKeys, !replacingCacheKeys.contains(key) { return nil }
-            let title: String
-            if key == "local" {
-                title = "这台 Mac"
-            } else if key.hasPrefix("remote:"),
-                      let value = key.split(separator: ":", maxSplits: 1).last,
-                      let id = UUID(uuidString: String(value)),
-                      let server = remoteServers.first(where: { $0.id == id }) {
-                title = server.name
-            } else {
-                return nil
-            }
-            return UsageNotificationSource(
-                key: key,
-                title: title,
-                reports: Array(entry.reports.values)
-            )
-        }
-        let plans = usageResetNotificationPlans(sources: sources)
-        return try await usageResetNotificationService.replaceScheduledNotifications(
-            with: plans,
-            replacingSourceKeys: replacingCacheKeys
-        )
-    }
-
-    private func persistRemoteServers() {
+    func persistRemoteServers() {
         if let data = try? JSONEncoder().encode(remoteServers) {
             defaults.set(data, forKey: remoteServersKey)
         }
@@ -1404,10 +856,10 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
+    static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
     static let globalSettingsSelection = "__cab_global_settings__"
 
-    private func run(
+    func run(
         _ arguments: [String],
         loginBrowser: LoginBrowser? = nil,
         loginAccount: String? = nil,
@@ -1462,7 +914,7 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func beginLoginStatusMonitoring(accountName: String) {
+    func beginLoginStatusMonitoring(accountName: String) {
         loginStatusMonitor?.cancel()
         loginAccountName = accountName
         loginStatusConfirmed = false
@@ -1493,7 +945,7 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func detectCompletedLogin(
+    func detectCompletedLogin(
         accountName: String,
         target: BridgeTarget,
         remoteHost: String,
@@ -1512,7 +964,7 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func markLoginStatusConfirmed(accountName: String) {
+    func markLoginStatusConfirmed(accountName: String) {
         guard loginAccountName == accountName else { return }
         if !loginStatusConfirmed {
             appendOutput("\n已检测到官方 Codex 登录成功，正在完成状态与额度更新…\n")
@@ -1521,7 +973,7 @@ final class CABStore: ObservableObject {
         canManuallyCheckLogin = false
     }
 
-    private func clearLoginProgress() {
+    func clearLoginProgress() {
         loginStatusMonitor?.cancel()
         loginStatusMonitor = nil
         loginAccountName = nil
@@ -1529,7 +981,7 @@ final class CABStore: ObservableObject {
         canManuallyCheckLogin = false
     }
 
-    private func receiveOutput(_ chunk: String, loginBrowser: LoginBrowser?) {
+    func receiveOutput(_ chunk: String, loginBrowser: LoginBrowser?) {
         appendOutput(chunk)
         guard let loginBrowser, !loginBrowserOpened else { return }
         loginOutputBuffer += chunk
@@ -1557,14 +1009,14 @@ final class CABStore: ObservableObject {
         }
     }
 
-    private func appendOutput(_ text: String) {
+    func appendOutput(_ text: String) {
         output += text
         if output.count > Self.maximumOutputCharacters {
             output = "… 较早的输出已截断 …\n" + String(output.suffix(Self.maximumOutputCharacters))
         }
     }
 
-    private func runSequence(_ commands: [[String]]) {
+    func runSequence(_ commands: [[String]]) {
         Task {
             isBusy = true
             output = ""

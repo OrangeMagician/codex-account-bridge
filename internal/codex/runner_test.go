@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +38,105 @@ func TestRunPassesArgsWithoutShellAndSetsHome(t *testing.T) {
 	}
 	if strings.Contains(string(data), "must-not-leak") {
 		t.Fatal("thread id leaked")
+	}
+}
+
+func TestUpdateInvokesOfficialExecutableWithUpdateArgument(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	output := filepath.Join(root, "output")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" > \"$CAB_TEST_OUTPUT\"\nprintf '%s\\n' \"$@\" >> \"$CAB_TEST_OUTPUT\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	t.Setenv("CAB_TEST_OUTPUT", output)
+	t.Setenv("CODEX_HOME", filepath.Join(root, "account"))
+	code, err := Update()
+	if err != nil || code != 0 {
+		t.Fatalf("update: code=%d err=%v", code, err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "\nupdate\n" {
+		t.Fatalf("output = %q", data)
+	}
+}
+
+func TestCheckUpdateReportsAvailableLatestVersion(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	script := "#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.137.0'\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/@openai/codex/latest" && r.URL.RawPath != "/@openai%2fcodex/latest" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"0.153.4"}`))
+	}))
+	defer server.Close()
+	originalURL := latestCodexVersionURL
+	latestCodexVersionURL = server.URL + "/@openai%2fcodex/latest"
+	t.Cleanup(func() { latestCodexVersionURL = originalURL })
+	t.Setenv("CAB_REAL_CODEX", fake)
+
+	status, err := CheckUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentVersion != "0.137.0" || status.LatestVersion != "0.153.4" || !status.UpdateAvailable {
+		t.Fatalf("unexpected update status: %#v", status)
+	}
+}
+
+func TestCheckUpdateKeepsCurrentVersionWhenRegistryIsUnavailable(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.153.4'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalURL := latestCodexVersionURL
+	latestCodexVersionURL = "http://127.0.0.1:1/@openai%2fcodex/latest"
+	t.Cleanup(func() { latestCodexVersionURL = originalURL })
+	t.Setenv("CAB_REAL_CODEX", fake)
+
+	status, err := CheckUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentVersion != "0.153.4" || status.CheckError == "" || status.UpdateAvailable {
+		t.Fatalf("unexpected unavailable status: %#v", status)
+	}
+}
+
+func TestCheckUpdateReportsNoUpdateWhenCurrentVersionIsLatest(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.153.4'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"0.153.4"}`))
+	}))
+	defer server.Close()
+	originalURL := latestCodexVersionURL
+	latestCodexVersionURL = server.URL + "/latest"
+	t.Cleanup(func() { latestCodexVersionURL = originalURL })
+	t.Setenv("CAB_REAL_CODEX", fake)
+
+	status, err := CheckUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentVersion != "0.153.4" || status.LatestVersion != "0.153.4" || status.UpdateAvailable {
+		t.Fatalf("unexpected up-to-date status: %#v", status)
 	}
 }
 

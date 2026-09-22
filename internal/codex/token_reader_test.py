@@ -20,7 +20,7 @@ class TokenReaderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
 
     def home(self, name, rows):
         home = self.root / name
@@ -97,3 +97,47 @@ class TokenReaderTests(unittest.TestCase):
         db.write_bytes(b'invalid sqlite')
         with self.assertRaises(sqlite3.Error):
             read_report([str(db)])
+
+    def test_incremental_cache_append_partial_replace_and_truncate(self):
+        db = self.home('one', [('a', [usage('2026-09-20', 100)])])
+        path = db.parent / 'sessions' / 'rollout-a.jsonl'
+        cache = self.root / 'cache' / 'token-cache-v1.sqlite'
+        first = read_report([str(db)], cache)
+        second = read_report([str(db)], cache)
+        self.assertGreater(first['scanned_bytes'], 0)
+        self.assertEqual(second['scanned_bytes'], 0)
+        self.assertEqual(first['total_tokens'], second['total_tokens'])
+        line = json.dumps(usage('2026-09-21', 150))
+        with path.open('a') as stream:
+            stream.write(line[:40])
+        partial = read_report([str(db)], cache)
+        self.assertEqual(partial['total_tokens'], 100)
+        with path.open('a') as stream:
+            stream.write(line[40:] + '\n')
+        appended = read_report([str(db)], cache)
+        self.assertEqual(appended['total_tokens'], 150)
+        self.assertLess(appended['scanned_bytes'], path.stat().st_size)
+        path.write_text(json.dumps({"type": "session_meta", "payload": {"id": "a"}}) + '\n' + json.dumps(usage('2026-09-22', 80)) + '\n')
+        truncated = read_report([str(db)], cache)
+        self.assertEqual(truncated['total_tokens'], 80)
+        self.assertEqual(read_report([str(db)], cache)['scanned_bytes'], 0)
+        replacement = path.with_suffix('.tmp')
+        replacement.write_text(path.read_text().replace('80', '90'))
+        replacement.replace(path)
+        self.assertEqual(read_report([str(db)], cache)['total_tokens'], 90)
+
+    def test_cache_contains_only_counter_metadata_and_shared_history_stays_deduplicated(self):
+        event = usage('2026-09-20', 100)
+        event['payload']['private_message'] = 'not-for-the-cache'
+        first = self.home('one', [('a', [event])])
+        second = self.home('two', [('a', [event])])
+        cache = self.root / 'cache' / 'token-cache-v1.sqlite'
+        self.assertEqual(read_report([str(first), str(second)], cache)['total_tokens'], 100)
+        self.assertEqual(read_report([str(first), str(second)], cache)['total_tokens'], 100)
+        connection = sqlite3.connect(cache)
+        try:
+            values = connection.execute('select state from events').fetchall()
+            self.assertNotIn('not-for-the-cache', str(values))
+            self.assertNotIn('private_message', str(values))
+        finally:
+            connection.close()
