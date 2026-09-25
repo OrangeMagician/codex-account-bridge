@@ -261,20 +261,23 @@ final class CABStore: ObservableObject {
                 isBusy = false
             }
             do {
+                let attempts = UsageResetAttempts(defaults: defaults)
+                let attempt = try attempts.begin(scope: capturedCacheKey, account: accountName, creditID: confirmation.credit?.creditID)
                 let result = try await service.resetUsage(
                     target: capturedTarget,
                     remoteHost: capturedHost,
                     accountName: accountName,
                     creditID: confirmation.credit?.creditID,
-                    idempotencyKey: UUID()
+                    idempotencyKey: attempt.id
                 )
                 guard result.account == accountName else {
                     throw BridgeError.invalidUsage("额度重置结果与所选账号不一致。")
                 }
+                attempts.complete(scope: capturedCacheKey, account: accountName)
+                usageResetResult = result
                 if capturedCacheKey == currentUsageCacheKey {
                     await reloadUsage(force: true)
                 }
-                usageResetResult = result
             } catch {
                 errorMessage = error.localizedDescription
             }

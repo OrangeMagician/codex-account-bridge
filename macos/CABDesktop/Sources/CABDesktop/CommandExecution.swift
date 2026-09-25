@@ -87,7 +87,7 @@ func commandTimeout(_ arguments: [String]) -> TimeInterval {
     case "update": return arguments.contains("--check") ? 60 : 600
     case "tokens": return 110
     case "doctor", "backups", "sessions": return 180
-    case "usage": return 120
+    case "usage": return arguments.dropFirst().first == "reset" ? 180 : 120
     default: return 60
     }
 }
@@ -95,6 +95,7 @@ func commandTimeout(_ arguments: [String]) -> TimeInterval {
 func remoteCommandFailure(_ result: CommandResult) -> String {
     let detail = result.errorOutput.isEmpty ? result.output : result.errorOutput
     let value = detail.lowercased()
+    if value.contains("usage reset result is unconfirmed") { return detail }
     if value.contains("permission denied") { return cabLocalized("SSH 认证失败。请在终端确认此主机的 SSH 登录配置。") }
     if value.contains("host key verification failed") { return cabLocalized("SSH 主机身份尚未确认或已改变。请在终端核对主机密钥。") }
     if value.contains("timed out") || value.contains("no route to host") || value.contains("could not resolve hostname") || value.contains("connection refused") {

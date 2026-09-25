@@ -19,7 +19,9 @@ const usageReadTimeout = 20 * time.Second
 const usageReadAttempts = 3
 const usageReadRetryDelay = 350 * time.Millisecond
 const usageProbeTimeout = 45 * time.Second
-const usageResetTimeout = 20 * time.Second
+
+// Allow the service to finish redemption before tearing down its app-server.
+const usageResetTimeout = 120 * time.Second
 
 const DefaultUsageProbeModel = "gpt-5.6-luna"
 
@@ -390,7 +392,7 @@ func ConsumeUsageResetCredit(home, idempotencyKey, creditID string) (UsageResetO
 		if strings.Contains(strings.ToLower(err.Error()), "method not found") {
 			return "", errors.New("installed official Codex does not support usage resets; update Codex and try again")
 		}
-		return "", usageRPCError(ctx, stderr.String(), "reset Codex rate limits", err)
+		return "", fmt.Errorf("usage reset result is unconfirmed; a credit may already have been used; retry only with the same --idempotency-key %s: %w", idempotencyKey, usageRPCError(ctx, stderr.String(), "reset Codex rate limits", err))
 	}
 	var response rpcUsageResetResponse
 	if err := json.Unmarshal(resetResponse.Result, &response); err != nil {

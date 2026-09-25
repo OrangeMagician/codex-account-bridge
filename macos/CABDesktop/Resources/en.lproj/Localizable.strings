@@ -384,3 +384,5 @@
 "本机正在使用" = "In use on this Mac";
 
 "Codex 桌面端未运行" = "Codex desktop is not running";
+
+"上次重置结果尚未确认，请重试原来的重置卡，暂勿选择其他卡。" = "The previous reset is unconfirmed. Retry the original reset card before selecting another card.";

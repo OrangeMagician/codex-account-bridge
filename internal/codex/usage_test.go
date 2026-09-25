@@ -224,3 +224,49 @@ exit 0
 		}
 	}
 }
+
+// This server is a temporary local fixture, never the installed Codex binary.
+func TestUsageResetWaitsForDelayedRedemption(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	script := `#!/bin/sh
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{}}'
+IFS= read -r initialized
+IFS= read -r account
+printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt"}}}'
+IFS= read -r reset
+sleep 21
+printf '%s\n' '{"id":3,"result":{"outcome":"alreadyRedeemed"}}'
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	outcome, err := ConsumeUsageResetCredit(filepath.Join(root, "account"), "delayed-reset-test", "")
+	if err != nil || outcome != UsageResetAlreadyRedeemed {
+		t.Fatalf("outcome = %q, error = %v", outcome, err)
+	}
+}
+
+func TestUsageResetLostResponsePreservesUncertainty(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex-real")
+	script := `#!/bin/sh
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{}}'
+IFS= read -r initialized
+IFS= read -r account
+printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt"}}}'
+IFS= read -r reset
+exit 0
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAB_REAL_CODEX", fake)
+	_, err := ConsumeUsageResetCredit(filepath.Join(root, "account"), "uncertain-reset-test", "")
+	if err == nil || !strings.Contains(err.Error(), "may already have been used") || !strings.Contains(err.Error(), "--idempotency-key uncertain-reset-test") {
+		t.Fatalf("error = %v", err)
+	}
+}
