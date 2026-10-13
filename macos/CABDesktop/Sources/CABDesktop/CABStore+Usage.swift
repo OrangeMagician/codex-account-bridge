@@ -181,9 +181,11 @@ extension CABStore {
         switch usageWakeTickMode(at: now, settings: usageWakeSettings) {
         case let .scheduled(slot):
             await reloadUsage(force: true)
-            guard cacheKey == currentUsageCacheKey else { return }
+            guard cacheKey == currentUsageCacheKey,
+                  usageCacheByKey[cacheKey]?.error == nil else { return }
             await evaluateScheduledUsageWake(
                 slot: slot,
+                scheduledAt: now,
                 cacheKey: cacheKey,
                 target: capturedTarget,
                 remoteHost: capturedHost
@@ -238,19 +240,25 @@ extension CABStore {
 
     func evaluateScheduledUsageWake(
         slot: UsageTimeOfDay?,
+        scheduledAt: Date = Date(),
         cacheKey: String,
         target: BridgeTarget,
         remoteHost: String
     ) async {
         guard usageWakeSettings.enabled, let slot else { return }
         let now = Date()
-        let slotID = usageScheduledProbeSlotIdentifier(at: now, time: slot)
+        let slotID = usageScheduledProbeSlotIdentifier(at: scheduledAt, time: slot)
         for account in status.accounts where account.isLoggedIn {
             let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: account.name)
             guard usageWakeState.lastScheduledSlotByAccount[stateKey] != slotID else { continue }
             guard let report = usageByAccount[account.name], report.error == nil, report.usage != nil else { continue }
             usageWakeState.lastScheduledSlotByAccount[stateKey] = slotID
             persistUsageWakeState()
+            guard usageWindows(for: report).contains(where: { $0.windowDurationMins == usageFiveHourWindowMinutes }) else {
+                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
+                recordUsageWakeResult("账号没有五小时额度限制，已跳过", for: stateKey)
+                continue
+            }
             guard usageWakeNeedsScheduledProbe(report: report, now: now) else {
                 usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
                 persistUsageWakeState()

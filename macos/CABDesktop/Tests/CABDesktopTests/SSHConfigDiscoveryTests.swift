@@ -903,7 +903,7 @@ struct SSHConfigDiscoveryTests {
         #expect(!usageWakeNeedsProbe(report: active, period: .weekly, now: now))
     }
 
-    @Test func scheduledUsageWakeStartsEitherMissingCountdown() {
+    @Test func scheduledUsageWakeSkipsAccountsWithoutFiveHourLimit() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let missingFiveHour = usageReportWithLimits(
             primary: UsageWindow(usedPercent: 0, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600),
@@ -914,7 +914,7 @@ struct SSHConfigDiscoveryTests {
             secondary: UsageWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600)
         )
 
-        #expect(usageWakeNeedsScheduledProbe(report: missingFiveHour, now: now))
+        #expect(!usageWakeNeedsScheduledProbe(report: missingFiveHour, now: now))
         #expect(!usageWakeNeedsScheduledProbe(report: bothActive, now: now))
     }
 

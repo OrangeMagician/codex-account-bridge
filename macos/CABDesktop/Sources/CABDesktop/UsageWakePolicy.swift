@@ -126,7 +126,9 @@ func usagePeriodState(
     guard !matching.isEmpty else {
         return windows.contains(where: { $0.windowDurationMins == nil }) ? .unknown : .notStarted
     }
-    guard let resetDate = matching.compactMap(\.resetDate).max() else { return .unknown }
+    guard let resetDate = matching.compactMap(\.resetDate).max() else {
+        return matching.allSatisfy { $0.usedPercent == 0 } ? .notStarted : .unknown
+    }
     return resetDate > now ? .active(resetDate: resetDate) : .notStarted
 }
 
@@ -136,7 +138,7 @@ func usageReportHasAvailableCapacity(_ report: AccountUsageReport?, now: Date = 
     if let reached = limits.rateLimitReachedType, !reached.isEmpty { return false }
     let windows = [limits.primary, limits.secondary].compactMap { $0 }
     if windows.isEmpty { return false }
-    return windows.contains { window in
+    return windows.allSatisfy { window in
         if let resetDate = window.resetDate, resetDate <= now { return true }
         return window.remainingPercent > 0
     }
@@ -147,7 +149,9 @@ func usageWakeNeedsProbe(
     period: UsagePeriodKind,
     now: Date = Date()
 ) -> Bool {
-    guard usageReportHasAvailableCapacity(report, now: now) else { return false }
+    guard let report, usageWindows(for: report).contains(where: {
+        $0.windowDurationMins == usageFiveHourWindowMinutes
+    }), usageReportHasAvailableCapacity(report, now: now) else { return false }
     if case .notStarted = usagePeriodState(report: report, period: period, now: now) {
         return true
     }
@@ -199,8 +203,12 @@ func usageScheduledProbeSlot(
     times: [UsageTimeOfDay],
     calendar: Calendar = .current
 ) -> UsageTimeOfDay? {
-    let current = UsageTimeOfDay(date: date, calendar: calendar)
-    return times.first { $0 == current }
+    // Allow a short delay from a slow usage query or scheduler tick. Persisted
+    // slot identifiers still ensure each account is attempted only once.
+    return times.filter { time in
+        guard let scheduled = time.date(on: date, calendar: calendar) else { return false }
+        return date >= scheduled && date.timeIntervalSince(scheduled) < 5 * 60
+    }.max { $0.id < $1.id }
 }
 
 func usageWakeTickMode(
