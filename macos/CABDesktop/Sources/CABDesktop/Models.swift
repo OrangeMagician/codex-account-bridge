@@ -6,6 +6,7 @@ struct BridgeStatus: Codable, Equatable {
     var sharedSessions: Bool
     var rotation: RotationStatus
     var currentLogin: CurrentLoginStatus?
+    var remoteRoutingReady: Bool? = nil
     var accounts: [AccountStatus]
 
     enum CodingKeys: String, CodingKey {
@@ -14,6 +15,7 @@ struct BridgeStatus: Codable, Equatable {
         case sharedSessions = "shared_sessions"
         case rotation
         case currentLogin = "current_login"
+        case remoteRoutingReady = "remote_routing_ready"
         case accounts
     }
 }

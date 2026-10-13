@@ -45,13 +45,18 @@ func TestUpdateInvokesOfficialExecutableWithUpdateArgument(t *testing.T) {
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")
 	output := filepath.Join(root, "output")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" > \"$CAB_TEST_OUTPUT\"\nprintf '%s\\n' \"$@\" >> \"$CAB_TEST_OUTPUT\"\n"
+	script := `#!/bin/sh
+if [ "$1" = --version ]; then printf 'codex-cli 0.162.1\n'; exit 0; fi
+printf '%s\n' "$CODEX_HOME" > "$CAB_TEST_OUTPUT"
+printf '%s\n' "$@" >> "$CAB_TEST_OUTPUT"
+`
 	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CAB_REAL_CODEX", fake)
 	t.Setenv("CAB_TEST_OUTPUT", output)
 	t.Setenv("CODEX_HOME", filepath.Join(root, "account"))
+	useUpdateRegistry(t, "0.162.1")
 	code, err := Update()
 	if err != nil || code != 0 {
 		t.Fatalf("update: code=%d err=%v", code, err)

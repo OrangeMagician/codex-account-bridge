@@ -236,7 +236,33 @@ func Update() (int, error) {
 	if err != nil {
 		return 127, err
 	}
-	return runOfficial(binary, []string{"update"}, globalCodexEnvironment())
+	shims := installedShimPaths()
+	code, updateErr := runOfficial(binary, []string{"update"}, globalCodexEnvironment())
+	// Self-update can rewrite the public codex entry even when it fails.
+	if err := restoreUpdatedShims(shims); err != nil {
+		return 1, err
+	}
+	if updateErr != nil || code != 0 {
+		return code, updateErr
+	}
+	resolved, err := FindReal("codex")
+	if err != nil {
+		return 1, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+	defer cancel()
+	installed, err := readCodexVersion(ctx, resolved)
+	if err != nil {
+		return 1, err
+	}
+	latest, err := readLatestCodexVersion(ctx)
+	if err != nil {
+		return 1, fmt.Errorf("Codex updater finished but the installed version could not be verified against the latest release: %w", err)
+	}
+	if versionGreater(latest, installed) {
+		return 1, fmt.Errorf("Codex update did not take effect: installed %s, latest %s", installed, latest)
+	}
+	return 0, nil
 }
 
 // CheckUpdate reads the installed official CLI version and compares it with
@@ -379,8 +405,9 @@ func LoggedIn(home string) (bool, error) {
 	cmd := exec.CommandContext(ctx, binary, "login", "status")
 	cmd.Env = environment(home)
 	stdout := cappedBuffer{limit: loginStatusOutputLimit}
+	stderr := cappedBuffer{limit: loginStatusOutputLimit}
 	cmd.Stdout = &stdout
-	cmd.Stderr = nil
+	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if err == nil {
 		return true, nil
@@ -390,7 +417,7 @@ func LoggedIn(home string) (bool, error) {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		if strings.TrimSpace(stdout.String()) == "Not logged in" {
+		if strings.TrimSpace(stdout.String()) == "Not logged in" || strings.TrimSpace(stderr.String()) == "Not logged in" {
 			return false, nil
 		}
 		return false, fmt.Errorf("official Codex login status failed with exit code %d", exitErr.ExitCode())

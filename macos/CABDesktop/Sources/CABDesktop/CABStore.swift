@@ -586,6 +586,8 @@ final class CABStore: ObservableObject {
                     Task { @MainActor in self?.appendOutput(chunk) }
                 }
             }
+            let verified = try await service.loadStatus(target: .remote, remoteHost: remoteHost)
+            try validateRemoteAccountSelection(verified, accountName: name)
             tools.record(recordID, stage: "新连接账号已更新，现有任务继续运行", outcome: "已完成")
         } catch {
             tools.record(recordID, stage: "账号选择未完成，请刷新确认", outcome: "结果待确认")
@@ -865,7 +867,8 @@ final class CABStore: ObservableObject {
             let configured = loaded.rotation.orderedAccounts
             rotationOrder = configured + loaded.accounts.map(\.name).filter { !configured.contains($0) }
             rotationIncluded = Set(configured)
-            errorMessage = nil
+            errorMessage = capturedTarget == .remote && loaded.remoteRoutingReady == false
+                ? "服务器 Codex 入口未经过 CAB，切换账号不会生效。请修复远程入口后重新连接。" : nil
             isBusy = false
             async let usage: () = reloadUsage(force: forceUsage)
             async let tokens: () = reloadTokenUsage(force: forceUsage)

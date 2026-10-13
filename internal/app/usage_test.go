@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,10 +121,16 @@ printf '%s\n' '{"id":3,"result":{"outcome":"reset"}}'
 }
 
 func TestUpdateCommandInvokesOfficialCLI(t *testing.T) {
+	previousClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: updateRegistryFixture{}}
+	t.Cleanup(func() { http.DefaultClient = previousClient })
 	root := t.TempDir()
 	fake := filepath.Join(root, "codex-real")
 	observed := filepath.Join(root, "observed")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAB_TEST_OUTPUT\"\n"
+	script := `#!/bin/sh
+if [ "$1" = --version ]; then printf 'codex-cli 0.162.1\n'; exit 0; fi
+printf '%s\n' "$@" > "$CAB_TEST_OUTPUT"
+`
 	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

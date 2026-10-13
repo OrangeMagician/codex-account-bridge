@@ -30,6 +30,9 @@ func Run(argv []string, version string) (int, error) {
 		return 1, err
 	}
 	if filepath.Base(argv[0]) == "codex" {
+		if len(argv) == 2 && argv[1] == "update" {
+			return codex.Update()
+		}
 		cfg, err := config.ReadLocked(paths, func(latest config.Config) error {
 			return session.Recover(paths, latest)
 		})
@@ -765,6 +768,15 @@ func useCommand(paths config.Paths, cfg *config.Config, args []string, remote bo
 	if !ok {
 		return 2, fmt.Errorf("unknown account %q", args[0])
 	}
+	if remote {
+		loggedIn, err := codex.LoggedIn(account.Home)
+		if err != nil {
+			return 1, fmt.Errorf("cannot verify remote account login: %w", err)
+		}
+		if !loggedIn {
+			return 1, errors.New("selected remote account is not logged in; log in before switching")
+		}
+	}
 	updated, err := config.UpdateSimple(paths, func(latest *config.Config) error {
 		current, ok := latest.Find(account.Name)
 		if !ok {
@@ -970,12 +982,13 @@ type statusAccount struct {
 }
 
 type statusOutput struct {
-	DefaultAccount string          `json:"default_account,omitempty"`
-	RemoteAccount  string          `json:"remote_account,omitempty"`
-	SharedSessions bool            `json:"shared_sessions"`
-	Rotation       config.Rotation `json:"rotation"`
-	CurrentLogin   currentLogin    `json:"current_login"`
-	Accounts       []statusAccount `json:"accounts"`
+	DefaultAccount     string          `json:"default_account,omitempty"`
+	RemoteAccount      string          `json:"remote_account,omitempty"`
+	SharedSessions     bool            `json:"shared_sessions"`
+	Rotation           config.Rotation `json:"rotation"`
+	CurrentLogin       currentLogin    `json:"current_login"`
+	RemoteRoutingReady bool            `json:"remote_routing_ready"`
+	Accounts           []statusAccount `json:"accounts"`
 }
 
 type currentLogin struct {
@@ -993,7 +1006,7 @@ func statusCommand(cfg config.Config, args []string) (int, error) {
 	if flags.NArg() != 0 {
 		return 2, errors.New("usage: cab status [--json]")
 	}
-	status := statusOutput{DefaultAccount: cfg.DefaultAccount, RemoteAccount: cfg.RemoteAccount, SharedSessions: cfg.SharedSessionsDir != "", Rotation: cfg.Rotation, Accounts: make([]statusAccount, 0, len(cfg.Accounts))}
+	status := statusOutput{RemoteRoutingReady: codex.RemoteRoutingReady(), DefaultAccount: cfg.DefaultAccount, RemoteAccount: cfg.RemoteAccount, SharedSessions: cfg.SharedSessionsDir != "", Rotation: cfg.Rotation, Accounts: make([]statusAccount, 0, len(cfg.Accounts))}
 	for _, account := range cfg.Accounts {
 		status.Accounts = append(status.Accounts, statusAccount{Name: account.Name, Home: account.Home, Login: authStatus(account.Home), Default: strings.EqualFold(cfg.DefaultAccount, account.Name), Remote: strings.EqualFold(cfg.RemoteAccount, account.Name)})
 	}
