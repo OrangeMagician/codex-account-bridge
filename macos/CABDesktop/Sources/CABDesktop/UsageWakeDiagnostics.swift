@@ -167,12 +167,17 @@ struct UsageWakePendingSchedule: Codable, Equatable {
     let slot: UsageTimeOfDay
     let scheduledAt: Date
     let resetAt: Date
-    var deadline: Date { resetAt.addingTimeInterval(5 * 60) }
+    var latestScheduledAt: Date? = nil
+    var latestSlot: UsageTimeOfDay? = nil
+
+    var completionSlotID: String {
+        usageScheduledProbeSlotIdentifier(at: latestScheduledAt ?? scheduledAt, time: latestSlot ?? slot)
+    }
 }
 
-func usageWakeNearbyReset(report: AccountUsageReport?, scheduledAt: Date, now: Date) -> Date? {
+func usageWakeResetAfterCurrentWindow(report: AccountUsageReport?, now: Date) -> Date? {
     guard let report, report.error == nil,
           let reset = usageWindows(for: report).first(where: { $0.windowDurationMins == usageFiveHourWindowMinutes })?.resetDate,
-          reset > now, reset <= scheduledAt.addingTimeInterval(5 * 60) else { return nil }
+          reset > now else { return nil }
     return reset
 }

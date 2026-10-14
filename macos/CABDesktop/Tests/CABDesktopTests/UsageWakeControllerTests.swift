@@ -4,7 +4,7 @@ import Testing
 
 @MainActor
 struct UsageWakeControllerTests {
-    @Test(arguments: ["confirmed", "no_countdown", "failure", "nearby_reset", "no_five_hour", "exhausted"])
+    @Test(arguments: ["confirmed", "no_countdown", "failure", "nearby_reset", "no_five_hour", "exhausted", "long_countdown"])
     func realControllerMakesOneRequestAndPersistsItsVerifiedOutcome(mode: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -31,7 +31,7 @@ struct UsageWakeControllerTests {
         elif args[0]=='usage':
             active=calls.exists() and mode in ['confirmed','nearby_reset']
             initial=root/'initial_reset'
-            if not initial.exists():initial.write_text(str(int(time.time())+(3 if mode=='nearby_reset' else -1)))
+            if not initial.exists():initial.write_text(str(int(time.time())+(3 if mode=='nearby_reset' else 14400 if mode=='long_countdown' else -1)))
             initial_reset=int(initial.read_text())
             limits={'primary':{'used_percent':1 if active else 100,'window_duration_mins':300,'resets_at':int(time.time())+18000 if active or mode=='exhausted' else initial_reset},'secondary':{'used_percent':10,'window_duration_mins':10080,'resets_at':int(time.time())+86400}}
             if not active:limits['rate_limit_reached_type']='rate_limit_reached'
@@ -53,11 +53,18 @@ struct UsageWakeControllerTests {
         if mode == "nearby_reset" {
             #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("calls").path))
             #expect(store.usageWakeState.scheduledWaitsByAccount?[name + "|" + name] != nil)
+            let later = date.addingTimeInterval(60)
+            await store.runScheduledUsageWake(slot: UsageTimeOfDay(date: later), scheduledAt: later, endpoint: endpoint)
             try await Task.sleep(nanoseconds: 4_000_000_000)
             await store.runScheduledUsageWake(slot: slot, scheduledAt: date, endpoint: endpoint)
         }
         await store.runScheduledUsageWake(slot: slot, scheduledAt: date, endpoint: endpoint)
-        if mode == "no_five_hour" || mode == "exhausted" {
+        if mode == "nearby_reset" {
+            let later = date.addingTimeInterval(60)
+            await store.runScheduledUsageWake(slot: UsageTimeOfDay(date: later), scheduledAt: later, endpoint: endpoint)
+            #expect(store.usageWakeState.scheduledWaitsByAccount?[name + "|" + name] == nil)
+        }
+        if mode == "no_five_hour" || mode == "exhausted" || mode == "long_countdown" {
             #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("calls").path))
         } else {
             #expect(try String(contentsOf: root.appendingPathComponent("calls")) == "x")
@@ -70,9 +77,20 @@ struct UsageWakeControllerTests {
         switch mode {
         case "confirmed", "nearby_reset": #expect(log.contains("five_hour_confirmed"))
         case "no_five_hour": #expect(log.contains("noFiveHourLimit"))
-        case "exhausted": #expect(log.contains("fiveHourExhausted"))
+        case "exhausted": #expect(log.contains("fiveHourExhausted") && log.contains("waiting_for_current_five_hour_reset"))
+        case "long_countdown": #expect(log.contains("waiting_for_current_five_hour_reset"))
         case "no_countdown": #expect(log.contains("five_hour_not_started"))
         default: #expect(log.contains("request_failed") && log.contains("rate_limited"))
+        }
+        if mode == "long_countdown" || mode == "exhausted" {
+            let pending = try #require(store.usageWakeState.scheduledWaitsByAccount?[name + "|" + name])
+            #expect(pending.resetAt.timeIntervalSince(date) > 3 * 3600)
+            let later = date.addingTimeInterval(60)
+            let laterSlot = UsageTimeOfDay(date: later)
+            await store.runScheduledUsageWake(slot: laterSlot, scheduledAt: later, endpoint: endpoint)
+            let merged = try #require(store.usageWakeState.scheduledWaitsByAccount?[name + "|" + name])
+            #expect(merged.scheduledAt == pending.scheduledAt)
+            #expect(merged.completionSlotID == usageScheduledProbeSlotIdentifier(at: later, time: laterSlot))
         }
         if mode != "no_five_hour" { #expect(log.contains("rate_limit_reached")) } // the exact initial snapshot survives
     }

@@ -93,7 +93,7 @@ struct UsageWakeDiagnosticsTests {
 }
 
 @MainActor
-struct UsageWakeNearbyResetTests {
+struct UsageWakeDeferredResetTests {
     @Test func actualOvernightSnapshotExplainsSixAMAndSchedulesResetRecheck() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
@@ -101,13 +101,28 @@ struct UsageWakeNearbyResetTests {
         let data = Data(#"{"name":"Foxmail","usage":{"rate_limits":{"primary":{"used_percent":6,"window_duration_mins":300,"resets_at":1791929089},"secondary":{"used_percent":11,"window_duration_mins":10080,"resets_at":1792479674}}}}"#.utf8)
         let report = try JSONDecoder().decode(AccountUsageReport.self, from: data)
         #expect(usageWakeDecision(report: report, now: sixAM) == .fiveHourActive)
-        let reset = try #require(usageWakeNearbyReset(report: report, scheduledAt: sixAM, now: sixAM))
+        let reset = try #require(usageWakeResetAfterCurrentWindow(report: report, now: sixAM))
         #expect(reset.timeIntervalSince(sixAM) == 289)
         let pending = UsageWakePendingSchedule(slot: UsageTimeOfDay(hour: 6, minute: 0)!, scheduledAt: sixAM, resetAt: reset)
-        #expect(pending.deadline.timeIntervalSince(sixAM) == 589)
         #expect(usageWakeDecision(report: report, now: reset.addingTimeInterval(1)) == .probe)
         let state = UsageWakeState(scheduledWaitsByAccount: ["local|Foxmail": pending])
         let restored = try JSONDecoder().decode(UsageWakeState.self, from: JSONEncoder().encode(state))
         #expect(restored.scheduledWaitsByAccount?["local|Foxmail"] == pending)
+    }
+}
+
+@MainActor
+struct UsageWakeLongCountdownTests {
+    @Test func fiveHourCountdownCanBeDeferredForHoursAndSurvivesRestart() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let data = Data(#"{"name":"Foxmail","usage":{"rate_limits":{"primary":{"used_percent":40,"window_duration_mins":300,"resets_at":2000014400}}}}"#.utf8)
+        let report = try JSONDecoder().decode(AccountUsageReport.self, from: data)
+        let reset = try #require(usageWakeResetAfterCurrentWindow(report: report, now: now))
+        #expect(reset.timeIntervalSince(now) == 4 * 3600)
+        let pending = UsageWakePendingSchedule(slot: UsageTimeOfDay(hour: 6, minute: 0)!, scheduledAt: now, resetAt: reset)
+        let restored = try JSONDecoder().decode(UsageWakeState.self, from: JSONEncoder().encode(UsageWakeState(scheduledWaitsByAccount: ["local|Foxmail": pending])))
+        #expect(restored.scheduledWaitsByAccount?["local|Foxmail"]?.resetAt == reset)
+        #expect(usageWakeResetAfterCurrentWindow(report: report, now: reset) == nil)
+        #expect(usageWakeDecision(report: report, now: reset) == .probe)
     }
 }

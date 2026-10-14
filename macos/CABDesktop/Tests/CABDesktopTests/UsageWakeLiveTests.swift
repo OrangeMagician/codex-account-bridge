@@ -37,7 +37,9 @@ struct UsageWakeLiveTests {
         for endpoint in endpoints {
             await store.runScheduledUsageWake(slot: slot, scheduledAt: date, endpoint: endpoint, allowProbe: false)
             let slotID = usageScheduledProbeSlotIdentifier(at: date, time: slot)
-            #expect(store.usageWakeState.lastScheduledSlotByAccount.contains { $0.key.hasPrefix(endpoint.key + "|") && $0.value == slotID })
+            let handled = store.usageWakeState.lastScheduledSlotByAccount.contains { $0.key.hasPrefix(endpoint.key + "|") && $0.value == slotID }
+            let deferred = (store.usageWakeState.scheduledWaitsByAccount ?? [:]).contains { $0.key.hasPrefix(endpoint.key + "|") && $0.value.completionSlotID == slotID }
+            #expect(handled || deferred)
         }
         #expect(store.target == .local)
     }

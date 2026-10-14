@@ -184,14 +184,7 @@ extension CABStore {
         if usageWakeSettings.enabled {
             for endpoint in usageWakeEndpoints(servers: remoteServers) {
                 let waits = (usageWakeState.scheduledWaitsByAccount ?? [:]).filter { $0.key.hasPrefix(endpoint.key + "|") }
-                for (key, pending) in waits where now > pending.deadline {
-                    try? logUsageWake(target: endpoint.key, account: String(key.dropFirst(endpoint.key.count + 1)),
-                                      slot: usageScheduledProbeSlotIdentifier(at: pending.scheduledAt, time: pending.slot),
-                                      phase: "missed", reason: "nearby_reset_wait_expired")
-                    usageWakeState.scheduledWaitsByAccount?[key] = nil
-                    persistUsageWakeState()
-                }
-                let due = waits.values.filter { now >= $0.resetAt && now <= $0.deadline }
+                let due = waits.values.filter { now >= $0.resetAt }
                 if let pending = due.min(by: { $0.scheduledAt < $1.scheduledAt }) {
                     await runScheduledUsageWake(slot: pending.slot, scheduledAt: pending.scheduledAt, endpoint: endpoint)
                 }
@@ -257,7 +250,7 @@ extension CABStore {
             stage = "status_query"
             let loaded = try await service.loadStatus(target: endpoint.target, remoteHost: endpoint.host)
             let pending = loaded.accounts.filter {
-                usageWakeState.lastScheduledSlotByAccount[usageWakeStateKey(cacheKey: endpoint.key, accountName: $0.name)] != slotID
+                !(usageWakeState.lastScheduledSlotByAccount[usageWakeStateKey(cacheKey: endpoint.key, accountName: $0.name)].map { $0 >= slotID } ?? false)
             }
             guard !pending.isEmpty else { return }
             stage = "usage_query"
@@ -278,20 +271,29 @@ extension CABStore {
                 try logUsageWake(target: endpoint.key, account: account.name, slot: slotID,
                                  phase: "decision", reason: reason, before: report)
                 if decision == .queryFailed && account.isLoggedIn { continue } // retry queries, never stale quota
-                if account.isLoggedIn, (decision == .fiveHourActive || decision == .fiveHourExhausted),
-                   let reset = usageWakeNearbyReset(report: report, scheduledAt: scheduledAt, now: Date()) {
-                    let pending = UsageWakePendingSchedule(slot: slot, scheduledAt: scheduledAt, resetAt: reset)
+                if account.isLoggedIn,
+                   let reset = usageWakeResetAfterCurrentWindow(report: report, now: Date()) {
+                    // Coalesce multiple scheduled times during the same window.
+                    // Preserve the first slot and move it if the official reset changes.
+                    let existing = usageWakeState.scheduledWaitsByAccount?[key]
+                    let requestedDate = slot.date(on: scheduledAt) ?? scheduledAt
+                    let latestDate = existing?.latestScheduledAt ?? existing?.scheduledAt ?? .distantPast
+                    let pending = UsageWakePendingSchedule(slot: existing?.slot ?? slot,
+                        scheduledAt: existing?.scheduledAt ?? requestedDate, resetAt: reset,
+                        latestScheduledAt: max(requestedDate, latestDate),
+                        latestSlot: requestedDate >= latestDate ? slot : (existing?.latestSlot ?? existing?.slot))
                     if usageWakeState.scheduledWaitsByAccount?[key] != pending {
                         try logUsageWake(target: endpoint.key, account: account.name, slot: slotID,
-                                         phase: "waiting", reason: "five_hour_resets_within_five_minutes", before: report)
+                                         phase: "waiting", reason: "waiting_for_current_five_hour_reset", before: report)
                         if usageWakeState.scheduledWaitsByAccount == nil { usageWakeState.scheduledWaitsByAccount = [:] }
                         usageWakeState.scheduledWaitsByAccount?[key] = pending
-                        recordUsageWakeResult("上一轮五小时即将结束，已安排到期后复查", for: key)
+                        recordUsageWakeResult("上一轮五小时仍在计时，已安排倒计时结束后请求", for: key)
                     }
                     continue
                 }
+                let completionSlotID = usageWakeState.scheduledWaitsByAccount?[key]?.completionSlotID ?? slotID
                 usageWakeState.scheduledWaitsByAccount?[key] = nil
-                usageWakeState.lastScheduledSlotByAccount[key] = slotID
+                usageWakeState.lastScheduledSlotByAccount[key] = completionSlotID
                 usageWakeState.pendingRecoveryFingerprintByAccount[key] = nil
                 persistUsageWakeState()
                 guard account.isLoggedIn else {

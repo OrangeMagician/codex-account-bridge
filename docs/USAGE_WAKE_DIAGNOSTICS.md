@@ -5,10 +5,13 @@ scheduled time, independently of the selected page. It queries current login
 and usage status before deciding. Accounts without an explicit 300-minute
 window never receive an automatic probe.
 
-A five-hour window still counting down is normally skipped. If its reset is
-within five minutes of the scheduled time, CAB persists a pending check and
-queries again when that reset passes. The pending check expires five minutes
-after the expected reset; it never sends a late catch-up request hours later.
+A five-hour window still counting down defers the scheduled request until its
+official reset time, however much time remains. CAB persists the pending check
+and queries again once the countdown ends. Pending checks survive application
+restarts and sleep; on resumption CAB checks current usage before sending.
+Multiple scheduled times during one window coalesce into one pending request.
+If another task has started a new window, the pending request moves to that
+window's reset rather than interrupting an active countdown.
 An expired, exhausted window with the known `rate_limit_reached` marker permits
 one probe only if other windows and spending limits do not still block usage.
 Unknown windows, query errors, and unknown limit markers do not trigger probes.
