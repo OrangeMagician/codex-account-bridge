@@ -85,6 +85,8 @@ struct UsageWakeSettings: Codable, Equatable {
 }
 
 struct UsageWakeState: Codable, Equatable {
+    var lastSchedulerTickAt: Date? = nil
+    var scheduledWaitsByAccount: [String: UsageWakePendingSchedule]? = nil
     var lastProbeAtByAccount: [String: Date] = [:]
     var lastScheduledSlotByAccount: [String: String] = [:]
     var lastRecoveryFingerprintByAccount: [String: String] = [:]
@@ -93,6 +95,7 @@ struct UsageWakeState: Codable, Equatable {
     var lastResultAtByAccount: [String: Date] = [:]
 
     mutating func prune(knownKeys: Set<String>) {
+        scheduledWaitsByAccount = scheduledWaitsByAccount?.filter { knownKeys.contains($0.key) }
         lastProbeAtByAccount = lastProbeAtByAccount.filter { knownKeys.contains($0.key) }
         lastScheduledSlotByAccount = lastScheduledSlotByAccount.filter { knownKeys.contains($0.key) }
         lastRecoveryFingerprintByAccount = lastRecoveryFingerprintByAccount.filter { knownKeys.contains($0.key) }
@@ -133,14 +136,9 @@ func usagePeriodState(
 }
 
 func usageReportHasAvailableCapacity(_ report: AccountUsageReport?, now: Date = Date()) -> Bool {
-    guard let report, report.error == nil, let usage = report.usage else { return false }
-    let limits = usageCodexRateLimits(for: usage)
-    if let reached = limits.rateLimitReachedType, !reached.isEmpty { return false }
-    let windows = [limits.primary, limits.secondary].compactMap { $0 }
-    if windows.isEmpty { return false }
-    return windows.allSatisfy { window in
-        if let resetDate = window.resetDate, resetDate <= now { return true }
-        return window.remainingPercent > 0
+    switch usageWakeDecision(report: report, now: now) {
+    case .probe, .fiveHourActive: return true
+    default: return false
     }
 }
 
@@ -162,9 +160,7 @@ func usageWakeNeedsScheduledProbe(
     report: AccountUsageReport?,
     now: Date = Date()
 ) -> Bool {
-    UsagePeriodKind.allCases.contains {
-        usageWakeNeedsProbe(report: report, period: $0, now: now)
-    }
+    usageWakeDecision(report: report, now: now) == .probe
 }
 
 func usageWakeNeedsProbeAfterRecovery(
@@ -178,7 +174,7 @@ func usageWakeNeedsProbeAfterRecovery(
     let previouslyExhausted = !previousWindows.isEmpty && previousWindows.allSatisfy { $0.remainingPercent <= 0 }
         || (previousLimits.rateLimitReachedType?.isEmpty == false)
     guard previouslyExhausted, usageReportHasAvailableCapacity(current, now: now) else { return false }
-    return UsagePeriodKind.allCases.contains { usageWakeNeedsProbe(report: current, period: $0, now: now) }
+    return usageWakeNeedsScheduledProbe(report: current, now: now)
 }
 
 func usageIsWithinQuietPeriod(

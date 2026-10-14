@@ -72,7 +72,8 @@ final class CABStore: ObservableObject {
     @Published var desktopSwitchPartialResult: DesktopSwitchPartialResult?
 
     let tools = ManagementToolsStore()
-    let service = CABService()
+    let service: CABService
+    var usageWakeJournal = UsageWakeJournal.shared
     lazy var usageResetNotificationService = UsageResetNotificationService()
     let defaults = UserDefaults.standard
     let remoteServersKey = "remoteServers.v1"
@@ -93,6 +94,9 @@ final class CABStore: ObservableObject {
     var usageWakeState = UsageWakeState()
     var usageWakeInFlightKeys: Set<String> = []
     var usageSchedulerTask: Task<Void, Never>?
+    var usageWakeTickInFlight: Set<String> = []
+    var usageWakeTickLogged: Set<String> = []
+    var usageWakeDeferredLogged: Set<String> = []
     var tokenUsageByKey: [String: TokenUsageReport] = [:]
     var tokenUsageErrorByKey: [String: String] = [:]
     var tokenUsageRefreshingKeys: Set<String> = []
@@ -100,7 +104,8 @@ final class CABStore: ObservableObject {
     var codexUpdateErrorByKey: [String: String] = [:]
     var codexUpdateCheckingKeys: Set<String> = []
 
-    init(desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome) {
+    init(service: CABService = CABService(), desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome) {
+        self.service = service
         self.desktopHome = desktopHome
         localDesktopHome = desktopHome()
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)

@@ -455,12 +455,13 @@ func ProbeUsage(home, model string) error {
 	cmd.Dir = tmp
 	cmd.Env = environment(home)
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	stderr := cappedBuffer{limit: 4096}
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("codex usage probe timed out")
 		}
-		return fmt.Errorf("codex usage probe failed")
+		return fmt.Errorf("codex usage probe failed: %s", usageProbeFailureCategory(stderr.String()))
 	}
 	return nil
 }
@@ -559,4 +560,21 @@ func convertResetCredits(value *rpcResetCreditsSummary) *ResetCreditsSummary {
 		result.Credits = append(result.Credits, item)
 	}
 	return result
+}
+
+// Never return raw CLI output: it may contain account data or credentials.
+func usageProbeFailureCategory(output string) string {
+	value := strings.ToLower(output)
+	switch {
+	case strings.Contains(value, "not logged in"), strings.Contains(value, "unauthorized"), strings.Contains(value, "authentication"), strings.Contains(value, "401"):
+		return "authentication_required"
+	case strings.Contains(value, "model") && (strings.Contains(value, "not supported") || strings.Contains(value, "not found") || strings.Contains(value, "not available")):
+		return "model_unavailable"
+	case strings.Contains(value, "usage limit"), strings.Contains(value, "rate limit"), strings.Contains(value, "429"):
+		return "rate_limited"
+	case strings.Contains(value, "connection"), strings.Contains(value, "network"), strings.Contains(value, "dns"):
+		return "network_failed"
+	default:
+		return "official_command_failed"
+	}
 }

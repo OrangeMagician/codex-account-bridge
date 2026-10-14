@@ -173,27 +173,137 @@ extension CABStore {
     }
 
     func runUsageRefreshSchedulerTick() async {
-        let cacheKey = currentUsageCacheKey
-        let capturedTarget = target
-        let capturedHost = remoteHost
-        guard !isBusy, !usageRefreshingKeys.contains(cacheKey) else { return }
         let now = Date()
+        if usageWakeSettings.enabled, let previous = usageWakeState.lastSchedulerTickAt,
+           now.timeIntervalSince(previous) > 90 {
+            try? logUsageWake(target: "scheduler", phase: "resumed",
+                              reason: "tick_gap_seconds:\(Int(now.timeIntervalSince(previous)))")
+        }
+        usageWakeState.lastSchedulerTickAt = now
+        persistUsageWakeState()
+        if usageWakeSettings.enabled {
+            for endpoint in usageWakeEndpoints(servers: remoteServers) {
+                let waits = (usageWakeState.scheduledWaitsByAccount ?? [:]).filter { $0.key.hasPrefix(endpoint.key + "|") }
+                for (key, pending) in waits where now > pending.deadline {
+                    try? logUsageWake(target: endpoint.key, account: String(key.dropFirst(endpoint.key.count + 1)),
+                                      slot: usageScheduledProbeSlotIdentifier(at: pending.scheduledAt, time: pending.slot),
+                                      phase: "missed", reason: "nearby_reset_wait_expired")
+                    usageWakeState.scheduledWaitsByAccount?[key] = nil
+                    persistUsageWakeState()
+                }
+                let due = waits.values.filter { now >= $0.resetAt && now <= $0.deadline }
+                if let pending = due.min(by: { $0.scheduledAt < $1.scheduledAt }) {
+                    await runScheduledUsageWake(slot: pending.slot, scheduledAt: pending.scheduledAt, endpoint: endpoint)
+                }
+            }
+        }
         switch usageWakeTickMode(at: now, settings: usageWakeSettings) {
         case let .scheduled(slot):
-            await reloadUsage(force: true)
-            guard cacheKey == currentUsageCacheKey,
-                  usageCacheByKey[cacheKey]?.error == nil else { return }
-            await evaluateScheduledUsageWake(
-                slot: slot,
-                scheduledAt: now,
-                cacheKey: cacheKey,
-                target: capturedTarget,
-                remoteHost: capturedHost
-            )
-        case .paused:
-            return
+            // Scheduled execution must not depend on the page currently open.
+            for endpoint in usageWakeEndpoints(servers: remoteServers) {
+                await runScheduledUsageWake(slot: slot, scheduledAt: now, endpoint: endpoint)
+            }
+        case .paused: return
         case .automatic:
+            guard !isBusy, !usageRefreshingKeys.contains(currentUsageCacheKey) else { return }
             await reloadUsage(force: false)
+        }
+    }
+
+    func logUsageWake(
+        target: String, account: String? = nil, slot: String? = nil,
+        phase: String, reason: String, before: AccountUsageReport? = nil, after: AccountUsageReport? = nil
+    ) throws {
+        try usageWakeJournal.append(UsageWakeEvent(
+            target: target, account: account, slot: slot, phase: phase, reason: reason,
+            before: before.map(UsageWakeSnapshot.init), after: after.map(UsageWakeSnapshot.init)
+        ))
+    }
+
+    func runScheduledUsageWake(slot: UsageTimeOfDay, scheduledAt: Date, endpoint: UsageWakeEndpoint, allowProbe: Bool = true) async {
+        let slotID = usageScheduledProbeSlotIdentifier(at: scheduledAt, time: slot)
+        let tickKey = endpoint.key + "|" + slotID
+        guard usageWakeSettings.enabled, usageWakeTickInFlight.insert(tickKey).inserted else { return }
+        defer { usageWakeTickInFlight.remove(tickKey) }
+        var stage = "journal"
+        do {
+            // Keep a durable scheduler heartbeat even when UI work postpones it.
+            if usageWakeTickLogged.insert(tickKey).inserted {
+                try logUsageWake(target: endpoint.key, slot: slotID, phase: "scheduler", reason: "due")
+                usageWakeTickLogged = usageWakeTickLogged.filter { $0.contains(slotID.prefix(10)) }
+                usageWakeDeferredLogged = usageWakeDeferredLogged.filter { $0.contains(slotID.prefix(10)) }
+            }
+            guard !isBusy else {
+                if usageWakeDeferredLogged.insert(tickKey).inserted {
+                    try logUsageWake(target: endpoint.key, slot: slotID, phase: "deferred", reason: "application_busy")
+                }
+                return
+            }
+            stage = "status_query"
+            let loaded = try await service.loadStatus(target: endpoint.target, remoteHost: endpoint.host)
+            let pending = loaded.accounts.filter {
+                usageWakeState.lastScheduledSlotByAccount[usageWakeStateKey(cacheKey: endpoint.key, accountName: $0.name)] != slotID
+            }
+            guard !pending.isEmpty else { return }
+            stage = "usage_query"
+            let result = try await service.loadUsage(
+                target: endpoint.target, remoteHost: endpoint.host,
+                accountNames: pending.filter(\.isLoggedIn).map(\.name), force: true
+            )
+            let reports = Dictionary(result.accounts.map { ($0.name, $0) }, uniquingKeysWith: { _, new in new })
+            for account in pending {
+                guard usageWakeSettings.enabled else { return }
+                let key = usageWakeStateKey(cacheKey: endpoint.key, accountName: account.name)
+                let report = reports[account.name]
+                let decision = usageWakeDecision(report: report)
+                let reason = account.isLoggedIn ? decision.rawValue : "account_not_logged_in"
+                stage = "journal"
+                // Persist the input and the exact branch before consuming a slot.
+                try logUsageWake(target: endpoint.key, account: account.name, slot: slotID,
+                                 phase: "decision", reason: reason, before: report)
+                if decision == .queryFailed && account.isLoggedIn { continue } // retry queries, never stale quota
+                if account.isLoggedIn, (decision == .fiveHourActive || decision == .fiveHourExhausted),
+                   let reset = usageWakeNearbyReset(report: report, scheduledAt: scheduledAt, now: Date()) {
+                    let pending = UsageWakePendingSchedule(slot: slot, scheduledAt: scheduledAt, resetAt: reset)
+                    if usageWakeState.scheduledWaitsByAccount?[key] != pending {
+                        try logUsageWake(target: endpoint.key, account: account.name, slot: slotID,
+                                         phase: "waiting", reason: "five_hour_resets_within_five_minutes", before: report)
+                        if usageWakeState.scheduledWaitsByAccount == nil { usageWakeState.scheduledWaitsByAccount = [:] }
+                        usageWakeState.scheduledWaitsByAccount?[key] = pending
+                        recordUsageWakeResult("上一轮五小时即将结束，已安排到期后复查", for: key)
+                    }
+                    continue
+                }
+                usageWakeState.scheduledWaitsByAccount?[key] = nil
+                usageWakeState.lastScheduledSlotByAccount[key] = slotID
+                usageWakeState.pendingRecoveryFingerprintByAccount[key] = nil
+                persistUsageWakeState()
+                guard account.isLoggedIn else {
+                    recordUsageWakeResult("账号未登录，已跳过", for: key)
+                    continue
+                }
+                guard decision == .probe else {
+                    recordUsageWakeResult(decision.message, for: key)
+                    continue
+                }
+                guard allowProbe else {
+                    try logUsageWake(target: endpoint.key, account: account.name, slot: slotID,
+                                     phase: "skipped", reason: "diagnostic_read_only", before: report)
+                    continue
+                }
+                guard canAttemptUsageWake(stateKey: key) else {
+                    try logUsageWake(target: endpoint.key, account: account.name, slot: slotID,
+                                     phase: "skipped", reason: "probe_cooldown", before: report)
+                    recordUsageWakeResult("距上次请求不足三十分钟，已跳过", for: key)
+                    continue
+                }
+                await performUsageWake(accountName: account.name, stateKey: key, cacheKey: endpoint.key,
+                                       target: endpoint.target, remoteHost: endpoint.host,
+                                       reason: "scheduled-period-start", before: report, slotID: slotID)
+            }
+        } catch {
+            do { try logUsageWake(target: endpoint.key, slot: slotID, phase: "failed", reason: stage + ":" + usageWakeProbeFailureReason(error)) }
+            catch { errorMessage = "定时任务诊断日志无法保存，已停止发送请求：\(usageWakeJournal.url.path)" }
         }
     }
 
@@ -210,9 +320,7 @@ extension CABStore {
             let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: accountName)
             let fingerprint = usageWakeRecoveryFingerprint(previousReports[accountName])
             let isPendingRecovery = usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] == fingerprint
-            let needsProbe = UsagePeriodKind.allCases.contains {
-                usageWakeNeedsProbe(report: current, period: $0)
-            }
+            let needsProbe = usageWakeNeedsScheduledProbe(report: current)
             guard usageWakeNeedsProbeAfterRecovery(
                 previous: previousReports[accountName],
                 current: current
@@ -233,48 +341,7 @@ extension CABStore {
                 cacheKey: cacheKey,
                 target: target,
                 remoteHost: remoteHost,
-                reason: "recovery"
-            )
-        }
-    }
-
-    func evaluateScheduledUsageWake(
-        slot: UsageTimeOfDay?,
-        scheduledAt: Date = Date(),
-        cacheKey: String,
-        target: BridgeTarget,
-        remoteHost: String
-    ) async {
-        guard usageWakeSettings.enabled, let slot else { return }
-        let now = Date()
-        let slotID = usageScheduledProbeSlotIdentifier(at: scheduledAt, time: slot)
-        for account in status.accounts where account.isLoggedIn {
-            let stateKey = usageWakeStateKey(cacheKey: cacheKey, accountName: account.name)
-            guard usageWakeState.lastScheduledSlotByAccount[stateKey] != slotID else { continue }
-            guard let report = usageByAccount[account.name], report.error == nil, report.usage != nil else { continue }
-            usageWakeState.lastScheduledSlotByAccount[stateKey] = slotID
-            persistUsageWakeState()
-            guard usageWindows(for: report).contains(where: { $0.windowDurationMins == usageFiveHourWindowMinutes }) else {
-                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-                recordUsageWakeResult("账号没有五小时额度限制，已跳过", for: stateKey)
-                continue
-            }
-            guard usageWakeNeedsScheduledProbe(report: report, now: now) else {
-                usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-                persistUsageWakeState()
-                recordUsageWakeResult("额度周期均在计时，无需请求", for: stateKey)
-                continue
-            }
-            guard canAttemptUsageWake(stateKey: stateKey) else { continue }
-            usageWakeState.pendingRecoveryFingerprintByAccount[stateKey] = nil
-            persistUsageWakeState()
-            await performUsageWake(
-                accountName: account.name,
-                stateKey: stateKey,
-                cacheKey: cacheKey,
-                target: target,
-                remoteHost: remoteHost,
-                reason: "scheduled-period-start"
+                reason: "recovery", before: current
             )
         }
     }
@@ -285,30 +352,54 @@ extension CABStore {
         cacheKey: String,
         target: BridgeTarget,
         remoteHost: String,
-        reason: String
+        reason: String,
+        before: AccountUsageReport? = nil,
+        slotID: String? = nil
     ) async {
         guard !usageWakeInFlightKeys.contains(stateKey) else { return }
         usageWakeInFlightKeys.insert(stateKey)
         defer { usageWakeInFlightKeys.remove(stateKey) }
         let now = Date()
+        do {
+            try logUsageWake(target: cacheKey, account: accountName, slot: slotID,
+                             phase: "request", reason: reason, before: before)
+        } catch {
+            recordUsageWakeResult("诊断日志无法保存，未发送请求", for: stateKey)
+            errorMessage = "定时任务诊断日志无法保存，已停止发送请求。"
+            return
+        }
         usageWakeState.lastProbeAtByAccount[stateKey] = now
         persistUsageWakeState()
         do {
-            try await service.probeUsage(
-                target: target,
-                remoteHost: remoteHost,
-                accountName: accountName
-            )
-            recordUsageWakeResult("已发送最低消耗请求（\(reason)）", for: stateKey)
-            if cacheKey == currentUsageCacheKey {
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    guard let self else { return }
-                    await self.reloadUsage(force: true)
-                }
-            }
+            try await service.probeUsage(target: target, remoteHost: remoteHost, accountName: accountName)
         } catch {
-            recordUsageWakeResult("唤醒请求失败，未自动重试", for: stateKey)
+            try? logUsageWake(target: cacheKey, account: accountName, slot: slotID,
+                              phase: "request_failed", reason: usageWakeProbeFailureReason(error), before: before)
+            recordUsageWakeResult("唤醒请求失败，未自动重试；见诊断日志", for: stateKey)
+            return
+        }
+        do {
+            try logUsageWake(target: cacheKey, account: accountName, slot: slotID,
+                             phase: "request_completed", reason: "awaiting_five_hour_verification", before: before)
+            let confirmed = try await verifyUsageWake(requestedAt: now, read: {
+                let response = try await self.service.loadUsage(target: target, remoteHost: remoteHost,
+                                                                accountNames: [accountName], force: true)
+                return response.accounts.first { $0.name == accountName }
+            }, wait: {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            }, observe: { report in
+                try self.logUsageWake(target: cacheKey, account: accountName, slot: slotID,
+                                      phase: "verification", reason: usageWakeDecision(report: report).rawValue,
+                                      before: before, after: report)
+            })
+            try logUsageWake(target: cacheKey, account: accountName, slot: slotID,
+                             phase: "result", reason: confirmed ? "five_hour_confirmed" : "five_hour_not_started")
+            recordUsageWakeResult(confirmed ? "已确认五小时倒计时启动；重置时间见诊断日志"
+                                           : "请求已完成，但未确认五小时倒计时启动；未重发请求", for: stateKey)
+        } catch {
+            try? logUsageWake(target: cacheKey, account: accountName, slot: slotID,
+                              phase: "verification_failed", reason: "query_or_journal_failed")
+            recordUsageWakeResult("请求已完成，但额度复查失败；未重发请求", for: stateKey)
         }
     }
 

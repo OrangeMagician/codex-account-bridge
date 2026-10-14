@@ -65,6 +65,9 @@ final class CommandOutputBuffer: @unchecked Sendable {
 }
 
 final class CABService {
+    private let executableOverride: URL?
+
+    init(executable: URL? = nil) { executableOverride = executable }
     private let fileManager = FileManager.default
     private let executionLock = NSLock()
     private var readExecutions: [UUID: CommandExecution] = [:]
@@ -212,7 +215,7 @@ final class CABService {
             remoteHost: remoteHost
         )
         guard result.exitCode == 0 else {
-            throw BridgeError.commandFailed("官方 Codex 最低消耗请求未完成；本次不会自动重试。")
+            throw BridgeError.commandFailed(preferredMessage(result))
         }
     }
 
@@ -763,7 +766,7 @@ final class CABService {
 
     private func cabExecutable() -> URL? {
         let candidates = cabExecutableCandidates(
-            configured: ProcessInfo.processInfo.environment["CAB_EXECUTABLE"],
+            configured: executableOverride?.path ?? ProcessInfo.processInfo.environment["CAB_EXECUTABLE"],
             bundleResourceURL: Bundle.main.resourceURL,
             homeDirectory: fileManager.homeDirectoryForCurrentUser
         )

@@ -955,7 +955,7 @@ struct SSHConfigDiscoveryTests {
             secondary: UsageWindow(usedPercent: 100, windowDurationMins: 10_080, resetsAt: Int64(now.timeIntervalSince1970) + 3_600)
         )
         let current = usageReportWithLimits(
-            primary: UsageWindow(usedPercent: 10, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) + 600),
+            primary: UsageWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: Int64(now.timeIntervalSince1970) - 1),
             secondary: nil
         )
 
