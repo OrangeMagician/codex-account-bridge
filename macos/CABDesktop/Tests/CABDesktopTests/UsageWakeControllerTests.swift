@@ -62,6 +62,10 @@ struct UsageWakeControllerTests {
         } else {
             #expect(try String(contentsOf: root.appendingPathComponent("calls")) == "x")
         }
+        if mode == "confirmed" || mode == "nearby_reset" {
+            let displayed = store.usageCacheByKey[name]?.reports[name]
+            #expect(usageWakeDecision(report: displayed) == .fiveHourActive)
+        }
         let log = try String(contentsOf: store.usageWakeJournal.url)
         switch mode {
         case "confirmed", "nearby_reset": #expect(log.contains("five_hour_confirmed"))

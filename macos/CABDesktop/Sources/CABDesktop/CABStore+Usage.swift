@@ -210,6 +210,21 @@ extension CABStore {
         }
     }
 
+    func cacheUsageWakeReports(_ incoming: [AccountUsageReport], cacheKey: String) {
+        var reports = usageCacheByKey[cacheKey]?.reports ?? [:]
+        var checked = usageCacheByKey[cacheKey]?.checkedAtByAccount ?? [:]
+        for report in incoming {
+            reports[report.name] = preservingUsage(report, previous: reports[report.name], fetchedAt: report.fetchedAt ?? Date())
+            checked[report.name] = Date()
+        }
+        let entry = UsageCacheEntry(reports: reports,
+                                    fetchedAt: reports.values.compactMap(\.fetchedAt).max(),
+                                    checkedAtByAccount: checked,
+                                    error: reports.values.contains { $0.error != nil } ? cabLocalized("部分账号刷新失败，正在显示上次成功获取的额度。") : nil)
+        usageCacheByKey[cacheKey] = entry
+        if cacheKey == currentUsageCacheKey { applyUsageCache(entry) }
+    }
+
     func logUsageWake(
         target: String, account: String? = nil, slot: String? = nil,
         phase: String, reason: String, before: AccountUsageReport? = nil, after: AccountUsageReport? = nil
@@ -250,6 +265,7 @@ extension CABStore {
                 target: endpoint.target, remoteHost: endpoint.host,
                 accountNames: pending.filter(\.isLoggedIn).map(\.name), force: true
             )
+            cacheUsageWakeReports(result.accounts, cacheKey: endpoint.key)
             let reports = Dictionary(result.accounts.map { ($0.name, $0) }, uniquingKeysWith: { _, new in new })
             for account in pending {
                 guard usageWakeSettings.enabled else { return }
@@ -388,6 +404,7 @@ extension CABStore {
             }, wait: {
                 try await Task.sleep(nanoseconds: 5_000_000_000)
             }, observe: { report in
+                if let report { self.cacheUsageWakeReports([report], cacheKey: cacheKey) }
                 try self.logUsageWake(target: cacheKey, account: accountName, slot: slotID,
                                       phase: "verification", reason: usageWakeDecision(report: report).rawValue,
                                       before: before, after: report)
