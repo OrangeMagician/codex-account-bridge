@@ -3,8 +3,8 @@ import Testing
 @testable import CABDesktop
 
 // Explicitly enabled only for read-only delivery verification on this machine.
-// Preflight requires every logged-in account to be active or without a 5h
-// window, so this smoke test cannot spend tokens or alter a countdown.
+// The controller is called with allowProbe=false, so even an exhausted or
+// newly expired window cannot spend tokens or alter a countdown.
 @MainActor
 struct UsageWakeLiveTests {
     @Test func scheduledChecksReachLocalAndRemoteWithoutChangingVisibleTarget() async throws {
@@ -26,8 +26,8 @@ struct UsageWakeLiveTests {
                                                     accountNames: status.accounts.filter(\.isLoggedIn).map(\.name), force: true)
             for report in usage.accounts {
                 let decision = usageWakeDecision(report: report)
-                guard decision == .fiveHourActive || decision == .noFiveHourLimit else {
-                    throw BridgeError.commandFailed("Read-only smoke requires active/no-five-hour accounts")
+                guard decision != .queryFailed else {
+                    throw BridgeError.commandFailed("Read-only smoke requires successful live quota queries")
                 }
             }
         }
