@@ -140,6 +140,13 @@ final class CABService {
         }
     }
 
+    func verifyRemoteConnection(accountName: String, remoteHost: String) async throws -> RemoteConnectionVerification {
+        let result = try await execute(["remote", "verify", "--account", accountName, "--json"], target: .remote, remoteHost: remoteHost)
+        guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+        guard let data = result.output.data(using: .utf8) else { throw BridgeError.invalidStatus("远程连接验证没有返回有效结果。") }
+        return try JSONDecoder().decode(RemoteConnectionVerification.self, from: data)
+    }
+
     func updateCodex(
         target: BridgeTarget,
         remoteHost: String,

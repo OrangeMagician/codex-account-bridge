@@ -489,3 +489,6 @@
 "今天检测到全局重置公告" = "Global reset announcement detected today";
 "今天暂无全局重置公告" = "No global reset announcement detected today";
 "最近全局重置公告" = "Latest global reset announcement";
+
+"已有连接待重连" = "Existing connections need reconnecting";
+"新连接已验证" = "New connection verified";

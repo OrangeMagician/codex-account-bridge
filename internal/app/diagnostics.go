@@ -40,7 +40,7 @@ type processRoute struct {
 	MatchesNextConnection bool   `json:"matches_next_connection"`
 }
 
-var supportedCapabilities = []string{"doctor-json-v1", "backups-v1", "project-directory-v1", "usage", "tokens", "incremental-tokens-v1", "sessions", "agent", "update", "models-v1", "launch-presets-v1", "tasks-v1", "process-routing-v1", "worktrees-v1"}
+var supportedCapabilities = []string{"remote-verify-v1", "doctor-json-v1", "backups-v1", "project-directory-v1", "usage", "tokens", "incremental-tokens-v1", "sessions", "agent", "update", "models-v1", "launch-presets-v1", "tasks-v1", "process-routing-v1", "worktrees-v1"}
 
 func diagnostics(paths config.Paths, cfg config.Config, version string, checks []diagnosticCheck) diagnosticReport {
 	report := diagnosticReport{CABVersion: version, DefaultAccount: cfg.DefaultAccount, RemoteAccount: cfg.RemoteAccount, Capabilities: supportedCapabilities, Checks: checks, Processes: []codexprocess.Process{}}

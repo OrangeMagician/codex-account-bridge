@@ -595,7 +595,16 @@ final class CABStore: ObservableObject {
             }
             let verified = try await service.loadStatus(target: .remote, remoteHost: remoteHost)
             try validateRemoteAccountSelection(verified, accountName: name)
-            tools.record(recordID, stage: "新连接账号已更新，现有任务继续运行", outcome: "已完成")
+            guard let home = verified.accounts.first(where: { $0.name == name })?.home else {
+                throw BridgeError.invalidStatus("目标账号目录无法确认。")
+            }
+            let live = try await service.verifyRemoteConnection(accountName: name, remoteHost: remoteHost)
+            try live.validate(accountName: name, home: home)
+            let message = live.needsReconnect
+                ? "新连接已验证使用目标账号；已有连接仍需重连，现有任务未中断。"
+                : "新连接已验证使用目标账号。"
+            appendOutput(message + "\n")
+            tools.record(recordID, stage: message, outcome: live.outcome)
         } catch {
             tools.record(recordID, stage: "账号选择未完成，请刷新确认", outcome: "结果待确认")
             throw error

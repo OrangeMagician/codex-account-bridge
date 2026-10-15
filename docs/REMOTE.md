@@ -83,3 +83,19 @@ cab remote use personal
 - 不要同时从两个账号写同一个会话；先结束原进程再恢复。
 
 官方文档：https://learn.chatgpt.com/docs/remote-connections
+
+### 验证新连接与已有连接
+
+账号选择保存后，CAB 使用服务器公开的 `codex app-server` 入口建立一次只读连接，
+核对官方 `initialize` 返回的 `codexHome` 和 `account/read` 的登录状态。
+可以手动执行：
+
+```bash
+cab remote verify --account work --json
+```
+
+`fresh_connection_verified` 只表示新连接已经使用所选账号。
+`other_account_processes` 或 `unknown_processes` 非零，或无法检查进程时，
+桌面切换记录显示“已有连接待重连”。选择新账号不会改变旧进程中的登录状态；
+已有 SSH 项目连接需要在任务完成后重新连接。验证命令不发送模型请求、
+不返回账号邮箱或凭据，也不停止已有任务。
