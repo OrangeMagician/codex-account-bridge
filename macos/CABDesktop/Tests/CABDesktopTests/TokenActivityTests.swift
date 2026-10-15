@@ -49,6 +49,14 @@ struct TokenActivityTests {
             }
             usage = try decoder.decode(TokenUsageReport.self, from: Data(contentsOf: URL(fileURLWithPath: input)))
         }
+        if usage.costEstimate == nil {
+            usage.source = "session_events"
+            let amount = TokenCostAmount(usd: 1234.5678, pricedTokens: 1_000_000, unpricedTokens: 200_000)
+            usage.costEstimate = TokenCostEstimate(currency: "USD", basis: "standard_short_context_current_rates",
+                rateDate: "2026-09-24", asOfDate: "2026-09-24", today: amount, month: amount, total: amount,
+                models: [.init(model: "gpt-6-sol", usd: 1234.5678, pricedTokens: 1_000_000, unpricedTokens: 0),
+                         .init(model: "", usd: 0, pricedTokens: 0, unpricedTokens: 200_000)])
+        }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         for width in [360, 620, 900] {
             for dark in [false, true] {

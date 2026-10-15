@@ -28,9 +28,19 @@ type diagnosticReport struct {
 	Capabilities   []string               `json:"capabilities"`
 	Checks         []diagnosticCheck      `json:"checks"`
 	Processes      []codexprocess.Process `json:"processes"`
+	Routes         []processRoute         `json:"routes"`
 }
 
-var supportedCapabilities = []string{"doctor-json-v1", "backups-v1", "project-directory-v1", "usage", "tokens", "incremental-tokens-v1", "sessions", "agent", "update"}
+type processRoute struct {
+	PID                   int    `json:"pid"`
+	Account               string `json:"account,omitempty"`
+	Home                  string `json:"home,omitempty"`
+	Role                  string `json:"role"`
+	Verified              bool   `json:"verified"`
+	MatchesNextConnection bool   `json:"matches_next_connection"`
+}
+
+var supportedCapabilities = []string{"doctor-json-v1", "backups-v1", "project-directory-v1", "usage", "tokens", "incremental-tokens-v1", "sessions", "agent", "update", "models-v1", "launch-presets-v1", "tasks-v1", "process-routing-v1", "worktrees-v1"}
 
 func diagnostics(paths config.Paths, cfg config.Config, version string, checks []diagnosticCheck) diagnosticReport {
 	report := diagnosticReport{CABVersion: version, DefaultAccount: cfg.DefaultAccount, RemoteAccount: cfg.RemoteAccount, Capabilities: supportedCapabilities, Checks: checks, Processes: []codexprocess.Process{}}
@@ -63,6 +73,20 @@ func diagnostics(paths config.Paths, cfg config.Config, version string, checks [
 	}
 	if processes, err := codexprocess.List(); err == nil {
 		report.Processes = processes
+		report.Routes = []processRoute{}
+		userHome, _ := os.UserHomeDir()
+		for _, process := range processes {
+			detail := codexprocess.DescribeRoute(process, filepath.Join(userHome, ".codex"))
+			route := processRoute{PID: process.PID, Home: detail.Home, Role: detail.Role, Verified: detail.Verified}
+			for _, account := range cfg.Accounts {
+				if detail.Verified && filepath.Clean(account.Home) == detail.Home {
+					route.Account = account.Name
+					route.MatchesNextConnection = account.Name == cfg.RemoteAccount
+					break
+				}
+			}
+			report.Routes = append(report.Routes, route)
+		}
 	} else {
 		report.Checks = append(report.Checks, diagnosticCheck{"processes", false, "Cannot inspect running Codex processes"})
 	}

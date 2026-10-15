@@ -8,6 +8,7 @@ import hashlib
 from contextlib import closing
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -16,6 +17,11 @@ import sys
 UTC = dt.timezone.utc
 FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "total_tokens")
 MAX_LINE = 8 * 1024 * 1024
+
+
+def model_name(value):
+    # Metadata only: do not retain arbitrary strings from session content.
+    return value if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}", value) else ""
 
 
 def counters(value):
@@ -75,9 +81,11 @@ class EventCache:
             if not isinstance(state, dict) or not isinstance(state.get("events"), list):
                 return None
             for event in state["events"]:
-                if not isinstance(event, list) or len(event) != 3 or not isinstance(event[0], str):
+                if not isinstance(event, list) or len(event) != 4 or not isinstance(event[0], str):
                     return None
-                for values in event[1:]:
+                if not isinstance(event[3], str) or model_name(event[3]) != event[3]:
+                    return None
+                for values in event[1:3]:
                     if values is not None and (not isinstance(values, (list, tuple)) or len(values) != 4 or any(type(n) is not int or n < 0 for n in values)):
                         return None
                 if event[1] is None:
@@ -118,14 +126,15 @@ def boundary(stream, offset):
 def usage_events(stream, thread_id, path, cache):
     info = os.fstat(stream.fileno())
     old = cache.get(path)
-    offset, events, damaged = 0, [], False
-    if isinstance(old, dict) and old.get("version") == 1 and old.get("thread") == thread_id:
+    offset, events, damaged, model = 0, [], False, ""
+    if isinstance(old, dict) and old.get("version") == 2 and old.get("thread") == thread_id:
         same_file = old.get("device") == info.st_dev and old.get("inode") == info.st_ino
         unchanged = old.get("size") == info.st_size and old.get("modified") == info.st_mtime_ns and old.get("changed") == info.st_ctime_ns
         appended = info.st_size > old.get("size", info.st_size)
         saved_offset = old.get("offset", -1)
         if same_file and (unchanged or appended) and 0 <= saved_offset <= info.st_size and boundary(stream, saved_offset) == old.get("boundary"):
             offset, events, damaged = saved_offset, old["events"], old["damaged"]
+            model = model_name(old.get("model"))
     stream.seek(offset)
     if offset == 0:
         line = stream.readline(MAX_LINE)
@@ -154,11 +163,14 @@ def usage_events(stream, thread_id, path, cache):
             offset = stream.tell()
             continue
         offset = stream.tell()
-        if b'"token_count"' not in line or b'"event_msg"' not in line:
+        if b'"turn_context"' not in line and (b'"token_count"' not in line or b'"event_msg"' not in line):
             continue
         try:
             event = json.loads(line)
             payload = event.get("payload", {})
+            if event.get("type") == "turn_context":
+                model = model_name(payload.get("model"))
+                continue
             if event.get("type") != "event_msg" or payload.get("type") != "token_count":
                 continue
             details = payload.get("info")
@@ -171,11 +183,13 @@ def usage_events(stream, thread_id, path, cache):
             timestamp = dt.datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
             if timestamp.tzinfo is None:
                 raise ValueError("missing timezone")
-            # Store only normalized time and numerical counters.
-            events.append([timestamp.astimezone(UTC).isoformat(), current, counters(details.get("last_token_usage"))])
+            # Store normalized time, numerical counters and model ID only.
+            events.append([timestamp.astimezone(UTC).isoformat(), current, counters(details.get("last_token_usage")), model])
         except (ValueError, TypeError, KeyError, AttributeError):
+            if b'"turn_context"' in line:
+                model = ""
             damaged = True
-    cache.put(path, {"version": 1, "thread": thread_id, "device": info.st_dev, "inode": info.st_ino,
+    cache.put(path, {"version": 2, "model": model, "thread": thread_id, "device": info.st_dev, "inode": info.st_ino,
                      "size": info.st_size, "modified": info.st_mtime_ns, "changed": info.st_ctime_ns,
                      "offset": offset, "boundary": boundary(stream, offset), "events": events, "damaged": damaged})
     return events, damaged or partial
@@ -213,6 +227,7 @@ def _read_report(paths, cache):
             db.close()
 
     daily = {}
+    model_usage = {}
     totals = [0] * 4
     seen = set()
     read_paths = set()
@@ -237,7 +252,7 @@ def _read_report(paths, cache):
                         continue
                     events, damaged = usage_events(stream, thread_id, resolved, cache)
                     read_paths.add(resolved)
-                    for timestamp_text, values, last_values in events:
+                    for timestamp_text, values, last_values, model in events:
                         try:
                             current = tuple(values)
                             timestamp = dt.datetime.fromisoformat(timestamp_text)
@@ -273,6 +288,9 @@ def _read_report(paths, cache):
                             entry = daily.setdefault(day, [0, set()])
                             entry[0] += delta[3]
                             entry[1].add(thread_id)
+                            bucket = model_usage.setdefault((day, model), [0] * 4)
+                            for i, value in enumerate(delta):
+                                bucket[i] += value
                         except (ValueError, TypeError, KeyError, AttributeError):
                             damaged = True
             except (OSError, ValueError, TypeError, AttributeError):
@@ -303,6 +321,8 @@ def _read_report(paths, cache):
         "active_days": len(dates), "current_streak": streak, "longest_streak": longest,
         "thread_count": len(threads), "unavailable_threads": len(threads.keys() - covered),
         "incomplete_files": incomplete,
+        "model_usage": [{"date": day, "model": model, **dict(zip(FIELDS, values))}
+                        for (day, model), values in sorted(model_usage.items())],
         "daily": [{"date": day, "tokens": daily[day][0], "threads": len(daily[day][1])} for day in dates],
     }
 

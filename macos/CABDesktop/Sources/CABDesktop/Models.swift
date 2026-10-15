@@ -156,6 +156,7 @@ struct CodexUpdateStatus: Codable, Equatable {
 }
 
 struct TokenUsageReport: Codable, Equatable {
+    var costEstimate: TokenCostEstimate? = nil
     var source: String? = nil
     var inputTokens: Int64? = nil
     var cachedInputTokens: Int64? = nil
@@ -173,6 +174,7 @@ struct TokenUsageReport: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case source
+        case costEstimate = "cost_estimate"
         case inputTokens = "input_tokens"
         case cachedInputTokens = "cached_input_tokens"
         case outputTokens = "output_tokens"

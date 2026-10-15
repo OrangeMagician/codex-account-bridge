@@ -65,13 +65,15 @@ Host codex-ubuntu
 
 ## 5. 切换 Ubuntu Codex 账号
 
-先结束或移交当前任务，然后在 Ubuntu 执行：
+在 Ubuntu 明确选择新连接使用的账号：
 
 ```bash
 cab remote use personal
 ```
 
-断开并重新连接 SSH 项目。切换只影响新启动的官方 app-server，不会修改 ChatGPT 手机或 Mac 桌面版的登录账号。
+正在运行的任务保留原账号并继续执行；CAB 不会为切换发送 SIGTERM 或 SIGKILL。等待任务完成后再重新连接 SSH 项目。切换只影响新启动的官方 app-server，不会修改手机或 Mac 桌面版的登录账号。
+
+开启会话共享后，切换和新连接启动前会按落盘事件时间修正已有线程的历史路径，并在线备份各账号自己的索引。历史文件不会覆盖或拼接，审批、沙箱和项目信任不跨账号复制。系统需要 Python 3.9+ 标准库 sqlite3。已有索引显示旧历史时可运行 `cab sessions repair-index --json`，不需要结束任务。
 
 ## 会话继承边界
 

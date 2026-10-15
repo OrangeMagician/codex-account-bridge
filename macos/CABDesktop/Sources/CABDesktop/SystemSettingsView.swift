@@ -85,6 +85,9 @@ struct SystemSettingsView: View {
 
                         Divider()
 
+                        PublicResetSettingsView()
+                        Divider()
+
                         LowQuotaSettingsView()
                         Divider()
 

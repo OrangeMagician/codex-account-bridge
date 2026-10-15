@@ -1,0 +1,41 @@
+CodexAccountBridge 0.1.0 / 安装说明
+
+macOS desktop / Mac 图形界面
+- Requires macOS 13+ and Apple Silicon (M series).
+- Open the macos_arm64.dmg and drag CodexAccountBridge into Applications.
+  Alternatively, extract macos_arm64.zip and move the app to Applications.
+- The app is ad-hoc signed, not Apple-notarized. If macOS blocks opening it,
+  use System Settings > Privacy & Security > Open Anyway.
+- 需要 macOS 13+、Apple Silicon（M 系列）；打开 DMG 后拖入“应用程序”。
+  也可解压 ZIP 安装。如首次被拦截，在“系统设置 > 隐私与安全性”允许打开。
+- Intel Macs: use the darwin_amd64 CLI package. No Windows build is provided.
+
+CLI / 命令行
+Choose your operating system and CPU architecture:
+  darwin_arm64: macOS Apple Silicon
+  darwin_amd64: macOS Intel
+  linux_arm64:  Linux ARM64
+  linux_amd64:  Linux Intel/AMD 64-bit
+Extract the matching .tar.gz, then run / 解压对应压缩包后执行：
+  mkdir -p ~/.local/bin
+  install -m 0755 cab ~/.local/bin/cab
+Add ~/.local/bin to PATH in your shell configuration, then / 加入 PATH 后：
+  cab version
+  cab init
+
+Prerequisites / 运行要求
+- Official Codex CLI installed and available on PATH; sign in through Codex.
+- Python 3 (standard library only) for Token statistics and related features.
+- No Go compiler or Swift toolchain is required to run release packages.
+- 仍需官方 Codex CLI；Token 统计等功能需要 Python 3，无需 Go/Swift 编译器。
+
+Verification / 校验
+Download SHA256SUMS and the desired asset into the same directory:
+  macOS: shasum -a 256 <downloaded-file>
+  Linux: sha256sum <downloaded-file>
+Compare the digest with the matching line in SHA256SUMS.
+
+Project / 项目
+https://github.com/OrangeMagician/codex-account-bridge
+https://github.com/OrangeMagician/codex-account-bridge/releases/latest
+License: Apache-2.0. This project is not affiliated with OpenAI.

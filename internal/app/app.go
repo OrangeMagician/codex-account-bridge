@@ -48,6 +48,9 @@ func Run(argv []string, version string) (int, error) {
 			return 1, err
 		}
 		defer unlock()
+		if _, err := session.RepairIndexes(paths, cfg); err != nil {
+			return 1, err
+		}
 		return codex.Run(account.Home, argv[1:])
 	}
 	if len(argv) < 2 {
@@ -102,6 +105,12 @@ func Run(argv []string, version string) (int, error) {
 		return 1, err
 	}
 	switch command {
+	case "worktrees":
+		return worktreesCommand(paths, cfg, args)
+	case "models":
+		return modelsCommand(cfg, args)
+	case "tasks":
+		return tasksCommand(cfg, args)
 	case "backups":
 		return backupsCommand(paths, cfg, args)
 	case "account":
@@ -120,12 +129,12 @@ func Run(argv []string, version string) (int, error) {
 		return rotationCommand(paths, &cfg, args)
 	case "status":
 		return statusCommand(cfg, args)
-	case "update":
-		return updateCommand(cfg, args)
-	case "tokens":
-		return tokensCommand(cfg, args)
 	case "usage":
 		return usageCommand(cfg, args)
+	case "tokens":
+		return tokensCommand(cfg, args)
+	case "update":
+		return updateCommand(cfg, args)
 	case "agent":
 		return agentCommand(cfg, args)
 	case "processes":
@@ -157,6 +166,13 @@ Commands:
   cab status [--json]
   cab usage [--account NAME] [--json]
   cab tokens [--account NAME] [--json]
+	  cab models --account NAME [--json]
+	  cab tasks list --account NAME [--search TITLE] [--directory PATH] [--cursor CURSOR] [--archived] [--pinned] [--json]
+	  cab tasks pin --account NAME --id ID --value true|false [--json]
+	  cab worktrees list --account NAME [--json]
+	  cab worktrees create --account NAME --directory PATH [--ref REF] [--json]
+	  cab worktrees remove --account NAME --id ID --confirm --confirm-codex-stopped [--json]
+	  cab run --account NAME [--directory PATH] [--model MODEL] [--effort EFFORT] [--speed TIER] [--resume ID]
   cab update [--check] [--json]
   cab usage probe --account NAME [--model MODEL] [--json]
   cab usage reset --account NAME [--credit-id ID] --idempotency-key KEY --confirm-reset-usage [--json]
@@ -173,6 +189,7 @@ Commands:
   cab sessions enable --acknowledge-cross-account-context --confirm-codex-stopped
   cab sessions disable --confirm-codex-stopped
   cab sessions legacy-status [--json]
+  cab sessions repair-index [--json]
   cab sessions import-current --acknowledge-cross-account-context --confirm-codex-stopped
   cab shim install [--dir PATH] [--force]
   cab shim remove [--dir PATH]
@@ -518,6 +535,21 @@ func tokensCommand(cfg config.Config, args []string) (int, error) {
 		return printJSON(report)
 	}
 	fmt.Printf("total tokens: %d\nactive days: %d\nthreads: %d\n", report.TotalTokens, report.ActiveDays, report.ThreadCount)
+	if cost := report.CostEstimate; cost != nil {
+		fmt.Printf("estimated API equivalent (USD, standard short-context rates as of %s; not a bill or balance):\n", cost.RateDate)
+		for _, item := range []struct {
+			name  string
+			value codex.CostAmount
+		}{{"today (UTC)", cost.Today}, {"month (UTC)", cost.Month}, {"total", cost.Total}} {
+			if item.value.PricedTokens == 0 && item.value.UnpricedTokens > 0 {
+				fmt.Printf("%s: unavailable (%d unpriced tokens)\n", item.name, item.value.UnpricedTokens)
+			} else {
+				fmt.Printf("%s: $%.4f (%d unpriced tokens)\n", item.name, item.value.USD, item.value.UnpricedTokens)
+			}
+		}
+		fmt.Println("Scope: readable session records, deduplicated across selected homes; shared history does not establish billing ownership. Excludes long-context/Fast premiums, cache writes, tools, regional charges and discounts.")
+	}
+
 	return 0, nil
 }
 
@@ -782,6 +814,16 @@ func useCommand(paths config.Paths, cfg *config.Config, args []string, remote bo
 		if !ok {
 			return fmt.Errorf("unknown account %q", account.Name)
 		}
+		if latest.SharedSessionsDir != "" {
+			unlock, err := session.AcquireRunLease(paths)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			if _, err := session.RepairIndexes(paths, *latest); err != nil {
+				return err
+			}
+		}
 		if remote {
 			latest.RemoteAccount = current.Name
 		} else {
@@ -834,10 +876,17 @@ func loginCommand(cfg config.Config, args []string) (int, error) {
 
 func runCommand(paths config.Paths, cfg config.Config, args []string, appServer bool) (int, error) {
 	flags := newFlags("run")
+	model := flags.String("model", "", "explicit model from account catalog")
+	effort := flags.String("effort", "", "supported reasoning effort")
+	speed := flags.String("speed", "", "advertised service tier")
+	resume := flags.String("resume", "", "explicit stored task ID")
 	directory := flags.String("directory", "", "explicit absolute project directory")
 	accountName := flags.String("account", "", "configured account name")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
+	}
+	if (*model != "" || *effort != "" || *speed != "" || *resume != "") && *accountName == "" {
+		return 2, errors.New("launch presets and resume require an explicit account")
 	}
 	var account config.Account
 	var err error
@@ -853,6 +902,32 @@ func runCommand(paths config.Paths, cfg config.Config, args []string, appServer 
 		return 2, err
 	}
 	commandArgs := flags.Args()
+	options := codex.LaunchOptions{Model: *model, Effort: *effort, Speed: *speed, Resume: *resume}
+	if appServer && (*model != "" || *effort != "" || *speed != "" || *resume != "") {
+		return 2, errors.New("launch presets apply only to cab run")
+	}
+	if *resume != "" {
+		if *accountName == "" || len(commandArgs) != 0 {
+			return 2, errors.New("resume requires an explicit account and no passthrough arguments")
+		}
+		if err := codex.ValidateTaskID(*resume); err != nil {
+			return 2, err
+		}
+		commandArgs = []string{"resume", *resume}
+	}
+	if *model != "" || *effort != "" || *speed != "" {
+		if *accountName == "" {
+			return 2, errors.New("launch presets require an explicit account")
+		}
+		catalog, err := codex.ReadModels(account.Home)
+		if err != nil {
+			return 1, err
+		}
+		if err := options.Validate(catalog); err != nil {
+			return 2, err
+		}
+		commandArgs = append(options.Arguments(), commandArgs...)
+	}
 	if *directory != "" {
 		if !filepath.IsAbs(*directory) {
 			return 2, errors.New("project directory must be absolute")
@@ -874,6 +949,9 @@ func runCommand(paths config.Paths, cfg config.Config, args []string, appServer 
 		return 1, err
 	}
 	defer unlock()
+	if _, err := session.RepairIndexes(paths, cfg); err != nil {
+		return 1, err
+	}
 	return codex.Run(account.Home, commandArgs)
 }
 
@@ -1066,6 +1144,34 @@ func printJSON(value any) (int, error) {
 }
 
 func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {
+	if len(args) > 0 && args[0] == "repair-index" {
+		flags := newFlags("sessions repair-index")
+		jsonOutput := flags.Bool("json", false, "print repair counts and backup paths")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+			return 2, errors.New("usage: cab sessions repair-index [--json]")
+		}
+		var report session.IndexRepairReport
+		_, err := config.ReadLocked(paths, func(latest config.Config) error {
+			if latest.SharedSessionsDir == "" {
+				return errors.New("session sharing must be explicitly enabled before repairing shared indexes")
+			}
+			unlock, err := session.AcquireRunLease(paths)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			report, err = session.RepairIndexes(paths, latest)
+			return err
+		})
+		if err != nil {
+			return 1, err
+		}
+		if *jsonOutput {
+			return printJSON(report)
+		}
+		fmt.Printf("repaired %d shared session index entries; backups: %s\n", report.Updated, strings.Join(report.Backups, ", "))
+		return 0, nil
+	}
 	if len(args) == 0 {
 		return 2, errors.New("sessions requires enable or disable")
 	}

@@ -163,7 +163,21 @@ struct SSHConfigDiscoveryTests {
             realCodexPath: nil,
             accountName: "client's"
         )
-        #expect(remote == "ssh -tt -- 'dev@example.com' cab run --account 'client'\\''s'")
+        func parseShellWords(_ command: String) throws -> [String] {
+            let process = Process(), output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "set -- " + command + "; printf '%s\\n' \"$@\""]
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            #expect(process.terminationStatus == 0)
+            return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+        }
+        let transport = try parseShellWords(remote)
+        #expect(Array(transport.prefix(4)) == ["ssh", "-tt", "--", "dev@example.com"])
+        #expect(transport.count == 5)
+        #expect(try parseShellWords(transport[4]) == ["cab", "run", "--account", "client's"])
     }
 
     @Test func terminalLaunchWithoutAnAccountPreservesRotationBehavior() throws {
@@ -374,6 +388,41 @@ struct SSHConfigDiscoveryTests {
         #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("skills/target-skill/SKILL.md").path))
         #expect(try sqliteScalarForTest(targetGoals, sql: "SELECT count(*) FROM thread_goals;") == "1")
         #expect(try String(contentsOf: target.appendingPathComponent("history.jsonl"), encoding: .utf8) == #"{"display":"target"}"#)
+    }
+
+    @Test func mergesOldAndNewAttachmentSchemasWithoutLosingPayloads() throws {
+        for sourceNew in [false, true] {
+            for targetNew in [false, true] {
+                let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: root) }
+                let source = root.appendingPathComponent("source")
+                let target = root.appendingPathComponent("target")
+                let schema = """
+                CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, metadata TEXT, position TEXT, created_at_ms TEXT, updated_at_ms TEXT);
+                CREATE TABLE project_roots (project_id TEXT PRIMARY KEY, position TEXT, path TEXT);
+                CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT, appearance TEXT);
+                CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, created_at TEXT, updated_at TEXT, source TEXT, model_provider TEXT, cwd TEXT, title TEXT, sandbox_policy TEXT, approval_mode TEXT, tokens_used TEXT, has_user_event TEXT, archived TEXT, archived_at TEXT, git_sha TEXT, git_branch TEXT, git_origin_url TEXT, cli_version TEXT, first_user_message TEXT, agent_nickname TEXT, agent_role TEXT, memory_mode TEXT, model TEXT, reasoning_effort TEXT, agent_path TEXT, created_at_ms TEXT, updated_at_ms TEXT, thread_source TEXT, preview TEXT, recency_at TEXT, recency_at_ms TEXT, history_mode TEXT, name TEXT, is_pinned TEXT, thread_section_id TEXT, section_position TEXT, section_entered_at_ms TEXT, project_id TEXT);
+                CREATE TABLE thread_dynamic_tools (thread_id TEXT PRIMARY KEY, position TEXT, name TEXT, description TEXT, input_schema TEXT, defer_loading TEXT, namespace TEXT);
+                CREATE TABLE thread_artifacts (id TEXT PRIMARY KEY, thread_id TEXT, artifact_type TEXT, identity_key TEXT, payload TEXT, created_at TEXT);
+                CREATE TABLE thread_spawn_edges (parent_thread_id TEXT PRIMARY KEY, child_thread_id TEXT, status TEXT);
+                """
+                for (home, modern) in [(source, sourceNew), (target, targetNew)] {
+                    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+                    let compatible = modern ? schema.replacingOccurrences(of: "thread_artifacts", with: "thread_attachments").replacingOccurrences(of: "artifact_type", with: "attachment_type") : schema
+                    try runSQLiteForTest(home.appendingPathComponent("state_5.sqlite"), sql: compatible)
+                }
+                let sourceTable = sourceNew ? "thread_attachments" : "thread_artifacts"
+                let targetTable = targetNew ? "thread_attachments" : "thread_artifacts"
+                try runSQLiteForTest(source.appendingPathComponent("state_5.sqlite"), sql: "INSERT INTO \(sourceTable) VALUES ('source-id','thread','pull_request','identity','payload',123);")
+                try runSQLiteForTest(target.appendingPathComponent("state_5.sqlite"), sql: "INSERT INTO \(targetTable) VALUES ('target-id','other-thread','file','other','keep',124);")
+                let result = try CodexContinuityState.synchronize(sourceHome: source.path, targetHome: target.path, knownHomes: [source.path, target.path])
+                #expect(result.databaseCount == 1)
+                #expect(try sqliteScalarForTest(target.appendingPathComponent("state_5.sqlite"), sql: "SELECT count(*) FROM \(targetTable);") == "2")
+                #expect(try sqliteScalarForTest(target.appendingPathComponent("state_5.sqlite"), sql: "SELECT payload FROM \(targetTable) WHERE id='source-id';") == "payload")
+                try CodexContinuityState.restore(result)
+                #expect(try sqliteScalarForTest(target.appendingPathComponent("state_5.sqlite"), sql: "SELECT count(*) FROM \(targetTable);") == "1")
+            }
+        }
     }
 
     @Test func ignoresGitFsmonitorSocketDuringContinuitySync() throws {

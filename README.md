@@ -1,5 +1,11 @@
 # CodexAccountBridge
 
+The native app now includes Models and speed, Recent tasks, and CAB Worktree.
+Read an explicitly selected account's official model catalog, save launch presets,
+search/pin/resume stored tasks, and manage CAB-created Git worktrees. Diagnostics
+inspect process account routing, and Token estimates include GPT-6.1 Sol.
+See [Codex feature details](docs/CODEX_FEATURES.md) for compatibility and commands.
+
 <p align="center">
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
@@ -34,16 +40,29 @@ CodexAccountBridge is intentionally conservative:
 - The official `codex` executable is invoked directly, without a shell or argument rewriting.
 - Codex approval, sandbox, and project-trust defaults remain unchanged.
 - Normal usage reads are display-only. The optional usage-period wake is an explicit, opt-in minimal request and never rotates accounts because of rate limits, login failures, or runtime errors.
-- Session sharing excludes credentials, `config.toml`, and SQLite/WAL state, and requires explicit acknowledgement.
+- Session sharing requires explicit acknowledgement and excludes credentials, `config.toml`, and account security settings. Shared rollout pointers are repaired in each account’s own SQLite index with online backups; databases are never copied between accounts.
 - Configuration updates are locked, atomic, permission-restricted, and recoverable from backups.
 
 See the [threat model](docs/THREAT_MODEL.md), [privacy notes](docs/PRIVACY.md), and [upstream safety audit](docs/UPSTREAM_AUDIT.md) for the detailed boundaries.
 
 ## Installation
 
+### Download a release
+
+Get ready-to-run downloads from the [latest release](https://github.com/OrangeMagician/codex-account-bridge/releases/latest). Go is only needed when building from source.
+
+- **Mac desktop (Apple Silicon, macOS 13+)**: download `CodexAccountBridge_0.1.0_macos_arm64.dmg` and drag the app into Applications, or extract the matching `.zip`.
+- **CLI (macOS / Linux)**: download `cab_0.1.0_<os>_<arch>.tar.gz`; choose `arm64` for Apple Silicon / ARM or `amd64` for Intel / AMD 64-bit. Extract it, run `mkdir -p ~/.local/bin && install -m 0755 cab ~/.local/bin/cab`, and add `~/.local/bin` to `PATH`.
+- Install the official Codex CLI separately. Python 3 is also required for Token statistics and related features. Packages include `INSTALL.txt`; SHA-256 checksums accompany the downloads.
+
+The Mac app is ad-hoc signed and has not been notarized by Apple. If macOS blocks the first launch, allow it in **System Settings → Privacy & Security**. Intel Macs can use the CLI.
+
+### Build from source
+
 Requirements:
 
 - The official Codex CLI installed and available on `PATH`.
+- Python 3 for the read-only Token dashboard (standard library only).
 - Go 1.26.7 or newer for building the current source tree.
 - macOS 13 or newer for the native desktop app.
 
@@ -89,6 +108,35 @@ cab run
 cab run --account work -- exec "explain this repository"
 ```
 
+The desktop management overview keeps update controls with their target: the
+local “Codex desktop” card updates only this Mac, while the remote target shows
+a separate server card for the selected SSH host. An update button appears
+only when the version check confirms a newer release; an up-to-date
+installation shows its status without an update action. The CLI commands are:
+
+```bash
+# This Mac / current CAB default account
+cab update
+
+# The remote server, after connecting over SSH
+ssh your-server cab update
+
+# Check versions without updating (useful for scripts or the desktop UI)
+cab update --check --json
+```
+
+`cab update` invokes the official executable directly and never updates the
+CAB shim. Codex releases installed by a method that does not support
+self-update may still report that the installation method cannot be detected;
+in that case use the official installer shown in the [Codex CLI guide](https://developers.openai.com/codex/cli/), then run `cab update` again to verify the resolved executable.
+
+The remote host's CAB binary must also include the `update` and `tokens`
+commands. If the remote card reports `unknown command`, update CAB on that
+host and refresh the remote target; the host is running an older bridge binary.
+
+`cab tokens --json` returns the same read-only usage data shown in the desktop
+dashboard. Daily values are grouped by each thread's last activity date.
+
 Arguments after `cab run` are passed through to the official Codex executable. Removing a CAB registration does not delete the account directory, login, or sessions.
 
 If the default `~/.codex` directory is already signed in, register it without copying credentials:
@@ -109,11 +157,13 @@ cab usage --account personal
 cab usage --json
 ```
 
-Depending on the official response, the report can include the ChatGPT plan type, primary and secondary Codex usage windows, reset times, credits, spend controls, and available rate-limit resets. Account identity, email addresses, token contents, and reset credential identifiers are not exposed.
+Depending on the official response, the report can include the ChatGPT plan type, primary and secondary Codex usage windows, reset times, credits, spend controls, and available rate-limit resets. When `rate_limits_by_limit_id` includes a Reserve/fallback bucket, the desktop client also shows its remaining percentage and reset time (for example, Luna Reserve). Account identity, email addresses, token contents, and reset credential identifiers are not exposed.
 
 When an account reports an available rate-limit reset, the macOS app shows a Reset usage button. A bright warning sheet requires a second confirmation and calls the official Codex reset-credit method with an idempotency key. It warns when usable five-hour or weekly capacity would be replaced, then refreshes both windows after the operation. CAB lets the backend select the credit and never reads or persists its opaque identifier.
 
 The macOS app includes an optional usage-reset notification switch in System Settings. It is off by default and requests system notification permission only when enabled. CAB replaces its scheduled notifications whenever usage data is refreshed and removes them when the switch is turned off. A notification indicates that the reported reset time has arrived; refresh CAB to confirm the latest server-side quota.
+
+The optional **Codex global reset alerts** switch in **System Settings → Quota and Notifications** polls the [Did Codex Reset public API](https://didcodexreset.com/zh/api.html) anonymously every 5 minutes while CAB is running. It displays global resets and reset-credit announcements separately, using the local calendar for today. The first successful check establishes a baseline without historical notifications; subsequent completed events from the past 24 hours are deduplicated by ID across restarts. Permission is requested only when enabled. Disabling stops requests; rate limits honor Retry-After, network failures back off, and previous data remains visible. This unofficial feed is advisory and does not confirm an account’s quota. It never triggers account switching, tasks, or reset-credit consumption. Checks stop when CAB quits.
 
 Automatic refresh is evaluated per account and continues at the configured interval even when an account reports zero remaining usage. Manual refresh still queries every account. The System Settings usage-period wake switch is off by default. When enabled, CAB checks usage after a recovered period or at up to three explicit daily start times, then sends one deliberately tiny `gpt-5.6-luna` request only when the five-hour or weekly window has no active countdown. Up to three paused-refresh periods suppress ordinary automatic reads and recovery-triggered probes; explicit start times take priority. CAB verifies the returned reset window after a wake request and does not retry a failed probe automatically.
 
@@ -132,7 +182,8 @@ Usage information never triggers an automatic account change.
 CodexAccountBridge includes a native SwiftUI interface for local and remote account management:
 
 ```bash
-make macos-app VERSION=0.6.16 BUILD_NUMBER=27
+make macos-app VERSION=0.1.0 BUILD_NUMBER=1
+./scripts/package-release.sh 0.1.0
 open "dist/CodexAccountBridge.app"
 ```
 
@@ -140,8 +191,11 @@ The app can:
 
 - Switch between this Mac and saved SSH servers.
 - Register, sign in, reauthenticate, and inspect independent accounts.
-- Display quota summaries and detailed official usage periods.
-- Check remaining five-hour and weekly usage from the menu bar, then launch Terminal with an explicitly selected account.
+- Display quota summaries, Reserve/fallback model capacity, and detailed official usage periods.
+- Show cumulative and daily token increments from persisted Codex `token_count` events (UTC), with
+  daily, weekly, and cumulative views.
+- Update the local CLI and the selected remote server's CLI with one click.
+- Check remaining five-hour, weekly, and available Reserve usage from the menu bar, then launch Terminal with an explicitly selected account.
 - Use standard shortcuts to refresh status (`Command-R`), refresh usage (`Shift-Command-R`), or launch Codex (`Command-Return`).
 - Configure optional usage-period wake checks, daily start times, and paused-refresh periods from System Settings.
 - Launch the Codex desktop app with a selected local account.
@@ -164,7 +218,7 @@ command -v codex
 codex --version
 ```
 
-The shim routes new `codex app-server` launches through the explicitly selected remote account. An already running remote Codex process keeps the account it started with; close that remote task and reconnect after changing accounts.
+The shim routes new `codex app-server` launches through the explicitly selected remote account. An already running remote Codex process keeps its account and continues running. CAB never stops or force restarts processes when switching remote accounts. Wait for active tasks to finish before reconnecting to use the newly selected account.
 
 For the phone-to-desktop-to-Ubuntu workflow and SSH details, see [Remote setup](docs/REMOTE.md).
 
@@ -187,6 +241,17 @@ cab sessions disable --confirm-codex-stopped
 ```
 
 CAB stops on conflicting session files instead of overwriting either side. Timestamped backups are retained for recovery.
+
+With shared history enabled, CAB repairs existing thread indexes before account selection and before launching Codex. For duplicate rollout files with the same thread ID, the last complete event timestamp selects the newest history; all original files remain intact. Only rollout pointers, nondecreasing update timestamps, and missing display names are changed. Account-specific policy fields and unrelated tables stay untouched. New thread rows and their security defaults remain the responsibility of official Codex indexing.
+
+Repair already stale indexes without stopping running tasks:
+
+```bash
+cab sessions repair-index --json
+```
+
+This optional shared-index feature requires system Python 3.9+ with its standard-library `sqlite3` module (`/usr/bin/python3` or `/bin/python3`). This narrowly scoped system-tool dependency provides WAL-aware online backups and transactional updates without third-party packages or Go dependencies. Backups are retained under CAB's data directory as `index-backup-*`; failures block account selection or launch rather than bypassing repair. Do not resume the same task concurrently in two accounts.
+
 
 ## Optional launch rotation
 
@@ -249,8 +314,9 @@ Diagnostics inspect executable availability, directories, symlinks, transaction 
 ```bash
 make check
 make security-check
-make release VERSION=0.6.16
-make macos-app VERSION=0.6.16 BUILD_NUMBER=27
+make release VERSION=0.1.0
+make macos-app VERSION=0.1.0 BUILD_NUMBER=1
+./scripts/package-release.sh 0.1.0
 ```
 
 This repository does not use GitHub Actions. Release binaries and SHA-256 files are built and verified locally by the maintainer.
@@ -260,6 +326,8 @@ This repository does not use GitHub Actions. Release binaries and SHA-256 files 
 Apache License 2.0. Codex and ChatGPT are trademarks of their respective owners. This project is not affiliated with or endorsed by OpenAI.
 
 ### Token activity
+
+The overview also shows today, month and total **estimated API equivalent (USD)** at the bundled standard short-context rates. Unknown models stay unpriced; this is not an account balance or actual bill. Expand the model breakdown for scope and rate details. See [estimation methodology](docs/COST_ESTIMATES.md).
 
 Use `cab tokens --json` (optionally `--account NAME`) or the macOS overview to inspect recorded token usage. Python 3 is required (standard library only). The read-only index locates session token events; daily usage is attributed to the actual UTC event date, not the thread's last update. Repeated snapshots and shared histories are deduplicated. Totals include cached input; the dashboard separates uncached input, cached input, and output (including reasoning). Missing or incomplete histories are disclosed. The yearly activity grid fits the available width and exposes date, exact tokens, and session count on hover or selection.
 
@@ -312,7 +380,7 @@ entries. Failed account refreshes keep the last successful values and timestamp.
 Read-only operations can be cancelled; SSH uses bounded connection/keepalive timeouts.
 A timeout does not prove a remote mutation was rolled back: refresh to verify its result.
 
-Token statistics cache only normalized event timestamps and numerical counters in
+Token statistics cache only normalized event timestamps, model IDs and numerical counters in
 `$CAB_DATA_HOME/token-cache-v1.sqlite` (the default CAB data directory otherwise).
 Unchanged files reuse cached events; appended files resume at a validated byte boundary.
 Truncated, replaced, or rewritten files are rescanned. Shared history remains deduplicated

@@ -16,6 +16,7 @@ struct DiagnosticReport: Codable {
     let capabilities: [String]
     let checks: [DiagnosticCheck]
     let processes: [DiagnosticProcess]
+    var routes: [ProcessAccountRoute]? = nil
 }
 struct DiagnosticProcess: Codable, Identifiable {
     var id: Int { pid }
@@ -55,9 +56,11 @@ struct ProjectLaunchProfile: Codable, Identifiable, Equatable {
     var directory: String
     var account: String
     var remoteHost: String
+    var preset: LaunchPreset? = nil
     var target: BridgeTarget { remoteHost.isEmpty ? .local : .remote }
 
     func validate() throws {
+        try (preset ?? LaunchPreset()).validateSyntax()
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               directory.hasPrefix("/"), !directory.contains("\n"), !directory.contains("\0"),
               account.range(of: "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$", options: .regularExpression) != nil else {
@@ -224,8 +227,13 @@ final class ManagementToolsStore: ObservableObject {
                 guard supported.capabilities.contains("project-directory-v1") else {
                     throw BridgeError.commandFailed(cabLocalized("服务器 CAB 不支持此功能，请先更新服务器 CAB。"))
                 }
+                if !(profile.preset ?? LaunchPreset()).isDefault {
+                    guard supported.capabilities.contains("launch-presets-v1") else { throw BridgeError.commandFailed(cabLocalized("服务器 CAB 不支持此功能，请先更新服务器 CAB。")) }
+                    let catalog: AccountModelCatalog = try await service.managementJSON(["models", "--account", profile.account, "--json"], target: profile.target, host: profile.remoteHost)
+                    try (profile.preset ?? LaunchPreset()).validate(catalog: catalog)
+                }
                 try Task.checkCancellation()
-                try service.launchCodexInTerminal(target: profile.target, remoteHost: profile.remoteHost, accountName: profile.account, directory: profile.directory)
+                try service.launchCodexInTerminal(target: profile.target, remoteHost: profile.remoteHost, accountName: profile.account, directory: profile.directory, preset: profile.preset ?? LaunchPreset())
             } catch is CancellationError { }
             catch { self.error = error.localizedDescription }
         }

@@ -237,12 +237,14 @@ public enum CodexContinuityState {
         }
         let targetURL = targetHomeURL.appendingPathComponent(specification.relativePath).standardizedFileURL
         guard fileManager.fileExists(atPath: targetURL.path) else { return nil }
+        let specification = try compatibleSpecification(specification, at: targetURL)
         try validateDatabase(targetURL, requiredColumns: specification.requiredColumns)
         let sources = try sourceHomes.compactMap { home -> URL? in
             let homeURL = URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
             let url = homeURL.appendingPathComponent(specification.relativePath).standardizedFileURL
             guard fileManager.fileExists(atPath: url.path), url != targetURL else { return nil }
-            try validateDatabase(url, requiredColumns: specification.requiredColumns)
+            let sourceSpecification = try compatibleSpecification(specification, at: url)
+            try validateDatabase(url, requiredColumns: sourceSpecification.requiredColumns)
             return url
         }
         guard !sources.isEmpty else { return nil }
@@ -259,7 +261,8 @@ public enum CodexContinuityState {
             }
             sql += " BEGIN IMMEDIATE;"
             for index in sources.indices {
-                for statement in mergeStatements(for: specification, alias: "cab_source_\(index)") {
+                let sourceSpecification = try compatibleSpecification(specification, at: sources[index])
+                for statement in mergeStatements(for: specification, source: sourceSpecification, alias: "cab_source_\(index)") {
                     sql += " \(statement);"
                 }
             }
@@ -277,11 +280,18 @@ public enum CodexContinuityState {
         }
     }
 
-    private static func mergeStatements(for specification: DatabaseSpecification, alias: String) -> [String] {
+    private static func mergeStatements(for specification: DatabaseSpecification, source: DatabaseSpecification, alias: String) -> [String] {
         func copy(_ table: String, conflict: String = "REPLACE") -> String {
             let columns = specification.requiredColumns[table] ?? []
             let list = columns.joined(separator: ", ")
-            return "INSERT OR \(conflict) INTO main.\(table) (\(list)) SELECT \(list) FROM \(alias).\(table)"
+            let sourceTable: String
+            if table == "thread_attachments" || table == "thread_artifacts" {
+                sourceTable = source.requiredColumns["thread_attachments"] != nil ? "thread_attachments" : "thread_artifacts"
+            } else {
+                sourceTable = table
+            }
+            let sourceList = (source.requiredColumns[sourceTable] ?? columns).joined(separator: ", ")
+            return "INSERT OR \(conflict) INTO main.\(table) (\(list)) SELECT \(sourceList) FROM \(alias).\(sourceTable)"
         }
 
         switch specification.relativePath {
@@ -308,12 +318,30 @@ public enum CodexContinuityState {
                 copy("thread_sections", conflict: "IGNORE"),
                 copy("threads", conflict: "IGNORE"),
                 copy("thread_dynamic_tools"),
-                copy("thread_artifacts"),
+                copy(specification.requiredColumns["thread_attachments"] != nil ? "thread_attachments" : "thread_artifacts"),
                 copy("thread_spawn_edges"),
             ]
         default:
             return []
         }
+    }
+
+    // Codex renamed artifacts to attachments without changing the remaining
+    // payload columns. Resolve each database independently for mixed versions.
+    private static func compatibleSpecification(_ specification: DatabaseSpecification, at url: URL) throws -> DatabaseSpecification {
+        guard specification.relativePath == "state_5.sqlite" else { return specification }
+        try validatePortableFile(url)
+        let tables = Set(try runSQLite(url, sql: "SELECT name FROM sqlite_master WHERE type='table';")
+            .split(whereSeparator: \.isNewline).map(String.init))
+        var columns = specification.requiredColumns
+        columns.removeValue(forKey: "thread_artifacts")
+        columns.removeValue(forKey: "thread_attachments")
+        if tables.contains("thread_attachments") {
+            columns["thread_attachments"] = ["id", "thread_id", "attachment_type", "identity_key", "payload", "created_at"]
+        } else {
+            columns["thread_artifacts"] = ["id", "thread_id", "artifact_type", "identity_key", "payload", "created_at"]
+        }
+        return DatabaseSpecification(relativePath: specification.relativePath, requiredColumns: columns)
     }
 
     private static func validateDatabase(_ url: URL, requiredColumns: [String: [String]]) throws {

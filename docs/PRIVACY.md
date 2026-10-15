@@ -1,5 +1,12 @@
 # 隐私说明
 
+新增的模型目录与任务列表通过明确选择的账号调用官方 Codex app-server。
+CAB 仅在内存中显示模型元数据和任务 ID、标题、路径、更新时间、置顶状态，
+不缓存任务正文或提示预览。项目启动预设随原有本机配置保存模型、思考强度和速度。
+进程账号诊断仅输出同用户启动环境中的 `CODEX_HOME` 和进程角色，不输出其他环境值。
+CAB Worktree 登记文件以私有权限保存账号名称、仓库与工作目录路径、起始引用及创建时间。
+这些功能不读取认证文件内容，也不复制账号间的插件授权。
+
 ## 不会进入 Git 的数据
 
 - Codex `auth.json`、`config.toml`、账号目录与会话数据库。
@@ -43,6 +50,10 @@ find . -type f \( -name auth.json -o -name config.toml -o -name '*.pem' -o -name
 
 发现隐私数据时不要仅依赖后续删除；如果已经提交或推送，应立即撤销相关凭据并清理 Git 历史。
 
+## 远程共享会话索引
+
+已明确开启会话共享时，CAB 会读取共享目录中 `rollout-*.jsonl` 的会话 ID 和尾部事件时间，为已有线程选择最新落盘的历史文件，并在各账号的 `state_5.sqlite` 中修正路径、更新时间与缺失显示名称。不会输出消息正文、覆盖历史文件、复制账号间的整个数据库、修改审批/沙箱/项目 trust 或创建带有自选安全默认值的新线程行。SQLite 在线备份包含 WAL 中的已提交记录，保存在原主机 CAB 数据目录的 `index-backup-*` 中。远程切换只选择新连接账号，现有任务不被 CAB 终止。
+
 The Token dashboard uses read-only `state_5.sqlite` indexes to locate regular `rollout-*.jsonl` files under configured session directories. It scans token-event timestamps and counters locally, without returning conversation content. UTC daily usage is based on recorded increments, not index update dates. Cached input is included in total tokens. Missing or incomplete histories are disclosed. No authorization files are opened.
 
 ## Maintenance metadata and incremental usage cache
@@ -54,6 +65,17 @@ conversation content, and credentials. Low-quota notification deduplication stor
 hashed source/account/cycle identifiers and expiry dates. Diagnostic reports contain
 paths, versions, process metadata, and file-permission checks, never credential contents.
 
-The optional CAB-owned Token cache stores only normalized event times and numerical
+The optional CAB-owned Token cache stores only normalized event times, model IDs and numerical
 usage counters with file identity/offset metadata. It does not cache conversation text.
 No new network service, telemetry endpoint, or credential synchronization is introduced.
+
+## Optional public reset announcements
+
+When the user enables Codex global reset alerts, the macOS app makes anonymous
+HTTPS GET requests to didcodexreset.com every five minutes while running. The
+service receives normal connection metadata such as the source IP, but no account
+labels, credentials, quota data, session content, or local paths. Requests use an
+ephemeral session with cookies and credential storage disabled. Local UserDefaults
+retain only the enable switch, a baseline timestamp, and up to 512 public event IDs
+for deduplication. Disabling stops polling. The feed is unofficial and advisory;
+CAB continues to use official account usage queries to confirm personal quota.

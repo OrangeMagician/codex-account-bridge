@@ -10,7 +10,10 @@ struct CABDesktopApp: App {
             ContentView()
                 .environmentObject(store)
                 .cabPreservingActiveColors()
-                .task { menuBar.startMonitoring() }
+                .task {
+                    menuBar.startMonitoring()
+                    PublicResetMonitor.shared.startMonitoring()
+                }
         }
         .windowStyle(.titleBar)
         .commands {

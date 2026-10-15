@@ -108,11 +108,11 @@ func remoteCommandFailure(_ result: CommandResult) -> String {
 
 func isReadOnlyCommand(_ arguments: [String]) -> Bool {
     switch arguments.first {
-    case "status", "tokens", "capabilities": return true
+    case "status", "tokens", "capabilities", "models": return true
     case "doctor": return !arguments.contains("--repair")
     case "usage": return !arguments.contains("reset") && !arguments.contains("probe")
     case "update": return arguments.contains("--check")
-    case "processes", "agent", "backups": return arguments.dropFirst().first == "list" || arguments.dropFirst().first == "preview"
+    case "processes", "agent", "backups", "tasks", "worktrees": return arguments.dropFirst().first == "list" || arguments.dropFirst().first == "preview"
     case "sessions": return arguments.dropFirst().first == "legacy-status"
     default: return false
     }

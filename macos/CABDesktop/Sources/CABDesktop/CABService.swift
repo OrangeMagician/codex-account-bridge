@@ -388,7 +388,7 @@ final class CABService {
         )
     }
 
-    func launchCodexInTerminal(target: BridgeTarget, remoteHost: String, accountName: String? = nil, directory: String? = nil) throws {
+    func launchCodexInTerminal(target: BridgeTarget, remoteHost: String, accountName: String? = nil, directory: String? = nil, preset: LaunchPreset = LaunchPreset(), resume: String? = nil) throws {
         let environment = localCABEnvironment(
             baseEnvironment: ProcessInfo.processInfo.environment,
             homeDirectory: fileManager.homeDirectoryForCurrentUser,
@@ -400,7 +400,9 @@ final class CABService {
             cabExecutablePath: cabExecutable()?.path,
             realCodexPath: environment["CAB_REAL_CODEX"],
             accountName: accountName,
-            directory: directory
+            directory: directory,
+            preset: preset,
+            resume: resume
         )
         let script = "tell application \"Terminal\" to do script \(appleScriptQuote(command))"
         let process = Process()
@@ -817,24 +819,34 @@ func codexRunTerminalCommand(
     cabExecutablePath: String?,
     realCodexPath: String?,
     accountName: String?,
-    directory: String? = nil
+    directory: String? = nil,
+    preset: LaunchPreset = LaunchPreset(),
+    resume: String? = nil
 ) throws -> String {
+    try preset.validateSyntax()
+    if let resume, resume.isEmpty || resume.hasPrefix("-") || resume.contains(where: { $0.isWhitespace || $0 == "/" || $0 == "\\" || $0 == "\0" }) {
+        throw BridgeError.commandFailed(cabLocalized("任务 ID 无效。"))
+    }
+    if (!preset.isDefault || resume != nil) && accountName == nil { throw BridgeError.invalidAccountName }
+    let presetArguments = preset.arguments + (resume.map { ["--resume", $0] } ?? [])
+    let optionsArgument = presetArguments.isEmpty ? "" : " " + presetArguments.map(cabShellQuote).joined(separator: " ")
     let directoryArgument = directory.map { " --directory \(cabShellQuote($0))" } ?? ""
     let accountArgument = accountName.map { " --account \(cabShellQuote($0))" } ?? ""
     if target == .local {
         guard let cabExecutablePath else { throw BridgeError.executableMissing }
         let codexPrefix = realCodexPath.map { "CAB_REAL_CODEX=\(cabShellQuote($0)) " } ?? ""
-        return "\(codexPrefix)\(cabShellQuote(cabExecutablePath)) run\(accountArgument)\(directoryArgument)"
+        return "\(codexPrefix)\(cabShellQuote(cabExecutablePath)) run\(accountArgument)\(directoryArgument)\(optionsArgument)"
     }
 
     let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
     if let directory {
         guard let accountName else { throw BridgeError.invalidAccountName }
-        let remote = ["cab", "run", "--account", accountName, "--directory", directory].map(cabShellQuote).joined(separator: " ")
+        let remote = (["cab", "run", "--account", accountName, "--directory", directory] + presetArguments).map(cabShellQuote).joined(separator: " ")
         return "ssh -tt -- \(cabShellQuote(host)) \(cabShellQuote(remote))"
     }
-    return "ssh -tt -- \(cabShellQuote(host)) cab run\(accountArgument)"
+    let remote = (["cab", "run"] + (accountName.map { ["--account", $0] } ?? []) + presetArguments).map(cabShellQuote).joined(separator: " ")
+    return "ssh -tt -- \(cabShellQuote(host)) \(cabShellQuote(remote))"
 }
 
 private func cabShellQuote(_ value: String) -> String {

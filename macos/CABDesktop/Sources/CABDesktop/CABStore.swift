@@ -72,9 +72,10 @@ final class CABStore: ObservableObject {
     @Published var desktopSwitchPartialResult: DesktopSwitchPartialResult?
 
     let tools = ManagementToolsStore()
+    let codexFeatures = CodexFeaturesStore()
     let service: CABService
     var usageWakeJournal = UsageWakeJournal.shared
-    lazy var usageResetNotificationService = UsageResetNotificationService()
+    lazy var usageResetNotificationService = UsageResetNotificationService.shared
     let defaults = UserDefaults.standard
     let remoteServersKey = "remoteServers.v1"
     let selectedRemoteKey = "selectedRemoteServer.v1"
@@ -159,7 +160,8 @@ final class CABStore: ObservableObject {
         set { sidebarSelection = newValue ?? Self.globalSettingsSelection }
     }
 
-    var showingTools: Bool { ["cab.tools", "cab.projects", "cab.history"].contains(sidebarSelection) }
+    var showingFeatures: Bool { ["cab.models", "cab.tasks", "cab.worktrees"].contains(sidebarSelection) }
+    var showingTools: Bool { showingFeatures || ["cab.tools", "cab.projects", "cab.history"].contains(sidebarSelection) }
 
     var showingGlobalSettings: Bool {
         sidebarSelection == Self.globalSettingsSelection

@@ -19,21 +19,23 @@ import (
 // TokenUsageReport aggregates persisted token_count increments by their UTC event date.
 // Cached input is a subset of input; reasoning is already included in output.
 type TokenUsageReport struct {
-	ScannedBytes       int64             `json:"scanned_bytes"`
-	Source             string            `json:"source"`
-	InputTokens        int64             `json:"input_tokens"`
-	CachedInputTokens  int64             `json:"cached_input_tokens"`
-	OutputTokens       int64             `json:"output_tokens"`
-	UnavailableThreads int               `json:"unavailable_threads"`
-	IncompleteFiles    int               `json:"incomplete_files"`
-	FetchedAt          string            `json:"fetched_at"`
-	TotalTokens        int64             `json:"total_tokens"`
-	MaxDaily           int64             `json:"max_daily_tokens"`
-	ActiveDays         int               `json:"active_days"`
-	CurrentStreak      int               `json:"current_streak"`
-	LongestStreak      int               `json:"longest_streak"`
-	ThreadCount        int64             `json:"thread_count"`
-	Daily              []DailyTokenUsage `json:"daily"`
+	ModelUsage         []ModelTokenUsage  `json:"model_usage"`
+	CostEstimate       *TokenCostEstimate `json:"cost_estimate,omitempty"`
+	ScannedBytes       int64              `json:"scanned_bytes"`
+	Source             string             `json:"source"`
+	InputTokens        int64              `json:"input_tokens"`
+	CachedInputTokens  int64              `json:"cached_input_tokens"`
+	OutputTokens       int64              `json:"output_tokens"`
+	UnavailableThreads int                `json:"unavailable_threads"`
+	IncompleteFiles    int                `json:"incomplete_files"`
+	FetchedAt          string             `json:"fetched_at"`
+	TotalTokens        int64              `json:"total_tokens"`
+	MaxDaily           int64              `json:"max_daily_tokens"`
+	ActiveDays         int                `json:"active_days"`
+	CurrentStreak      int                `json:"current_streak"`
+	LongestStreak      int                `json:"longest_streak"`
+	ThreadCount        int64              `json:"thread_count"`
+	Daily              []DailyTokenUsage  `json:"daily"`
 }
 
 type DailyTokenUsage struct {
@@ -51,7 +53,7 @@ func ReadTokenUsage(homes []string) (TokenUsageReport, error) {
 	if err != nil {
 		return TokenUsageReport{}, err
 	}
-	report := TokenUsageReport{Source: "session_events", FetchedAt: time.Now().UTC().Format(time.RFC3339), Daily: []DailyTokenUsage{}}
+	report := TokenUsageReport{Source: "session_events", FetchedAt: time.Now().UTC().Format(time.RFC3339), Daily: []DailyTokenUsage{}, ModelUsage: []ModelTokenUsage{}, CostEstimate: estimateTokenCost(nil, time.Now())}
 	if len(paths) == 0 {
 		return report, nil
 	}
@@ -86,6 +88,7 @@ func ReadTokenUsage(homes []string) (TokenUsageReport, error) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		return TokenUsageReport{}, fmt.Errorf("解析 Codex Token 记录失败: %w", err)
 	}
+	report.CostEstimate = estimateTokenCost(report.ModelUsage, time.Now())
 	if report.Daily == nil {
 		report.Daily = []DailyTokenUsage{}
 	}

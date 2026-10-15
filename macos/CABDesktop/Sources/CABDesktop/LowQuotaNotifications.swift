@@ -79,6 +79,13 @@ final class LowQuotaMonitor: NSObject, ObservableObject, UNUserNotificationCente
         completionHandler([.banner, .sound])
     }
 
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        Task { @MainActor in
+            openPublicResetNotification(response)
+            completionHandler()
+        }
+    }
+
     func setEnabled(_ enabled: Bool) {
         guard !updating else { return }
         updating = true

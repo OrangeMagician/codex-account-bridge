@@ -100,6 +100,23 @@ struct ManagementToolsView: View {
                                 .font(.caption).textSelection(.enabled)
                         }
                     }
+                    if let routes = report.routes {
+                        DisclosureGroup("进程账号归属") {
+                            Text("直接检查进程启动环境。后台服务不会随新连接账号自动切换；无法确认时保留未知状态。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            ForEach(routes) { route in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("PID \(route.pid) · \(route.role)").font(.caption.monospaced())
+                                    Text(route.verified ? (route.account ?? route.home ?? cabLocalized("未登记账号")) : cabLocalized("无法确认账号归属"))
+                                        .font(.callout).textSelection(.enabled)
+                                    if store.target == .remote && route.verified && !route.matchesNextConnection {
+                                        Label("此进程与新连接账号不同，已有任务继续使用原账号。", systemImage: "info.circle")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }.padding(.vertical, 4)
+                            }
+                        }
+                    }
                 } else if !model.busy { Text("点击重新诊断以检查当前目标。").foregroundStyle(.secondary) }
             }.padding(8)
         } label: { Label("诊断中心", systemImage: "stethoscope") }
@@ -208,6 +225,10 @@ struct ManagementToolsView: View {
                             .menuStyle(.borderlessButton).fixedSize().help("管理启动配置")
                         }
                         Text(profile.directory).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text((profile.preset ?? LaunchPreset()).summary).font(.caption).foregroundStyle(.secondary)
+                        if let notice = retirementNotice(profile.preset?.model ?? "") {
+                            Label(notice, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                        }
                     }
                     if profile.id != profiles.last?.id { Divider() }
                 }
@@ -222,6 +243,9 @@ struct ProjectProfileEditor: View {
     let accounts: [AccountStatus]
     let save: (ProjectLaunchProfile) throws -> Void
     @State private var error: String?
+    @StateObject private var models = CodexFeaturesStore()
+    var performsLiveChecks = true
+    private var preset: Binding<LaunchPreset> { Binding(get: { profile.preset ?? LaunchPreset() }, set: { profile.preset = $0 }) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -234,15 +258,36 @@ struct ProjectProfileEditor: View {
                     ForEach(accounts) { account in Text(account.name).tag(account.name) }
                 }
                 LabeledContent("运行位置", value: profile.remoteHost.isEmpty ? cabLocalized("这台 Mac") : profile.remoteHost)
+                LaunchPresetFields(preset: preset, catalog: models.catalog)
             }
+            HStack {
+                Text("未选择时沿用官方默认，启动前会重新核对模型目录。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if models.busy { ProgressView().controlSize(.small) }
+                Button("查询模型") { models.loadModels(account: profile.account, target: profile.target, host: profile.remoteHost) }.disabled(profile.account.isEmpty || models.busy)
+            }
+            if let issue = models.error { Text(issue).font(.caption).foregroundStyle(.orange) }
             if let error { Text(error).foregroundStyle(.orange) }
             HStack {
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }
                 Button("保存") {
-                    do { try save(profile); dismiss() } catch { self.error = error.localizedDescription }
+                    do {
+                        if !(profile.preset ?? LaunchPreset()).isDefault {
+                            guard let catalog = models.catalog else { throw BridgeError.commandFailed(cabLocalized("请先查询此账号的模型目录。")) }
+                            try (profile.preset ?? LaunchPreset()).validate(catalog: catalog)
+                        }
+                        try save(profile); dismiss()
+                    } catch { self.error = error.localizedDescription }
                 }.buttonStyle(.borderedProminent).disabled(profile.account.isEmpty)
             }
-        }.padding(24).frame(width: 520)
+        }.padding(24).frame(width: 560)
+        .task(id: profile.account + ":" + profile.remoteHost) {
+            models.changeContext(profile.account + ":" + profile.remoteHost)
+            if performsLiveChecks && !profile.account.isEmpty { models.loadModels(account: profile.account, target: profile.target, host: profile.remoteHost) }
+        }
+        .onChange(of: profile.account) { _ in profile.preset = nil }
+        .onDisappear { models.cancel() }
     }
 }

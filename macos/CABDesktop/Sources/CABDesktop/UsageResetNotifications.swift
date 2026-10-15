@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import UserNotifications
 
 let usageResetNotificationIdentifierPrefix = "cab.usage-reset."
@@ -74,6 +75,7 @@ enum UsageResetNotificationError: LocalizedError {
 }
 
 final class UsageResetNotificationService: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = UsageResetNotificationService()
     private static let maximumPendingNotificationCount = 60
     private let center: UNUserNotificationCenter
 
@@ -127,6 +129,27 @@ final class UsageResetNotificationService: NSObject, UNUserNotificationCenterDel
         return retainedCount + scheduledPlans.count
     }
 
+    func sendPublicResetNotification(_ record: PublicResetRecord) async throws {
+        let content = UNMutableNotificationContent()
+        content.title = record.title
+        let date = record.date?.formatted(date: .abbreviated, time: .shortened) ?? cabLocalized("时间未知")
+        content.body = "\(date) · \(record.plans)\n\(cabLocalized("来源：Did Codex Reset，公开信号仅供参考。请刷新账号额度确认。"))"
+        content.userInfo = ["cabPublicResetURL": record.sourceURL?.absoluteString ?? "https://didcodexreset.com/"]
+        content.sound = .default
+        try await center.add(UNNotificationRequest(identifier: "cab.public-reset." + record.id, content: content, trigger: nil))
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Task { @MainActor in
+            openPublicResetNotification(response)
+            completionHandler()
+        }
+    }
+
     func cancelScheduledNotifications() async {
         let existing = await center.pendingNotificationRequests()
         let existingIDs = usageResetNotificationIdentifiersToReplace(
@@ -143,4 +166,21 @@ final class UsageResetNotificationService: NSObject, UNUserNotificationCenterDel
     ) {
         completionHandler([.banner, .sound])
     }
+}
+
+func publicResetNotificationURL(identifier: String, value: String?) -> URL? {
+    guard identifier.hasPrefix("cab.public-reset."), let value, let url = URL(string: value),
+          url.scheme == "https", url.user == nil, url.password == nil,
+          ["x.com", "twitter.com", "didcodexreset.com"].contains(url.host?.lowercased() ?? "") else { return nil }
+    return url
+}
+
+@MainActor
+func openPublicResetNotification(_ response: UNNotificationResponse) {
+    guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+          let url = publicResetNotificationURL(
+            identifier: response.notification.request.identifier,
+            value: response.notification.request.content.userInfo["cabPublicResetURL"] as? String
+          ) else { return }
+    NSWorkspace.shared.open(url)
 }

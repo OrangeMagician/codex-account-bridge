@@ -25,6 +25,8 @@ struct ContentView: View {
                     targetHeader
                     if store.showingGlobalSettings {
                         globalSettingsPage
+                    } else if store.showingFeatures {
+                        CodexFeaturesView(model: store.codexFeatures, section: store.sidebarSelection, performsLiveChecks: performsLiveChecks)
                     } else if store.showingTools {
                         ManagementToolsView(model: store.tools, section: store.sidebarSelection)
                     } else {
@@ -253,6 +255,9 @@ struct ContentView: View {
                         .tag(CABStore.globalSettingsSelection)
                     Label("诊断与备份", systemImage: "stethoscope").tag("cab.tools")
                     Label("项目启动", systemImage: "folder.badge.gearshape").tag("cab.projects")
+                    Label("模型与速度", systemImage: "slider.horizontal.3").tag("cab.models")
+                    Label("最近任务", systemImage: "text.bubble").tag("cab.tasks")
+                    Label("CAB Worktree", systemImage: "arrow.triangle.branch").tag("cab.worktrees")
                     Label("切换记录", systemImage: "clock.arrow.circlepath").tag("cab.history")
                 }
                 Section("账号") {
@@ -842,7 +847,7 @@ struct ContentView: View {
         let details = request.processes.map { process in
             "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
         }.joined(separator: "\n")
-        return String(format: cabLocalized("以下远程任务将继续运行：\n%@\n\n新连接将使用 %@。现有连接和任务保持原账号，CAB 不会关闭或强制重启这些进程。请等任务完成后重新连接。"), details, request.accountName)
+        return String(format: cabLocalized("以下远程任务将继续运行：\n%@\n\n新连接将使用 %@。现有连接和任务保持原账号，CAB 不会关闭或强制重启这些进程。请等任务完成后重新连接；已开启共享的会话会在切换和新连接启动前校正到最新历史。"), details, request.accountName)
     }
 
     private func legacyImportProcessMessage(_ processes: [CodexProcessStatus]) -> String {

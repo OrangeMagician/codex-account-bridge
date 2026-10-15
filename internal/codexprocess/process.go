@@ -43,7 +43,10 @@ func List() ([]Process, error) {
 		if err != nil {
 			continue
 		}
-		process, ok := inspect(pid)
+		process, ok, err := inspect(pid)
+		if err != nil {
+			return nil, err
+		}
 		if ok {
 			result = append(result, process)
 		}
@@ -77,17 +80,9 @@ func StopWithOptions(pids []int, options StopOptions) error {
 		if filepath.Base(process.Executable) != "codex" {
 			return fmt.Errorf("PID %d is no longer an official Codex process", pid)
 		}
-		latest, ok := inspect(pid)
-		if !ok || latest.UID != os.Getuid() || !sameSignalTarget(process, latest) {
-			return fmt.Errorf("PID %d changed identity before it could be stopped", pid)
-		}
 		targets[pid] = process
-		target, err := os.FindProcess(pid)
-		if err != nil {
+		if err := signalChecked(process, syscall.SIGTERM, inspect, signalPID); err != nil {
 			return err
-		}
-		if err := target.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return fmt.Errorf("stop Codex PID %d: %w", pid, err)
 		}
 	}
 	exited, err := waitForExit(targets, 5*time.Second)
@@ -109,19 +104,8 @@ func StopWithOptions(pids []int, options StopOptions) error {
 		if !ok || !sameIdentity(original, process) {
 			continue
 		}
-		latest, ok := inspect(process.PID)
-		if !ok {
-			continue
-		}
-		if !sameSignalTarget(original, latest) {
-			return fmt.Errorf("PID %d changed identity before it could be force stopped", process.PID)
-		}
-		target, err := os.FindProcess(process.PID)
-		if err != nil {
+		if err := signalChecked(original, syscall.SIGKILL, inspect, signalPID); err != nil {
 			return err
-		}
-		if err := target.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return fmt.Errorf("force stop Codex PID %d: %w", process.PID, err)
 		}
 	}
 	exited, err = waitForExit(targets, 2*time.Second)
@@ -163,38 +147,71 @@ func sameIdentity(left, right Process) bool {
 		left.Executable == right.Executable
 }
 
-func sameSignalTarget(left, right Process) bool {
-	return sameIdentity(left, right) && left.ParentPID == right.ParentPID
+func signalPID(pid int, signal syscall.Signal) error {
+	target, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return target.Signal(signal)
 }
 
-func inspect(pid int) (Process, bool) {
+func signalChecked(original Process, signal syscall.Signal, inspectProcess func(int) (Process, bool, error), sendSignal func(int, syscall.Signal) error) error {
+	latest, ok, err := inspectProcess(original.PID)
+	if err != nil {
+		return err
+	}
+	// Stopping another target may already have made this process exit.
+	if !ok {
+		return nil
+	}
+	// A surviving child can be reparented when its parent exits. ParentPID is
+	// not part of its identity; retain the UID, start time and executable checks.
+	if latest.UID != os.Getuid() || !sameIdentity(original, latest) {
+		return fmt.Errorf("PID %d changed identity before it could be stopped", original.PID)
+	}
+	if err := sendSignal(original.PID, signal); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("send %s to Codex PID %d: %w", signal, original.PID, err)
+	}
+	return nil
+}
+
+func inspect(pid int) (Process, bool, error) {
 	ps, err := systemTool("ps")
 	if err != nil {
-		return Process{}, false
+		return Process{}, false, err
 	}
-	out, err := exec.Command(ps, "-p", strconv.Itoa(pid), "-o", "ppid=,etime=,tty=,stat=,comm=").Output()
+	// Read the fingerprint and process details together to avoid combining
+	// observations from different process lifetimes.
+	out, err := exec.Command(ps, "-p", strconv.Itoa(pid), "-o", "uid=,lstart=,ppid=,etime=,tty=,stat=,comm=").Output()
 	if err != nil {
-		return Process{}, false
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(strings.TrimSpace(string(out))) == 0 && len(exitErr.Stderr) == 0 {
+			return Process{}, false, nil
+		}
+		return Process{}, false, fmt.Errorf("inspect PID %d: %w", pid, err)
 	}
-	process, ok := parsePS(pid, string(out))
-	if !ok {
-		return Process{}, false
-	}
-	fingerprint, err := exec.Command(ps, "-p", strconv.Itoa(pid), "-o", "uid=,lstart=").Output()
-	if err != nil {
-		return Process{}, false
-	}
-	fields := strings.Fields(string(fingerprint))
-	if len(fields) < 6 {
-		return Process{}, false
+	return parseInspection(pid, string(out))
+}
+
+func parseInspection(pid int, output string) (Process, bool, error) {
+	fields := strings.Fields(output)
+	if len(fields) < 11 {
+		return Process{}, false, fmt.Errorf("inspect PID %d: incomplete ps output", pid)
 	}
 	uid, err := strconv.Atoi(fields[0])
-	if err != nil || uid != os.Getuid() {
-		return Process{}, false
+	if err != nil {
+		return Process{}, false, fmt.Errorf("inspect PID %d: invalid UID: %w", pid, err)
+	}
+	if uid != os.Getuid() {
+		return Process{}, false, nil
+	}
+	process, ok := parsePS(pid, strings.Join(fields[6:], " "))
+	if !ok {
+		return Process{}, false, nil
 	}
 	process.UID = uid
-	process.StartedAt = strings.Join(fields[1:], " ")
-	return process, true
+	process.StartedAt = strings.Join(fields[1:6], " ")
+	return process, true, nil
 }
 
 func systemTool(name string) (string, error) {

@@ -141,3 +141,45 @@ class TokenReaderTests(unittest.TestCase):
             self.assertNotIn('private_message', str(values))
         finally:
             connection.close()
+
+    def test_model_switch_unknown_and_cached_append_keep_event_attribution(self):
+        context = lambda model: {"type": "turn_context", "payload": {"model": model, "private": "never-cache-this"}}
+        events = [usage('2026-09-20', 100), context('gpt-6-sol'), usage('2026-09-21', 150, 20)]
+        db = self.home('one', [('a', events)])
+        cache = self.root / 'cache' / 'token-cache-v1.sqlite'
+        first = read_report([str(db)], cache)
+        self.assertEqual([(r['model'], r['total_tokens']) for r in first['model_usage']], [('', 100), ('gpt-6-sol', 50)])
+        path = db.parent / 'sessions/rollout-a.jsonl'
+        with path.open('a') as stream:
+            for event in [usage('2026-09-22', 180, 30), context('gpt-6-luna'), usage('2026-09-23', 200, 30)]:
+                stream.write(json.dumps(event) + '\n')
+        report = read_report([str(db)], cache)
+        self.assertEqual([(r['model'], r['total_tokens']) for r in report['model_usage']], [('', 100), ('gpt-6-sol', 50), ('gpt-6-sol', 30), ('gpt-6-luna', 20)])
+        self.assertEqual(report['model_usage'][1]['input_tokens'], 50)
+        self.assertEqual(report['model_usage'][1]['cached_input_tokens'], 20)
+        self.assertEqual(read_report([str(db)], cache)['scanned_bytes'], 0)
+        with sqlite3.connect(cache) as conn:
+            self.assertNotIn('never-cache-this', str(conn.execute('select state from events').fetchall()))
+
+    def test_model_cost_buckets_deduplicate_shared_history_and_clear_missing_model(self):
+        events = [{"type": "turn_context", "payload": {"model": "gpt-6-sol"}}, usage('2026-09-20', 100),
+                  {"type": "turn_context", "payload": {}}, usage('2026-09-21', 150)]
+        one = self.home('one', [('a', events)])
+        two = self.home('two', [('copy', events)])
+        report = read_report([str(one), str(two)])
+        self.assertEqual(sum(row['total_tokens'] for row in report['model_usage']), 150)
+        self.assertEqual(report['model_usage'][1]['model'], '')
+
+    def test_old_cache_is_rebuilt_with_model_metadata(self):
+        db = self.home('one', [('a', [{"type":"turn_context", "payload":{"model":"gpt-6-sol"}}, usage('2026-09-20',100)])])
+        cache = self.root / 'cache' / 'token-cache-v1.sqlite'
+        read_report([str(db)], cache)
+        with sqlite3.connect(cache) as conn:
+            path, text = conn.execute('select path, state from events').fetchone()
+            state = json.loads(text)
+            state['version'] = 1
+            state['events'] = [event[:3] for event in state['events']]
+            conn.execute('update events set state=? where path=?', (json.dumps(state), path))
+        report = read_report([str(db)], cache)
+        self.assertGreater(report['scanned_bytes'], 0)
+        self.assertEqual(report['model_usage'][0]['model'], 'gpt-6-sol')

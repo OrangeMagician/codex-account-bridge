@@ -85,6 +85,12 @@ struct TokenUsageDetails: View {
                     metric("输出", value: TokenActivityData.formatted(output), exact: output)
                 }
             }
+            if let cost = report.costEstimate {
+                TokenCostView(estimate: cost)
+            } else {
+                Text(cabLocalized("目标端尚未提供金额估算，请更新 CAB 后刷新。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Text("Token 活动").font(.headline)
                 Spacer()
