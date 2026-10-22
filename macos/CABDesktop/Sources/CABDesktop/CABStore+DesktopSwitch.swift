@@ -62,6 +62,7 @@ extension CABStore {
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
             var continuitySync: CodexContinuitySyncResult?
+            var threadMetadataSync: CodexContinuitySyncResult?
             var threadCatalogSync: CodexThreadCatalogSyncResult?
             var threadIndexBackup: URL?
             var syncWarnings: [DesktopSwitchWarning] = []
@@ -108,13 +109,11 @@ extension CABStore {
                             appendOutput("已同步 \(workspaceSync.projectCount) 个桌面项目、会话归属及未发送草稿\(backupMessage)。\n")
                         }
                     } catch {
-                        syncWarnings.append(desktopSwitchWarning(
-                            stage: "桌面项目与草稿",
-                            sourcePath: fallbackHome,
-                            targetPath: account.home,
-                            error: error
-                        ))
+                        throw BridgeError.commandFailed(cabLocalized("无法完整保留项目、非项目会话及置顶，已停止切换。") + "\n" + error.localizedDescription)
                     }
+                    threadMetadataSync = try service.synchronizeCodexThreadMetadata(
+                        sourceHome: fallbackHome, targetHome: account.home, knownHomes: status.accounts.map(\.home)
+                    )
                     do {
                         continuitySync = try service.synchronizeCodexContinuityState(
                             sourceHome: fallbackHome,
@@ -142,12 +141,7 @@ extension CABStore {
                             appendOutput("已合并 \(threadCatalogSync.rowCount) 条桌面会话目录记录，原目录已备份为 \(threadCatalogSync.backupURL.lastPathComponent)。\n")
                         }
                     } catch {
-                        syncWarnings.append(desktopSwitchWarning(
-                            stage: "桌面会话目录",
-                            sourcePath: fallbackHome,
-                            targetPath: account.home,
-                            error: error
-                        ))
+                        throw BridgeError.commandFailed(cabLocalized("无法完整保留会话目录及名称，已停止切换。") + "\n" + error.localizedDescription)
                     }
                 }
                 if preserveSessionsOnDesktopSwitch || sessionModeChanged {
@@ -166,7 +160,7 @@ extension CABStore {
                     }
                 }
                 if let id = switchRecordID {
-                    let paths = [workspaceSync?.backupURL?.path, threadCatalogSync?.backupURL.path, threadIndexBackup?.path].compactMap { $0 } + (continuitySync?.backups.compactMap { $0.backupURL?.path } ?? [])
+                    let paths = [workspaceSync?.backupURL?.path, threadCatalogSync?.backupURL.path, threadIndexBackup?.path].compactMap { $0 } + (continuitySync?.backups.compactMap { $0.backupURL?.path } ?? []) + (threadMetadataSync?.backups.compactMap { $0.backupURL?.path } ?? [])
                     tools.record(id, stage: "同步与备份阶段结束", backups: paths)
                     for warning in syncWarnings { tools.record(id, stage: cabLocalized("未同步") + " · " + cabLocalized(warning.stage)) }
                 }
@@ -210,6 +204,13 @@ extension CABStore {
                             appendOutput("切换未完成，已恢复目标账号原有的消息、记忆、目标和工作区文件。\n")
                         } catch {
                             message += "\n同时无法自动恢复目标账号的完整工作区状态：\(error.localizedDescription)"
+                        }
+                    }
+                    if let threadMetadataSync {
+                        do {
+                            try service.restoreCodexContinuityState(threadMetadataSync)
+                        } catch {
+                            message += "\n同时无法自动恢复目标账号的名称、置顶及会话归属：\(error.localizedDescription)"
                         }
                     }
                     if let workspaceSync {

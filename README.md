@@ -242,7 +242,7 @@ cab sessions disable --confirm-codex-stopped
 
 CAB stops on conflicting session files instead of overwriting either side. Timestamped backups are retained for recovery.
 
-With shared history enabled, CAB repairs existing thread indexes before account selection and before launching Codex. For duplicate rollout files with the same thread ID, the last complete event timestamp selects the newest history; all original files remain intact. Only rollout pointers, nondecreasing update timestamps, and missing display names are changed. Account-specific policy fields and unrelated tables stay untouched. New thread rows and their security defaults remain the responsibility of official Codex indexing.
+With shared history enabled, CAB repairs existing thread indexes before account selection and before launching Codex. For duplicate rollout files with the same thread ID, the last complete event timestamp selects the newest history; all original files remain intact. CAB also retains projectless threads, pins, section membership and useful display names. Empty or working-directory titles cannot replace a useful name. Missing rows are imported only from an existing official index and a verified shared rollout, retaining that thread’s original settings; existing approval, sandbox, archive and runtime fields are never overwritten. The outgoing account supplies explicit pin/unpin and membership edits. Desktop switches additionally retain legacy pins, per-host pin order and local/remote sidebar membership. Unrelated account tables and trust settings stay untouched.
 
 Repair already stale indexes without stopping running tasks:
 

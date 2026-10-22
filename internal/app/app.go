@@ -48,7 +48,7 @@ func Run(argv []string, version string) (int, error) {
 			return 1, err
 		}
 		defer unlock()
-		if _, err := session.RepairIndexes(paths, cfg); err != nil {
+		if _, err := session.RepairIndexesFrom(paths, cfg, account.Home); err != nil {
 			return 1, err
 		}
 		return codex.Run(account.Home, argv[1:])
@@ -821,7 +821,12 @@ func useCommand(paths config.Paths, cfg *config.Config, args []string, remote bo
 				return err
 			}
 			defer unlock()
-			if _, err := session.RepairIndexes(paths, *latest); err != nil {
+			sourceName := latest.DefaultAccount
+			if remote {
+				sourceName = latest.RemoteAccount
+			}
+			source, _ := latest.Find(sourceName)
+			if _, err := session.RepairIndexesFrom(paths, *latest, source.Home); err != nil {
 				return err
 			}
 		}
@@ -953,7 +958,7 @@ func runCommand(paths config.Paths, cfg config.Config, args []string, appServer 
 		return 1, err
 	}
 	defer unlock()
-	if _, err := session.RepairIndexes(paths, cfg); err != nil {
+	if _, err := session.RepairIndexesFrom(paths, cfg, account.Home); err != nil {
 		return 1, err
 	}
 	return codex.Run(account.Home, commandArgs)

@@ -75,6 +75,78 @@ class IndexRepairTests(unittest.TestCase):
         self.assertEqual([p.read_bytes() for p in (self.old, self.new)], originals)
         self.assertEqual(sync.repair(self.request), {"updated": 0, "backups": []})
 
+    def test_variable_timestamp_precision_on_older_system_python(self):
+        base = "2026-09-20T00:00:00"
+        whole = sync.timestamp(base + "Z")
+        for digits in ("1", "12", "123", "1234", "12345", "123456", "123456789"):
+            self.assertEqual(sync.timestamp(base + "." + digits + "Z"), whole + int((digits + "000")[:3]))
+
+    def add_metadata(self):
+        for home in self.homes:
+            with sqlite3.connect(home / "state_5.sqlite") as db:
+                for definition in ("title TEXT", "cwd TEXT", "is_pinned INTEGER DEFAULT 0", "project_id TEXT", "thread_section_id TEXT", "section_position INTEGER", "section_entered_at_ms INTEGER"):
+                    db.execute("ALTER TABLE threads ADD COLUMN " + definition)
+                db.execute("UPDATE threads SET cwd='/home/ubuntu/project', title='/home/ubuntu/project'")
+
+    def test_projectless_pinned_thread_missing_in_other_account_is_imported(self):
+        self.add_metadata()
+        with sqlite3.connect(self.homes[0] / "state_5.sqlite") as db:
+            db.execute("UPDATE threads SET name='Keep this task', title='Useful title', is_pinned=1")
+        with sqlite3.connect(self.homes[1] / "state_5.sqlite") as db:
+            db.execute("DELETE FROM threads")
+        report = sync.repair(self.request)
+        row = self.row(self.homes[1])
+        self.assertEqual(row["name"], "Keep this task")
+        self.assertEqual(row["title"], "Useful title")
+        self.assertEqual(row["is_pinned"], 1)
+        self.assertIsNone(row["project_id"])
+        self.assertEqual(row["rollout_path"], str(self.new))
+        self.assertTrue(report["backups"])
+        self.assertEqual(sync.repair(self.request)["updated"], 0)
+
+    def test_path_titles_and_existing_pins_are_repaired_without_policy_changes(self):
+        self.add_metadata()
+        with sqlite3.connect(self.homes[0] / "state_5.sqlite") as db:
+            db.execute("UPDATE threads SET name='Restored name', title='Restored title', is_pinned=1")
+        with sqlite3.connect(self.homes[1] / "state_5.sqlite") as db:
+            db.execute("UPDATE threads SET name='/home/ubuntu/project/'")
+        sync.repair(self.request)
+        row = self.row(self.homes[1])
+        self.assertEqual((row["name"], row["title"], row["is_pinned"]), ("Restored name", "Restored title", 1))
+        self.assertEqual(row["sandbox_policy"], "policy-1")
+        self.assertEqual(row["approval_mode"], "approval-1")
+        self.assertEqual(row["archived"], 1)
+
+    def test_outgoing_account_preserves_explicit_unpin_and_projectless_membership(self):
+        self.add_metadata()
+        self.request["source_home"] = str(self.homes[0])
+        with sqlite3.connect(self.homes[1] / "state_5.sqlite") as db:
+            db.execute("UPDATE threads SET is_pinned=1, project_id='stale-project'")
+        sync.repair(self.request)
+        self.assertEqual(self.row(self.homes[1])["is_pinned"], 0)
+        self.assertIsNone(self.row(self.homes[1])["project_id"])
+        # After switching back the explicit edit must remain stable.
+        self.request["source_home"] = str(self.homes[1])
+        self.assertEqual(sync.repair(self.request)["updated"], 0)
+
+    def test_saved_session_name_recovers_when_all_account_names_are_paths(self):
+        self.add_metadata()
+        for home in self.homes:
+            with sqlite3.connect(home / "state_5.sqlite") as db:
+                db.execute("UPDATE threads SET name=cwd")
+        (self.homes[0] / "session_index.jsonl").write_text(json.dumps({"id": "thread-id", "thread_name": "Original saved name", "updated_at": "2026-09-20T00:00:00.729974891Z"}) + "\n")
+        sync.repair(self.request)
+        for home in self.homes:
+            self.assertEqual(self.row(home)["name"], "Original saved name")
+        self.assertEqual(sync.repair(self.request)["updated"], 0)
+
+    def test_missing_thread_without_shared_rollout_is_not_imported(self):
+        with sqlite3.connect(self.homes[0] / "state_5.sqlite") as db:
+            db.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?)", ("not-shared", "/outside", 1, None, "Private", "policy", "approval", 0))
+        sync.repair(self.request)
+        with sqlite3.connect(self.homes[1] / "state_5.sqlite") as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM threads WHERE id='not-shared'").fetchone()[0], 0)
+
     def test_online_backup_includes_live_wal_and_can_restore_prior_pointer(self):
         dbpath = self.homes[1] / "state_5.sqlite"
         writer = sqlite3.connect(dbpath)

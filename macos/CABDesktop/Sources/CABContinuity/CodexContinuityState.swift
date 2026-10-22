@@ -81,6 +81,19 @@ public enum CodexContinuityState {
         return accumulator.result
     }
 
+    // Preserve sidebar-critical state separately so an optional attachment or
+    // memory copy failure cannot roll back names, pins or projectless threads.
+    public static func synchronizeThreadMetadata(
+        sourceHome: String, targetHome: String, knownHomes: [String],
+        fileManager: FileManager = .default
+    ) throws -> CodexContinuitySyncResult {
+        let target = URL(fileURLWithPath: targetHome, isDirectory: true).standardizedFileURL
+        let homes = preferredSourceHomes(sourceHome: sourceHome, targetHome: targetHome, knownHomes: knownHomes)
+        let backup = try mergeDatabase(stateSpecification(), sourceHomes: homes, targetHomeURL: target,
+            stamp: Int(Date().timeIntervalSince1970 * 1_000), fileManager: fileManager)
+        return CodexContinuitySyncResult(backups: backup.map { [$0] } ?? [], fileCount: 0, databaseCount: backup == nil ? 0 : 1)
+    }
+
     private static func synchronizeDirectories(
         sourceHomes: [String], targetHomeURL: URL, stamp: Int, fileManager: FileManager,
         accumulator: inout SyncAccumulator
@@ -262,7 +275,7 @@ public enum CodexContinuityState {
             sql += " BEGIN IMMEDIATE;"
             for index in sources.indices {
                 let sourceSpecification = try compatibleSpecification(specification, at: sources[index])
-                for statement in mergeStatements(for: specification, source: sourceSpecification, alias: "cab_source_\(index)") {
+                for statement in mergeStatements(for: specification, source: sourceSpecification, alias: "cab_source_\(index)", preferred: index == sources.count - 1 && sources[index].deletingLastPathComponent().path == sourceHomes.last) {
                     sql += " \(statement);"
                 }
             }
@@ -280,7 +293,7 @@ public enum CodexContinuityState {
         }
     }
 
-    private static func mergeStatements(for specification: DatabaseSpecification, source: DatabaseSpecification, alias: String) -> [String] {
+    private static func mergeStatements(for specification: DatabaseSpecification, source: DatabaseSpecification, alias: String, preferred: Bool) -> [String] {
         func copy(_ table: String, conflict: String = "REPLACE") -> String {
             let columns = specification.requiredColumns[table] ?? []
             let list = columns.joined(separator: ", ")
@@ -316,7 +329,7 @@ public enum CodexContinuityState {
                 copy("projects", conflict: "IGNORE"),
                 copy("project_roots"),
                 copy("thread_sections", conflict: "IGNORE"),
-                copy("threads", conflict: "IGNORE"),
+                mergeThreads(source: source, alias: alias, preferred: preferred),
                 copy("thread_dynamic_tools"),
                 copy(specification.requiredColumns["thread_attachments"] != nil ? "thread_attachments" : "thread_artifacts"),
                 copy("thread_spawn_edges"),
@@ -324,6 +337,30 @@ public enum CodexContinuityState {
         default:
             return []
         }
+    }
+
+    // Existing thread policies stay local. Only portable presentation metadata is
+    // updated on conflict; absent rows retain their official per-thread settings.
+    private static func mergeThreads(source: DatabaseSpecification, alias: String, preferred: Bool) -> String {
+        let columns = source.requiredColumns["threads"]!.joined(separator: ", ")
+        let current = "threads"
+        let newer = "coalesce(excluded.updated_at_ms, excluded.updated_at * 1000, 0) \(preferred ? ">=" : ">") coalesce(threads.updated_at_ms, threads.updated_at * 1000, 0)"
+        func useful(_ row: String, _ column: String) -> String {
+            "(trim(coalesce(\(row).\(column), '')) <> '' AND rtrim(trim(\(row).\(column)), '/') <> rtrim(trim(coalesce(\(row).cwd, '')), '/'))"
+        }
+        var updates: [String] = []
+        for column in ["name", "title"] {
+            updates.append("\(column) = CASE WHEN \(useful("excluded", column)) AND (NOT \(useful(current, column)) OR \(newer)) THEN excluded.\(column) ELSE threads.\(column) END")
+        }
+        // A stale destination must not discard a pin. Section/project membership
+        // follows newer metadata, including an explicit projectless NULL.
+        updates.append(preferred ? "is_pinned = excluded.is_pinned" : "is_pinned = max(coalesce(threads.is_pinned, 0), coalesce(excluded.is_pinned, 0))")
+        for column in ["project_id", "thread_section_id", "section_position", "section_entered_at_ms"] {
+            updates.append(preferred
+                ? "\(column) = excluded.\(column)"
+                : "\(column) = CASE WHEN \(newer) THEN excluded.\(column) ELSE threads.\(column) END")
+        }
+        return "INSERT INTO main.threads (\(columns)) SELECT \(columns) FROM \(alias).threads WHERE 1 ON CONFLICT(id) DO UPDATE SET \(updates.joined(separator: ", "))"
     }
 
     // Codex renamed artifacts to attachments without changing the remaining
@@ -455,10 +492,35 @@ public enum CodexContinuityState {
                 lines.append(line)
             }
         }
+        if targetURL.lastPathComponent == "session_index.jsonl" {
+            lines = try mergeSessionNames(lines)
+        }
         let encoded = Data((lines.joined(separator: "\n") + (lines.isEmpty ? "" : "\n")).utf8)
         try fileManager.createDirectory(at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try encoded.write(to: targetURL, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetURL.path)
+    }
+
+    // session_index is keyed metadata, not an append-only conversation. Keeping
+    // every conflicting line can let an older account's last line erase a name.
+    private static func mergeSessionNames(_ lines: [String]) throws -> [String] {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let seconds = ISO8601DateFormatter()
+        var names: [String: (line: String, date: Date)] = [:]
+        for line in lines {
+            guard let row = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let id = row["id"] as? String,
+                  let name = row["thread_name"] as? String,
+                  let timestamp = row["updated_at"] as? String,
+                  let date = fractional.date(from: timestamp) ?? seconds.date(from: timestamp) else {
+                throw CodexContinuityError.failure("session_index.jsonl 包含不兼容的会话名称记录，已停止同步。")
+            }
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            if let current = names[id], current.date > date { continue }
+            names[id] = (line, date)
+        }
+        return names.keys.sorted().compactMap { names[$0]?.line }
     }
 
     private static func backupItem(_ targetURL: URL, stamp: Int, fileManager: FileManager) throws -> CodexContinuityBackup {

@@ -44,8 +44,8 @@ for label,date in [('old','2026-09-04T00:00:00Z'),('new','2026-09-19T00:00:00Z')
 for name in ['one','two']:
  home=root/'accounts'/name; home.mkdir(parents=True); (home/'sessions').symlink_to(shared)
  with sqlite3.connect(home/'state_5.sqlite') as db:
-  db.execute('create table threads(id text primary key,rollout_path text,updated_at integer)')
-  db.execute('insert into threads values(?,?,?)',('thread',str(shared/('rollout-'+('new' if name=='one' else 'old')+'-thread.jsonl')),1))
+  db.execute('create table threads(id text primary key,rollout_path text,updated_at integer,name text,is_pinned integer,project_id text,cwd text,title text)')
+  db.execute('insert into threads values(?,?,?,?,?,?,?,?)',('thread',str(shared/('rollout-'+('new' if name=='one' else 'old')+'-thread.jsonl')),1,'Retained task' if name=='one' else '/project',1 if name=='one' else 0,None,'/project','Useful title'))
 `)
 	if err := config.EnsureConfigDir(paths); err != nil {
 		t.Fatal(err)
@@ -75,6 +75,8 @@ root=pathlib.Path(sys.argv[1])
 with sqlite3.connect(root/'accounts/two/state_5.sqlite') as db:
  path=db.execute('select rollout_path from threads').fetchone()[0]
  assert pathlib.Path(path).resolve()==(root/'shared/sessions/rollout-new-thread.jsonl').resolve(),path
+ metadata=db.execute('select name,is_pinned,project_id from threads').fetchone()
+ assert metadata==('Retained task',1,None),metadata
 `)
 	}
 	// Refuse a switch before changing the selected account if repair cannot run.

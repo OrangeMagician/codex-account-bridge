@@ -91,7 +91,7 @@ enum CodexThreadCatalogState {
         let current = "local_thread_catalog"
         let newer = "(excluded.source_updated_at IS NOT NULL AND (\(current).source_updated_at IS NULL OR excluded.source_updated_at > \(current).source_updated_at))"
         func usefulTitle(_ row: String) -> String {
-            "(trim(coalesce(\(row).display_title, '')) <> '' AND trim(\(row).display_title) <> trim(coalesce(\(row).cwd, '')))"
+            "(trim(coalesce(\(row).display_title, '')) <> '' AND rtrim(trim(\(row).display_title), '/') <> rtrim(trim(coalesce(\(row).cwd, '')), '/'))"
         }
         let takeTitle = "(\(usefulTitle("excluded")) AND (NOT \(usefulTitle(current)) OR \(newer)))"
         var updates = [

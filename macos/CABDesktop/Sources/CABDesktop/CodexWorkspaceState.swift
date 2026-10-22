@@ -21,6 +21,8 @@ enum CodexWorkspaceState {
         "remote-connection-analytics-id-by-host-id",
         "remote-connection-auto-connect-by-host-id",
         "thread-project-assignments",
+        "thread-project-membership-host-ids",
+        "app-server-migrated-pinned-thread-ids-by-host",
         "thread-workspace-root-hints",
         "thread-projectless-output-directories",
         "thread-writable-roots",
@@ -31,6 +33,7 @@ enum CodexWorkspaceState {
         "electron-saved-workspace-roots",
         "project-order",
         "projectless-thread-ids",
+        "pinned-thread-ids",
     ]
     private static let entityArrayKeys = [
         "codex-managed-remote-connections": "hostId",
@@ -48,6 +51,10 @@ enum CodexWorkspaceState {
     ]
     private static let portableAtomKeys = Set([
         "chatgpt-sidebar-state-v1",
+        "chatgpt-sidebar-state-v2",
+        "app-server-pinned-thread-order-v1",
+        "sidebar-collapsed-sections-v1",
+        "sidebar-project-environment-mapping-v3",
         "client-thread-bindings-v1",
         "composer-auto-context-enabled",
         "composer-prompt-drafts-v1",
@@ -96,7 +103,9 @@ enum CodexWorkspaceState {
             var merged: [String: Any] = [:]
             for state in states.reversed() {
                 guard let object = state[key] as? [String: Any] else { continue }
-                merged.merge(object) { _, preferred in preferred }
+                for (entry, value) in object {
+                    merged[entry] = mergePortableValue(current: merged[entry], preferred: value)
+                }
             }
             if !merged.isEmpty || targetState[key] != nil { targetState[key] = merged }
         }

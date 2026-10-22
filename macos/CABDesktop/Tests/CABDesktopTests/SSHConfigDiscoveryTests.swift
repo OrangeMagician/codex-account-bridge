@@ -397,19 +397,10 @@ struct SSHConfigDiscoveryTests {
                 defer { try? FileManager.default.removeItem(at: root) }
                 let source = root.appendingPathComponent("source")
                 let target = root.appendingPathComponent("target")
-                let schema = """
-                CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, metadata TEXT, position TEXT, created_at_ms TEXT, updated_at_ms TEXT);
-                CREATE TABLE project_roots (project_id TEXT PRIMARY KEY, position TEXT, path TEXT);
-                CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT, appearance TEXT);
-                CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, created_at TEXT, updated_at TEXT, source TEXT, model_provider TEXT, cwd TEXT, title TEXT, sandbox_policy TEXT, approval_mode TEXT, tokens_used TEXT, has_user_event TEXT, archived TEXT, archived_at TEXT, git_sha TEXT, git_branch TEXT, git_origin_url TEXT, cli_version TEXT, first_user_message TEXT, agent_nickname TEXT, agent_role TEXT, memory_mode TEXT, model TEXT, reasoning_effort TEXT, agent_path TEXT, created_at_ms TEXT, updated_at_ms TEXT, thread_source TEXT, preview TEXT, recency_at TEXT, recency_at_ms TEXT, history_mode TEXT, name TEXT, is_pinned TEXT, thread_section_id TEXT, section_position TEXT, section_entered_at_ms TEXT, project_id TEXT);
-                CREATE TABLE thread_dynamic_tools (thread_id TEXT PRIMARY KEY, position TEXT, name TEXT, description TEXT, input_schema TEXT, defer_loading TEXT, namespace TEXT);
-                CREATE TABLE thread_artifacts (id TEXT PRIMARY KEY, thread_id TEXT, artifact_type TEXT, identity_key TEXT, payload TEXT, created_at TEXT);
-                CREATE TABLE thread_spawn_edges (parent_thread_id TEXT PRIMARY KEY, child_thread_id TEXT, status TEXT);
-                """
+
                 for (home, modern) in [(source, sourceNew), (target, targetNew)] {
                     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-                    let compatible = modern ? schema.replacingOccurrences(of: "thread_artifacts", with: "thread_attachments").replacingOccurrences(of: "artifact_type", with: "attachment_type") : schema
-                    try runSQLiteForTest(home.appendingPathComponent("state_5.sqlite"), sql: compatible)
+                    try createStateDatabaseForTest(home.appendingPathComponent("state_5.sqlite"), modern: modern)
                 }
                 let sourceTable = sourceNew ? "thread_attachments" : "thread_artifacts"
                 let targetTable = targetNew ? "thread_attachments" : "thread_artifacts"
@@ -423,6 +414,82 @@ struct SSHConfigDiscoveryTests {
                 #expect(try sqliteScalarForTest(target.appendingPathComponent("state_5.sqlite"), sql: "SELECT count(*) FROM \(targetTable);") == "1")
             }
         }
+    }
+
+    @Test func preservesProjectlessPinsAndNamesAcrossAccountRoundTrip() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        for home in [source, target] {
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+            try createStateDatabaseForTest(home.appendingPathComponent("state_5.sqlite"))
+        }
+        let src = source.appendingPathComponent("state_5.sqlite")
+        let dst = target.appendingPathComponent("state_5.sqlite")
+        try runSQLiteForTest(src, sql: """
+        INSERT INTO threads (id, cwd, name, title, updated_at, is_pinned, sandbox_policy, approval_mode) VALUES
+        ('shared','/project','Retained name','Useful title',20,1,'source-policy','source-approval'),
+        ('source-only','/project','Pinned projectless task','Useful title',20,1,'source-policy','source-approval');
+        """)
+        try runSQLiteForTest(dst, sql: """
+        INSERT INTO threads (id, cwd, name, title, updated_at, is_pinned, project_id, sandbox_policy, approval_mode) VALUES
+        ('shared','/project','/project/','/project',10,0,'old-project','target-policy','target-approval'),
+        ('target-only','/project','Keep destination task','Useful title',30,1,NULL,'target-policy','target-approval');
+        """)
+        let result = try CodexContinuityState.synchronizeThreadMetadata(sourceHome: source.path, targetHome: target.path, knownHomes: [source.path, target.path])
+        // Optional workspace copy failures must leave the critical metadata intact.
+        let unsafeSkills = source.appendingPathComponent("skills")
+        try FileManager.default.createSymbolicLink(at: unsafeSkills, withDestinationURL: root)
+        #expect(throws: (any Error).self) {
+            _ = try CodexContinuityState.synchronize(sourceHome: source.path, targetHome: target.path, knownHomes: [source.path, target.path])
+        }
+        try FileManager.default.removeItem(at: unsafeSkills)
+        #expect(try sqliteScalarForTest(dst, sql: "SELECT name || ':' || title || ':' || is_pinned || ':' || coalesce(project_id,'projectless') || ':' || sandbox_policy || ':' || approval_mode FROM threads WHERE id='shared';") == "Retained name:Useful title:1:projectless:target-policy:target-approval")
+        #expect(try sqliteScalarForTest(dst, sql: "SELECT count(*) FROM threads;") == "3")
+        // An explicit unpin in the outgoing account must survive the next switch.
+        try runSQLiteForTest(dst, sql: "UPDATE threads SET is_pinned=0 WHERE id='shared';")
+        _ = try CodexContinuityState.synchronize(sourceHome: target.path, targetHome: source.path, knownHomes: [source.path, target.path])
+        #expect(try sqliteScalarForTest(src, sql: "SELECT name || ':' || is_pinned FROM threads WHERE id='shared';") == "Retained name:0")
+        try CodexContinuityState.restore(result)
+        #expect(try sqliteScalarForTest(dst, sql: "SELECT name || ':' || sandbox_policy FROM threads WHERE id='shared';") == "/project/:target-policy")
+    }
+
+    @Test func sessionNameIndexKeepsNewestRenameAcrossAccountSwitches() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        for home in [source, target] { try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true) }
+        let file = "session_index.jsonl"
+        try (#"{"id":"thread","thread_name":"Older name","updated_at":"2026-10-20T00:00:00Z"}"# + "\n").write(to: source.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        try (#"{"id":"thread","thread_name":"Latest rename","updated_at":"2026-10-21T00:00:00.001123456Z"}"# + "\n").write(to: target.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        _ = try CodexContinuityState.synchronize(sourceHome: source.path, targetHome: target.path, knownHomes: [])
+        _ = try CodexContinuityState.synchronize(sourceHome: target.path, targetHome: source.path, knownHomes: [])
+        let text = try String(contentsOf: source.appendingPathComponent(file), encoding: .utf8)
+        #expect(text.split(whereSeparator: \.isNewline).count == 1)
+        #expect(text.contains("Latest rename"))
+    }
+
+    @Test func preservesLocalAndRemoteSidebarPinsAndProjectlessThreads() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let target = root.appendingPathComponent("target")
+        for home in [source, target] { try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true) }
+        let file = ".codex-global-state.json"
+        try #"{"pinned-thread-ids":["local-pin","remote-pin"],"projectless-thread-ids":["local-pin","remote-pin"],"thread-project-membership-host-ids":{"remote-pin":"oraclearm"},"app-server-migrated-pinned-thread-ids-by-host":{"oraclearm":["remote-pin"]},"electron-persisted-atom-state":{"app-server-pinned-thread-order-v1":["oraclearm:remote-pin"],"chatgpt-sidebar-state-v2":{"pinned":["chat-pin"]}}}"#.write(to: source.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        try #"{"pinned-thread-ids":["target-pin"],"projectless-thread-ids":["target-pin"],"app-server-migrated-pinned-thread-ids-by-host":{"oraclearm":["target-pin"]},"electron-persisted-atom-state":{"app-server-pinned-thread-order-v1":["local:target-pin"]}}"#.write(to: target.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        _ = try CodexWorkspaceState.synchronize(sourceHome: source.path, targetHome: target.path, knownHomes: [])
+        _ = try CodexWorkspaceState.synchronize(sourceHome: target.path, targetHome: source.path, knownHomes: [])
+        let state = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: source.appendingPathComponent(file))) as? [String: Any])
+        #expect(state["pinned-thread-ids"] as? [String] == ["local-pin", "remote-pin", "target-pin"])
+        #expect(state["projectless-thread-ids"] as? [String] == ["local-pin", "remote-pin", "target-pin"])
+        #expect((state["thread-project-membership-host-ids"] as? [String: String])?["remote-pin"] == "oraclearm")
+        #expect((state["app-server-migrated-pinned-thread-ids-by-host"] as? [String: [String]])?["oraclearm"] == ["remote-pin", "target-pin"])
+        let atoms = try #require(state["electron-persisted-atom-state"] as? [String: Any])
+        #expect(atoms["app-server-pinned-thread-order-v1"] as? [String] == ["oraclearm:remote-pin", "local:target-pin"])
+        #expect(atoms["chatgpt-sidebar-state-v2"] != nil)
     }
 
     @Test func ignoresGitFsmonitorSocketDuringContinuitySync() throws {
@@ -1237,4 +1304,18 @@ private func testPOSIXError(_ operation: String) -> NSError {
         code: Int(code),
         userInfo: [NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(code)))"]
     )
+}
+
+private func createStateDatabaseForTest(_ database: URL, modern: Bool = true) throws {
+    let schema = """
+                CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, metadata TEXT, position TEXT, created_at_ms TEXT, updated_at_ms TEXT);
+                CREATE TABLE project_roots (project_id TEXT PRIMARY KEY, position TEXT, path TEXT);
+                CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT, appearance TEXT);
+                CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, created_at TEXT, updated_at TEXT, source TEXT, model_provider TEXT, cwd TEXT, title TEXT, sandbox_policy TEXT, approval_mode TEXT, tokens_used TEXT, has_user_event TEXT, archived TEXT, archived_at TEXT, git_sha TEXT, git_branch TEXT, git_origin_url TEXT, cli_version TEXT, first_user_message TEXT, agent_nickname TEXT, agent_role TEXT, memory_mode TEXT, model TEXT, reasoning_effort TEXT, agent_path TEXT, created_at_ms TEXT, updated_at_ms TEXT, thread_source TEXT, preview TEXT, recency_at TEXT, recency_at_ms TEXT, history_mode TEXT, name TEXT, is_pinned TEXT, thread_section_id TEXT, section_position TEXT, section_entered_at_ms TEXT, project_id TEXT);
+                CREATE TABLE thread_dynamic_tools (thread_id TEXT PRIMARY KEY, position TEXT, name TEXT, description TEXT, input_schema TEXT, defer_loading TEXT, namespace TEXT);
+                CREATE TABLE thread_artifacts (id TEXT PRIMARY KEY, thread_id TEXT, artifact_type TEXT, identity_key TEXT, payload TEXT, created_at TEXT);
+                CREATE TABLE thread_spawn_edges (parent_thread_id TEXT PRIMARY KEY, child_thread_id TEXT, status TEXT);
+                """
+    let compatible = modern ? schema.replacingOccurrences(of: "thread_artifacts", with: "thread_attachments").replacingOccurrences(of: "artifact_type", with: "attachment_type") : schema
+    try runSQLiteForTest(database, sql: compatible)
 }

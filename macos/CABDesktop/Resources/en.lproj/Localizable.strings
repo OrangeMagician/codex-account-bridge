@@ -492,3 +492,6 @@
 
 "已有连接待重连" = "Existing connections need reconnecting";
 "新连接已验证" = "New connection verified";
+
+"无法完整保留项目、非项目会话及置顶，已停止切换。" = "Switch stopped because projects, projectless chats and pins could not be fully preserved.";
+"无法完整保留会话目录及名称，已停止切换。" = "Switch stopped because the chat catalog and names could not be fully preserved.";

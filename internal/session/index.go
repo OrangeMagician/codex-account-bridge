@@ -29,6 +29,12 @@ type IndexRepairReport struct {
 // Callers hold a session run lease so a concurrent layout change cannot move
 // the history directories while the index is being repaired.
 func RepairIndexes(paths config.Paths, cfg config.Config) (IndexRepairReport, error) {
+	return RepairIndexesFrom(paths, cfg, "")
+}
+
+// RepairIndexesFrom uses the explicitly selected outgoing account for pin and
+// section edits; timestamps alone cannot order these user-managed fields.
+func RepairIndexesFrom(paths config.Paths, cfg config.Config, sourceHome string) (IndexRepairReport, error) {
 	var report IndexRepairReport
 	if cfg.SharedSessionsDir == "" {
 		return report, nil
@@ -56,7 +62,7 @@ func RepairIndexes(paths config.Paths, cfg config.Config) (IndexRepairReport, er
 	if python == "" {
 		return report, fmt.Errorf("shared session index repair requires system Python 3 with sqlite3; account was not switched")
 	}
-	input, err := json.Marshal(map[string]any{"homes": homes, "shared": cfg.SharedSessionsDir, "data": paths.DataDir})
+	input, err := json.Marshal(map[string]any{"homes": homes, "shared": cfg.SharedSessionsDir, "data": paths.DataDir, "source_home": sourceHome})
 	if err != nil {
 		return report, err
 	}

@@ -497,6 +497,10 @@ final class CABService {
         )
     }
 
+    func synchronizeCodexThreadMetadata(sourceHome: String, targetHome: String, knownHomes: [String]) throws -> CodexContinuitySyncResult {
+        try CodexContinuityState.synchronizeThreadMetadata(sourceHome: sourceHome, targetHome: targetHome, knownHomes: knownHomes)
+    }
+
     func restoreCodexContinuityState(_ result: CodexContinuitySyncResult) throws {
         try CodexContinuityState.restore(result)
     }
