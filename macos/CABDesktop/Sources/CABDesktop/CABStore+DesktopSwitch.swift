@@ -59,6 +59,7 @@ extension CABStore {
             desktopSwitchPartialResult = nil
             defer { refreshLocalDesktopAccount() }
             var switchRecordID: UUID?
+            var desktopStopRequested = false
             var desktopWasStopped = false
             var workspaceSync: CodexWorkspaceSyncResult?
             var continuitySync: CodexContinuitySyncResult?
@@ -93,6 +94,7 @@ extension CABStore {
                 switchRecordID = tools.beginRecord(host: "", source: status.accounts.first(where: { $0.home == fallbackHome })?.name ?? fallbackHome, destination: account.name)
                 if let id = switchRecordID { tools.record(id, stage: "预检通过") }
                 appendOutput("预检通过，正在关闭 Codex 桌面客户端并切换账号…\n")
+                desktopStopRequested = true
                 try await service.stopCodexDesktop()
                 desktopWasStopped = true
                 if let id = switchRecordID { tools.record(id, stage: "桌面客户端已退出") }
@@ -180,6 +182,12 @@ extension CABStore {
                 }
             } catch {
                 var message = error.localizedDescription
+                // The app may finish quitting between the timeout check and
+                // this handler. Restore the original account only after the
+                // kernel confirms the desktop has actually exited.
+                if desktopStopRequested && !desktopWasStopped {
+                    desktopWasStopped = !service.isCodexDesktopRunning()
+                }
                 if let id = switchRecordID { tools.record(id, stage: "切换失败，尝试恢复原状态", outcome: "结果待确认") }
                 if desktopWasStopped {
                     if let threadIndexBackup {

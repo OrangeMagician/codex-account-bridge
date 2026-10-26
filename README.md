@@ -203,6 +203,8 @@ The app can:
 - Preserve approved projects, complete chat content and catalog state, goals, memories, personal skills, attachments, prompt history, and unsent drafts during deliberate desktop account changes.
 - Manage session-sharing policy, launch rotation, and supported agent bindings.
 
+Local desktop switching allows at least 30 seconds for a normal quit and checks the actual process state rather than relying on cached application flags. A remaining desktop instance blocks migration and relaunch; CAB never force-quits it. If the desktop finishes quitting as an error is handled, CAB attempts to reopen the original account.
+
 If an automatic usage refresh fails, CAB keeps the last successful values visible and marks them as cached instead of replacing them with an empty state.
 
 Saved server labels and SSH host strings remain in local macOS `UserDefaults`. SSH identity files and private-key contents are not imported into CAB.

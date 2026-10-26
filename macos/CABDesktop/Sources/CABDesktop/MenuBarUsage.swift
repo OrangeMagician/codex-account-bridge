@@ -34,7 +34,7 @@ enum LocalDesktopHome: Equatable {
 @MainActor
 func currentLocalDesktopHome() -> LocalDesktopHome {
     let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
-        .filter { !$0.isTerminated }
+        .filter { desktopProcessIsRunning($0.processIdentifier) }
     guard !apps.isEmpty else { return .notRunning }
     var homes = Set<String>()
     for app in apps {

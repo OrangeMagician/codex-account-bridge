@@ -418,47 +418,19 @@ final class CABService {
         try process.run()
     }
 
+    @MainActor
     func stopCodexDesktop() async throws {
-        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
-              Bundle(url: applicationURL)?.executableURL != nil else {
-            throw BridgeError.commandFailed("未找到已安装的 Codex 桌面客户端。")
-        }
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
-        for application in running where !application.isTerminated {
-            _ = application.terminate()
-        }
-        for _ in 0..<50 {
-            if running.allSatisfy(\.isTerminated) { break }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        guard running.allSatisfy(\.isTerminated) else {
-            throw BridgeError.commandFailed("Codex 桌面客户端仍在运行，请先保存任务并手动退出后重试。")
-        }
+        try await CodexDesktopLifecycle().stop()
     }
 
+    @MainActor
+    func isCodexDesktopRunning() -> Bool {
+        CodexDesktopLifecycle().isRunning
+    }
+
+    @MainActor
     func startCodexDesktop(codexHome: String) async throws {
-        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
-              Bundle(url: applicationURL)?.executableURL != nil else {
-            throw BridgeError.commandFailed("未找到已安装的 Codex 桌面客户端。")
-        }
-        var environment = ProcessInfo.processInfo.environment
-        environment["CODEX_HOME"] = codexHome
-        environment.removeValue(forKey: "CODEX_THREAD_ID")
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.environment = environment
-        configuration.activates = true
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration) { application, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let application {
-                    application.activate(options: [.activateIgnoringOtherApps])
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: BridgeError.commandFailed("Codex 桌面客户端未能重新启动。"))
-                }
-            }
-        }
+        try await CodexDesktopLifecycle().start(codexHome: codexHome)
     }
 
     func restartCodexDesktop(codexHome: String) async throws {
