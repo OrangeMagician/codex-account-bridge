@@ -14,6 +14,10 @@ struct UsageResetAttempts {
         return "usageResetAttempt.v1." + components.joined(separator: ".")
     }
 
+    func hasPending(scope: String, account: String) -> Bool {
+        defaults.object(forKey: key(scope: scope, account: account)) != nil
+    }
+
     func begin(scope: String, account: String, creditID: String?) throws -> Attempt {
         let storageKey = key(scope: scope, account: account)
         if let data = defaults.data(forKey: storageKey) {

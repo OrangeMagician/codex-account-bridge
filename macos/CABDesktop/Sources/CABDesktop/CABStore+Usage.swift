@@ -173,6 +173,26 @@ extension CABStore {
     }
 
     func runUsageRefreshSchedulerTick() async {
+        await usageResetAutomation.tick(
+            endpoints: usageWakeEndpoints(servers: remoteServers),
+            allowed: { !self.isBusy && self.usageResettingAccount == nil },
+            loadAccounts: { endpoint in
+                try await self.service.loadStatus(target: endpoint.target, remoteHost: endpoint.host)
+                    .accounts.filter(\.isLoggedIn).map(\.name)
+            },
+            loadUsage: { endpoint, accounts in
+                try await self.service.loadUsage(target: endpoint.target, remoteHost: endpoint.host,
+                                                 accountNames: accounts, force: true).accounts
+            },
+            reset: { endpoint, account, credit, id in
+                self.usageResettingAccount = account
+                self.isBusy = true
+                defer { self.usageResettingAccount = nil; self.isBusy = false }
+                return try await self.service.resetUsage(target: endpoint.target, remoteHost: endpoint.host,
+                                                         accountName: account, creditID: credit, idempotencyKey: id)
+            },
+            cache: { endpoint, reports in self.cacheUsageWakeReports(reports, cacheKey: endpoint.key) }
+        )
         let now = Date()
         if usageWakeSettings.enabled, let previous = usageWakeState.lastSchedulerTickAt,
            now.timeIntervalSince(previous) > 90 {

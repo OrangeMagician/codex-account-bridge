@@ -88,6 +88,9 @@ struct SystemSettingsView: View {
                         PublicResetSettingsView()
                         Divider()
 
+                        UsageResetAutomationSettingsView(automation: store.usageResetAutomation)
+                        Divider()
+
                         LowQuotaSettingsView()
                         Divider()
 

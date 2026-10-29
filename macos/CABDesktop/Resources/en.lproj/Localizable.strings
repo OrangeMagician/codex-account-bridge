@@ -510,3 +510,11 @@
 "新连接已验证使用目标账号；当前没有远程桌面连接。" = "New connections are verified to use the selected account. There are no existing desktop connections.";
 "桌面连接已验证" = "Desktop connections verified";
 "账号选择本身只影响新连接；使用“切换远程 Codex”可确认断开旧桌面连接并核验自动重连。" = "Account selection alone affects new connections. Use Switch remote Codex to disconnect old desktop connections and verify automatic reconnection.";
+
+// Expiring reset card automation
+"临期重置卡自动使用" = "Automatically use expiring reset cards";
+"默认开启。重置卡到期前 10 分钟内，无论剩余额度多少，直接使用，不再确认。适用于本机及已配置的远程账号。" = "Enabled by default. Automatically uses reset cards within 10 minutes of expiry, regardless of remaining quota, without confirmation. Applies to local accounts and configured remote servers.";
+"仅在 CAB 运行且设备唤醒、服务可连接时执行；不受刷新间隔和暂停自动刷新时段影响。" = "Runs while CAB is open, the device is awake, and the service is reachable. Independent of the refresh interval and paused refresh periods.";
+"已自动使用临期重置卡" = "Automatically used an expiring reset card";
+"此重置卡已使用" = "This reset card has already been used";
+"官方返回当前无需重置，未消耗卡片" = "The official service reported nothing to reset; no card was consumed";

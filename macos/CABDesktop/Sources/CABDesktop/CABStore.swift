@@ -74,6 +74,7 @@ final class CABStore: ObservableObject {
     let tools = ManagementToolsStore()
     let codexFeatures = CodexFeaturesStore()
     let service: CABService
+    let usageResetAutomation: UsageResetAutomation
     var usageWakeJournal = UsageWakeJournal.shared
     lazy var usageResetNotificationService = UsageResetNotificationService.shared
     let defaults = UserDefaults.standard
@@ -105,8 +106,9 @@ final class CABStore: ObservableObject {
     var codexUpdateErrorByKey: [String: String] = [:]
     var codexUpdateCheckingKeys: Set<String> = []
 
-    init(service: CABService = CABService(), desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome) {
+    init(service: CABService = CABService(), desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome, usageResetAutomation: UsageResetAutomation? = nil) {
         self.service = service
+        self.usageResetAutomation = usageResetAutomation ?? UsageResetAutomation()
         self.desktopHome = desktopHome
         localDesktopHome = desktopHome()
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
