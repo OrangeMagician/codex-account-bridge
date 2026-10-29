@@ -6,7 +6,7 @@ import Testing
 
 @MainActor
 struct UsageResetAutomationTests {
-    private func report(used: Double = 0, seconds: [Int?] = [600], ids: [String?]? = nil,
+    private func report(used: Double = 0, seconds: [Int?] = [300], ids: [String?]? = nil,
                         status: String = "available", count: Int = 2, error: String? = nil) throws -> AccountUsageReport {
         let cards: [[String: Any]] = seconds.enumerated().map { index, seconds in
             var card: [String: Any] = ["granted_at": 1, "status": status]
@@ -30,9 +30,9 @@ struct UsageResetAutomationTests {
     }
 
     @Test(arguments: [0.0, 45.0, 100.0])
-    func ignoresRemainingQuotaAndIncludesExactTenMinuteBoundary(used: Double) throws {
+    func ignoresRemainingQuotaAndIncludesConfiguredBoundary(used: Double) throws {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
-        let value = try report(used: used, seconds: [601, 600, 1, 0, -1, nil])
+        let value = try report(used: used, seconds: [301, 300, 1, 0, -1, nil])
         #expect(expiringUsageResetCredits(report: value, now: now).map(\.creditID) == ["card2", "card1"])
     }
 
@@ -47,6 +47,7 @@ struct UsageResetAutomationTests {
     @Test func defaultsOnAndPersistsDisabledWithoutAnyRequests() async throws {
         try await withFixture { fixture in
             #expect(fixture.automation.enabled)
+            #expect(fixture.automation.leadMinutes == 5)
             fixture.automation.setEnabled(false)
             fixture.automation = UsageResetAutomation(defaults: fixture.defaults)
             #expect(!fixture.automation.enabled)
@@ -58,9 +59,50 @@ struct UsageResetAutomationTests {
         }
     }
 
+    @Test func customLeadTimePersistsAndCannotBeLessThanTwoMinutes() async throws {
+        try await withFixture { fixture in
+            fixture.automation.setLeadMinutes(12)
+            fixture.automation = UsageResetAutomation(defaults: fixture.defaults)
+            #expect(fixture.automation.leadMinutes == 12)
+            fixture.automation.setLeadMinutes(1)
+            #expect(fixture.automation.leadMinutes == 2)
+            fixture.automation = UsageResetAutomation(defaults: fixture.defaults)
+            #expect(fixture.automation.leadMinutes == 2)
+            fixture.defaults.set(-10, forKey: UsageResetAutomation.leadMinutesKey)
+            #expect(UsageResetAutomation(defaults: fixture.defaults).leadMinutes == 2)
+            let value = try report(seconds: [121, 120, 0])
+            #expect(expiringUsageResetCredits(report: value, now: fixture.date, leadMinutes: 1).map(\.creditID) == ["card1"])
+        }
+    }
+
+    @Test func changingLeadTimeRecalculatesPendingChecksImmediately() async throws {
+        try await withFixture { fixture in
+            fixture.report = try report(seconds: [600])
+            await fixture.tick()
+            #expect(fixture.calls.isEmpty)
+            fixture.automation.setLeadMinutes(10)
+            await fixture.tick()
+            #expect(fixture.calls.count == 1)
+        }
+    }
+
+    @Test func changingLeadTimeDuringReadCancelsTheOldSchedule() async throws {
+        try await withFixture { fixture in
+            fixture.leadMinutesDuringRead = 2
+            await fixture.tick()
+            #expect(fixture.calls.isEmpty)
+            fixture.leadMinutesDuringRead = nil
+            await fixture.tick()
+            #expect(fixture.calls.isEmpty)
+            fixture.date.addTimeInterval(180)
+            await fixture.tick()
+            #expect(fixture.calls.count == 1)
+        }
+    }
+
     @Test func usesEarliestSpecificCardThenReadsAgainAndNeverReplaysAfterRestart() async throws {
         try await withFixture { fixture in
-            fixture.report = try report(seconds: [590, 60])
+            fixture.report = try report(seconds: [290, 60])
             await fixture.tick()
             #expect(fixture.calls.map(\.credit) == ["card1"])
             #expect(fixture.reads == 2) // discovery and post-response read
@@ -75,9 +117,9 @@ struct UsageResetAutomationTests {
         }
     }
 
-    @Test func schedulesAtExpiryMinusTenMinutesWithoutWaitingForOrdinaryRefresh() async throws {
+    @Test func schedulesAtConfiguredLeadTimeWithoutWaitingForOrdinaryRefresh() async throws {
         try await withFixture { fixture in
-            fixture.report = try report(seconds: [720])
+            fixture.report = try report(seconds: [420])
             await fixture.tick()
             #expect(fixture.calls.isEmpty)
             fixture.date.addTimeInterval(119)
@@ -104,6 +146,32 @@ struct UsageResetAutomationTests {
             await fixture.tick()
             #expect(fixture.calls.count == 1)
             #expect(attempts.hasPending(scope: "local", account: "work"))
+        }
+    }
+
+    @Test(arguments: ["reset", "nothingToReset", "noCredit", "alreadyRedeemed"])
+    func neverFallsBackToCardsThatExpireLater(outcome: String) async throws {
+        try await withFixture { fixture in
+            fixture.automation.setLeadMinutes(2)
+            fixture.report = try report(seconds: [60, 86_400, 604_800], count: 3)
+            fixture.outcome = try #require(UsageResetOutcome(rawValue: outcome))
+            await fixture.tick()
+            fixture.date.addTimeInterval(30)
+            await fixture.tick()
+            fixture.date.addTimeInterval(31) // the near-expiry card is now expired
+            await fixture.tick()
+            #expect(fixture.calls.map(\.credit) == ["card0"])
+            fixture.automation = UsageResetAutomation(defaults: fixture.defaults)
+            await fixture.tick()
+            #expect(fixture.calls.map(\.credit) == ["card0"])
+        }
+    }
+
+    @Test func missingIDOnNearExpiryCardNeverSelectsADistantCard() async throws {
+        try await withFixture { fixture in
+            fixture.report = try report(seconds: [60, 86_400], ids: [nil, "distant-card"])
+            await fixture.tick()
+            #expect(fixture.calls.isEmpty)
         }
     }
 
@@ -157,8 +225,12 @@ struct UsageResetAutomationTests {
         }
     }
 
-    @Test func schedulerRedeemsThroughFixtureCLIWhileRefreshIsManualAndPaused() async throws {
+    @Test(arguments: [2, 5, 10])
+    func schedulerRedeemsThroughFixtureCLIWhileRefreshIsManualAndPaused(minutes: Int) async throws {
         try await withFixture { fixture in
+            fixture.automation.setLeadMinutes(minutes)
+            let account = "fixture-" + UUID().uuidString
+            let quotedAccount = String(data: try JSONEncoder().encode(account), encoding: .utf8)!
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -168,14 +240,16 @@ struct UsageResetAutomationTests {
             import sys,json,time,pathlib,datetime
             root=pathlib.Path(__file__).parent
             args=sys.argv[1:]
+            account=\(quotedAccount)
             if args[0]=='status':
-                print(json.dumps({'shared_sessions':False,'rotation':{'enabled':False},'accounts':[{'name':'work','home':str(root),'login':'present','default':False,'remote':False}]}))
+                print(json.dumps({'shared_sessions':False,'rotation':{'enabled':False},'accounts':[{'name':account,'home':str(root),'login':'present','default':False,'remote':False}]}))
             elif args[:2]==['usage','reset']:
                 (root/'reset-args.json').write_text(json.dumps(args))
-                print(json.dumps({'account':'work','outcome':'reset'}))
+                print(json.dumps({'account':account,'outcome':'reset'}))
             elif args[0]=='usage':
-                card={'id':'fixture-expiring-card','granted_at':1,'expires_at':int(time.time())+300,'status':'available'}
-                print(json.dumps({'fetched_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'accounts':[{'name':'work','usage':{'rate_limits':{'primary':{'used_percent':0,'window_duration_mins':300}},'reset_credits':{'available_count':1,'credits':[card]}}}]}))
+                card={'id':'fixture-expiring-card','granted_at':1,'expires_at':int(time.time())+\(minutes * 60 - 30),'status':'available'}
+                distant={'id':'must-never-use-this-card','granted_at':1,'expires_at':int(time.time())+604800,'status':'available'}
+                print(json.dumps({'fetched_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'accounts':[{'name':account,'usage':{'rate_limits':{'primary':{'used_percent':0,'window_duration_mins':300}},'reset_credits':{'available_count':2,'credits':[distant,card]}}}]}))
             else:sys.exit(2)
             """
             try script.write(to: executable, atomically: true, encoding: .utf8)
@@ -191,12 +265,12 @@ struct UsageResetAutomationTests {
             let data = try Data(contentsOf: root.appendingPathComponent("reset-args.json"))
             let args = try JSONDecoder().decode([String].self, from: data)
             #expect(args.contains("--confirm-reset-usage"))
-            #expect(args[try #require(args.firstIndex(of: "--account")) + 1] == "work")
+            #expect(args[try #require(args.firstIndex(of: "--account")) + 1] == account)
             #expect(args[try #require(args.firstIndex(of: "--credit-id")) + 1] == "fixture-expiring-card")
             #expect(UUID(uuidString: args[try #require(args.firstIndex(of: "--idempotency-key")) + 1]) != nil)
             #expect(store.usageResetResult == nil) // automation never opens a result dialog
             #expect(store.usageResettingAccount == nil && !store.isBusy)
-            #expect(store.usageByAccount["work"]?.usage != nil)
+            #expect(store.usageByAccount[account]?.usage != nil)
         }
     }
 
@@ -213,6 +287,7 @@ struct UsageResetAutomationTests {
             for dark in [false, true] {
                 for enabled in [false, true] {
                     automation.setEnabled(enabled)
+                    automation.setLeadMinutes(enabled ? 5 : 2)
                     let content = SystemSettingsView().environmentObject(store).environmentObject(MenuBarUsageStore())
                         .frame(width: CGFloat(width), height: 1000)
                         .background(Color(nsColor: .windowBackgroundColor))
@@ -246,6 +321,7 @@ private final class Fixture {
     var failReset = false
     var failRead = false
     var disableDuringRead = false
+    var leadMinutesDuringRead: Int?
     var outcome: UsageResetOutcome = .reset
     var reads = 0
     var cached = 0
@@ -264,6 +340,7 @@ private final class Fixture {
                 self.reads += 1
                 if self.failRead { throw BridgeError.commandFailed("fixture read failed") }
                 if self.disableDuringRead { self.automation.setEnabled(false) }
+                if let minutes = self.leadMinutesDuringRead { self.automation.setLeadMinutes(minutes) }
                 return [self.report]
             }, reset: { endpoint, account, credit, id in
                 self.calls.append((endpoint.key, credit, id))

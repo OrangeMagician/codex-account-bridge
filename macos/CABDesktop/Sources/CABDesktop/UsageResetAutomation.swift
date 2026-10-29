@@ -1,14 +1,17 @@
 import Foundation
 import SwiftUI
 
-func expiringUsageResetCredits(report: AccountUsageReport, now: Date) -> [UsageResetCredit] {
+let usageResetDefaultLeadMinutes = 5
+let usageResetMinimumLeadMinutes = 2
+
+func expiringUsageResetCredits(report: AccountUsageReport, now: Date, leadMinutes: Int = usageResetDefaultLeadMinutes) -> [UsageResetCredit] {
     guard report.error == nil, let credits = report.usage?.resetCredits,
           credits.availableCount > 0 else { return [] }
     return (credits.credits ?? []).filter {
         guard $0.isAvailable, let id = $0.creditID, !id.isEmpty,
               let expires = $0.expiresAt else { return false }
         let remaining = TimeInterval(expires) - now.timeIntervalSince1970
-        return remaining > 0 && remaining <= 600
+        return remaining > 0 && remaining <= TimeInterval(max(usageResetMinimumLeadMinutes, leadMinutes)) * 60
     }.sorted {
         if $0.expiresAt != $1.expiresAt { return ($0.expiresAt ?? 0) < ($1.expiresAt ?? 0) }
         return $0.id < $1.id
@@ -20,8 +23,10 @@ func expiringUsageResetCredits(report: AccountUsageReport, now: Date) -> [UsageR
 @MainActor
 final class UsageResetAutomation: ObservableObject {
     static let enabledKey = "usageResetAutomation.enabled.v1"
+    static let leadMinutesKey = "usageResetAutomation.leadMinutes.v1"
     private static let completedKey = "usageResetAutomation.completed.v1"
     @Published private(set) var enabled: Bool
+    @Published private(set) var leadMinutes: Int
     @Published private(set) var lastResult: String?
     @Published private(set) var error: String?
     private let defaults: UserDefaults
@@ -33,6 +38,8 @@ final class UsageResetAutomation: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         enabled = defaults.object(forKey: Self.enabledKey) == nil || defaults.bool(forKey: Self.enabledKey)
+        leadMinutes = defaults.object(forKey: Self.leadMinutesKey) == nil ? usageResetDefaultLeadMinutes
+            : max(usageResetMinimumLeadMinutes, defaults.integer(forKey: Self.leadMinutesKey))
         completed = defaults.data(forKey: Self.completedKey)
             .flatMap { try? JSONDecoder().decode([String: Date].self, from: $0) } ?? [:]
     }
@@ -40,6 +47,13 @@ final class UsageResetAutomation: ObservableObject {
     func setEnabled(_ enabled: Bool) {
         self.enabled = enabled
         defaults.set(enabled, forKey: Self.enabledKey)
+        generation += 1
+        nextCheck.removeAll()
+    }
+
+    func setLeadMinutes(_ minutes: Int) {
+        leadMinutes = max(usageResetMinimumLeadMinutes, minutes)
+        defaults.set(leadMinutes, forKey: Self.leadMinutesKey)
         generation += 1
         nextCheck.removeAll()
     }
@@ -78,14 +92,14 @@ final class UsageResetAutomation: ObservableObject {
                 for report in reports where accounts.contains(report.name) && report.error == nil {
                     for credit in report.usage?.resetCredits?.credits ?? [] where credit.isAvailable {
                         guard let expires = credit.expiresAt, TimeInterval(expires) > checkedAt.timeIntervalSince1970 else { continue }
-                        next = min(next, max(checkedAt.addingTimeInterval(30), Date(timeIntervalSince1970: TimeInterval(expires) - 600)))
+                        next = min(next, max(checkedAt.addingTimeInterval(30), Date(timeIntervalSince1970: TimeInterval(expires) - TimeInterval(leadMinutes) * 60)))
                     }
                 }
                 nextCheck[endpoint.key] = next
                 // At most one card per account per tick. The next card is checked
                 // against a new official snapshot on the following tick.
                 let candidates = reports.compactMap { report -> (String, UsageResetCredit)? in
-                    guard accounts.contains(report.name), let credit = expiringUsageResetCredits(report: report, now: now()).first(where: {
+                    guard accounts.contains(report.name), let credit = expiringUsageResetCredits(report: report, now: now(), leadMinutes: leadMinutes).first(where: {
                         completed[completionKey(endpoint.key, report.name, $0.id)] == nil
                     }) else { return nil }
                     return (report.name, credit)
@@ -150,7 +164,16 @@ struct UsageResetAutomationSettingsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
             }
-            Text("默认开启。重置卡到期前 10 分钟内，无论剩余额度多少，直接使用，不再确认。适用于本机及已配置的远程账号。")
+            HStack {
+                Text("使用时间")
+                Spacer()
+                Stepper(value: Binding(get: { automation.leadMinutes }, set: automation.setLeadMinutes), in: usageResetMinimumLeadMinutes...Int.max) {
+                    Text("提前 \(automation.leadMinutes) 分钟")
+                }
+                .fixedSize()
+                .help("默认提前 5 分钟，最少提前 2 分钟。")
+            }
+            Text("默认开启。重置卡进入设定的到期时间范围后，无论剩余额度多少，直接使用，不再确认。适用于本机及已配置的远程账号。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("仅在 CAB 运行且设备唤醒、服务可连接时执行；不受刷新间隔和暂停自动刷新时段影响。")
                 .font(.caption).foregroundStyle(.secondary)
