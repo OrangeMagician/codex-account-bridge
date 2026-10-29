@@ -81,7 +81,7 @@ struct ManagementToolsView: View {
                         LabeledContent("当前桌面账号", value: currentDesktopAccount)
                     } else {
                         LabeledContent("新连接账号", value: report.remoteAccount.isEmpty ? cabLocalized("未设置") : report.remoteAccount)
-                        Text("已有连接继续使用原账号；选择新账号仅影响后续连接。")
+                        Text("账号选择本身只影响新连接；使用“切换远程 Codex”可确认断开旧桌面连接并核验自动重连。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Divider()

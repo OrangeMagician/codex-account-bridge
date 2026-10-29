@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+func processExecutablePath(pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+}
+
 func processLaunchData(pid int) ([]string, []string, error) {
 	read := func(name string) ([]string, error) {
 		f, err := os.Open(fmt.Sprintf("/proc/%d/%s", pid, name))

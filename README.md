@@ -220,7 +220,7 @@ command -v codex
 codex --version
 ```
 
-The shim routes new `codex app-server` launches through the explicitly selected remote account. An already running remote Codex process keeps its account and continues running. CAB never stops or force restarts processes when switching remote accounts. Wait for active tasks to finish before reconnecting to use the newly selected account.
+`cab remote use` selects the account for new app servers. The desktop Switch remote Codex action confirms the old desktop connections to disconnect, saves and verifies the target account first, then requests a normal exit so the official client can reconnect. Active tasks may be interrupted; save work first. Completion requires actual replacement desktop processes using the target home. Reconnect and apply also repairs existing connections when the target account is already selected. Correctly routed connections, ordinary CLI sessions and independent agent bindings are preserved. Reconnected processes are never stopped in a loop or force-killed.
 
 For the phone-to-desktop-to-Ubuntu workflow and SSH details, see [Remote setup](docs/REMOTE.md).
 

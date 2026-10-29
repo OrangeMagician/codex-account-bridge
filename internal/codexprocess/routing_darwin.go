@@ -5,9 +5,24 @@ package codexprocess
 import (
 	"encoding/binary"
 	"errors"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 )
+
+func processExecutablePath(pid int) (string, error) {
+	args, _, err := processLaunchData(pid)
+	if err != nil {
+		return "", err
+	}
+	if len(args) == 0 {
+		return "", errors.New("missing executable")
+	}
+	if filepath.IsAbs(args[0]) {
+		return filepath.EvalSymlinks(args[0])
+	}
+	return args[0], nil
+}
 
 func processLaunchData(pid int) ([]string, []string, error) {
 	mib := [3]int32{1, 49, int32(pid)} // CTL_KERN, KERN_PROCARGS2

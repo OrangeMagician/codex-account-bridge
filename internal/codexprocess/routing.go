@@ -11,6 +11,7 @@ type RouteDetails struct {
 	Home     string `json:"home,omitempty"`
 	Role     string `json:"role"`
 	Verified bool   `json:"verified"`
+	Desktop  bool   `json:"desktop"`
 }
 
 func DescribeRoute(process Process, defaultHome string) RouteDetails {
@@ -23,9 +24,18 @@ func DescribeRoute(process Process, defaultHome string) RouteDetails {
 	if err != nil {
 		return unknown
 	}
+	executable, err := processExecutablePath(process.PID)
+	if err != nil {
+		return unknown
+	}
 	after, ok, err := inspect(process.PID)
 	if err != nil || !ok || !sameIdentity(before, after) {
 		return unknown
+	}
+	// Linux comm may still be "codex" after the shim resolves to CAB. Its
+	// inherited CODEX_HOME is not the official child's runtime account.
+	if filepath.Base(strings.TrimSuffix(executable, " (deleted)")) == "cab" {
+		return RouteDetails{Role: "bridge"}
 	}
 	return routeFromLaunchData(args, env, defaultHome)
 }
@@ -42,15 +52,25 @@ func routeFromLaunchData(args, env []string, defaultHome string) RouteDetails {
 		return RouteDetails{Role: "unknown"}
 	}
 	role := "cli"
-	for _, a := range args {
+	desktop := false
+	for i, a := range args {
 		if a == "app-server" {
 			role = "app-server"
-			break
+		}
+		endpoint := ""
+		if a == "--listen" && i+1 < len(args) {
+			endpoint = args[i+1]
+		}
+		if strings.HasPrefix(a, "--listen=") {
+			endpoint = strings.TrimPrefix(a, "--listen=")
+		}
+		if strings.HasPrefix(endpoint, "ws://") || strings.HasPrefix(endpoint, "wss://") || strings.HasPrefix(endpoint, "unix://") {
+			desktop = true
 		}
 		if a == "remote-control" {
 			role = "remote-control"
 			break
 		}
 	}
-	return RouteDetails{Home: filepath.Clean(home), Role: role, Verified: true}
+	return RouteDetails{Home: filepath.Clean(home), Role: role, Verified: true, Desktop: role == "app-server" && desktop}
 }

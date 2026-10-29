@@ -127,7 +127,7 @@ struct ContentView: View {
         }
         .confirmationDialog("检测到正在运行的远程 Codex", isPresented: Binding(get: { store.pendingRemoteCodexSwitch != nil }, set: { if !$0 { store.pendingRemoteCodexSwitch = nil } }), titleVisibility: .visible) {
             if let request = store.pendingRemoteCodexSwitch {
-                Button(String(format: cabLocalized("新连接使用 %@"), request.accountName)) {
+                Button(String(format: cabLocalized("断开旧连接并切换到 %@"), request.accountName), role: .destructive) {
                     store.confirmRemoteCodexSwitch(request)
                 }
             }
@@ -847,7 +847,7 @@ struct ContentView: View {
         let details = request.processes.map { process in
             "PID \(process.pid)，运行 \(process.elapsed)，终端 \(process.tty)，\(process.executable)"
         }.joined(separator: "\n")
-        return String(format: cabLocalized("以下远程任务将继续运行：\n%@\n\n新连接将使用 %@。现有连接和任务保持原账号，CAB 不会关闭或强制重启这些进程。请等任务完成后重新连接；已开启共享的会话会在切换和新连接启动前校正到最新历史。"), details, request.accountName)
+        return String(format: cabLocalized("以下旧账号桌面连接将断开：\n%@\n\n先保存账号 %@，再请求这些连接正常退出，让桌面客户端自动重连。连接中的活动任务可能中断，请先保存工作。重连后会核验实际账号；智能体独立绑定不变。"), details, request.accountName)
     }
 
     private func legacyImportProcessMessage(_ processes: [CodexProcessStatus]) -> String {
@@ -923,14 +923,11 @@ struct ContentView: View {
                                         .buttonStyle(.borderedProminent)
                                         .disabled(store.isUsageRefreshing || store.isBusy)
                                 }
-                            } else if account.remote {
-                                Label("远程新连接账号", systemImage: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
                             } else {
-                                Button("切换远程 Codex") { store.switchRemoteCodex(to: account.name) }
+                                Button(account.remote ? "重新连接并应用" : "切换远程 Codex") { store.switchRemoteCodex(to: account.name) }
                                     .buttonStyle(.borderedProminent)
                                     .disabled(store.isUsageRefreshing || store.isBusy)
-                                    .help("之后通过 SSH 或远程项目启动的 Codex 使用此账号；智能体账号仍独立管理。")
+                                    .help("保存账号后断开旧桌面连接，自动重连并核验实际账号；智能体账号仍独立管理。")
                             }
                         }
                     } else if account.isLoginUnknown {

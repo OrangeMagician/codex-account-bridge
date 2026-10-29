@@ -850,6 +850,9 @@ func useCommand(paths config.Paths, cfg *config.Config, args []string, remote bo
 }
 
 func remoteCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {
+	if len(args) > 0 && args[0] == "connections" {
+		return remoteConnectionsCommand(*cfg, args[1:])
+	}
 	if len(args) > 0 && args[0] == "verify" {
 		return remoteVerifyCommand(*cfg, args[1:])
 	}

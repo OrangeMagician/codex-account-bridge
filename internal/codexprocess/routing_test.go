@@ -15,3 +15,22 @@ func TestRouteProjectionUsesOnlyExplicitHomeAndRole(t *testing.T) {
 		t.Fatal(r)
 	}
 }
+
+func TestDesktopRouteRequiresPersistentAppServerTransport(t *testing.T) {
+	for _, test := range []struct {
+		args    []string
+		desktop bool
+	}{
+		{[]string{"codex", "app-server", "--listen", "ws://127.0.0.1:1234"}, true},
+		{[]string{"codex", "app-server", "--listen=wss://localhost:1234"}, true},
+		{[]string{"codex", "app-server", "--listen", "unix:///tmp/desktop.sock"}, true},
+		{[]string{"codex", "app-server"}, false},
+		{[]string{"codex", "app-server", "--listen", "stdio://"}, false},
+		{[]string{"codex", "--listen", "ws://localhost:1234"}, false},
+	} {
+		route := routeFromLaunchData(test.args, []string{"CODEX_HOME=/accounts/work"}, "/default")
+		if route.Desktop != test.desktop {
+			t.Fatalf("args %v: desktop = %t", test.args, route.Desktop)
+		}
+	}
+}

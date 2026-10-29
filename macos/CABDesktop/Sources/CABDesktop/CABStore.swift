@@ -540,7 +540,17 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             defer { isBusy = false }
             do {
-                let processes = try await service.loadRemoteSwitchCodexProcesses(remoteHost: capturedHost)
+                let available = try await service.loadRemoteSwitchCodexProcesses(remoteHost: capturedHost)
+                let saved = try await service.loadStatus(target: .remote, remoteHost: capturedHost)
+                let selectedName = saved.remoteAccount ?? saved.defaultAccount ?? name
+                guard let selected = saved.accounts.first(where: { $0.name == selectedName }),
+                      let destination = saved.accounts.first(where: { $0.name == name }) else {
+                    throw BridgeError.invalidStatus("目标账号目录无法确认。")
+                }
+                let runtime = try await service.loadRemoteConnections(accountName: selectedName, remoteHost: capturedHost)
+                let desktops = try runtime.checkedDesktops(accountName: selectedName, expectedHome: selected.home)
+                let stalePIDs = Set(desktops.filter { $0.home != destination.home }.map(\.pid))
+                let processes = available.filter { stalePIDs.contains($0.pid) }
                 if processes.isEmpty {
                     try await applyRemoteCodexSwitch(name, remoteHost: capturedHost)
                 } else {
@@ -568,9 +578,9 @@ final class CABStore: ObservableObject {
             errorMessage = nil
             defer { isBusy = false }
             do {
-                try await selectRemoteCodexAccount(request.accountName, remoteHost: request.remoteHost)
+                try await selectRemoteCodexAccount(request.accountName, remoteHost: request.remoteHost,
+                                                  approvedPIDs: Set(request.processes.map(\.pid)))
                 pendingRemoteCodexSwitch = nil
-                appendOutput(String(format: cabLocalized("远程新连接将使用 %@；正在运行的任务保留原账号并继续执行。请在任务完成后重新连接以使用新账号。\n"), request.accountName))
                 await reload()
             } catch {
                 errorMessage = error.localizedDescription
@@ -583,7 +593,7 @@ final class CABStore: ObservableObject {
         await reload()
     }
 
-    func selectRemoteCodexAccount(_ name: String, remoteHost: String) async throws {
+    func selectRemoteCodexAccount(_ name: String, remoteHost: String, approvedPIDs: Set<Int> = []) async throws {
         let arguments = ["remote", "use", name]
         output = "$ cab \(arguments.joined(separator: " "))\n"
         let recordID = tools.beginRecord(host: remoteHost, source: status.remoteAccount ?? "", destination: name)
@@ -600,11 +610,21 @@ final class CABStore: ObservableObject {
             }
             let live = try await service.verifyRemoteConnection(accountName: name, remoteHost: remoteHost)
             try live.validate(accountName: name, home: home)
-            let message = live.needsReconnect
-                ? "新连接已验证使用目标账号；已有连接仍需重连，现有任务未中断。"
-                : "新连接已验证使用目标账号。"
-            appendOutput(message + "\n")
-            tools.record(recordID, stage: message, outcome: live.outcome)
+            if live.needsReconnect {
+                appendOutput(cabLocalized("新账号已验证，正在断开旧桌面连接并等待自动重连…") + "\n")
+            }
+            let runtime = try await reconnectRemoteDesktops(
+                accountName: name, home: home, initial: live, approvedPIDs: approvedPIDs,
+                stop: { pids in
+                    try await self.service.stopCodexProcesses(pids, target: .remote, remoteHost: remoteHost)
+                },
+                inspect: { try await self.service.loadRemoteConnections(accountName: name, remoteHost: remoteHost) }
+            )
+            let message = runtime.outcome == "桌面连接已验证"
+                ? "远程桌面连接已全部核验使用目标账号。"
+                : "新连接已验证使用目标账号；当前没有远程桌面连接。"
+            appendOutput(cabLocalized(message) + "\n")
+            tools.record(recordID, stage: message, outcome: runtime.outcome)
         } catch {
             tools.record(recordID, stage: "账号选择未完成，请刷新确认", outcome: "结果待确认")
             throw error
