@@ -157,7 +157,7 @@ cab usage --account personal
 cab usage --json
 ```
 
-Depending on the official response, the report can include the ChatGPT plan type, primary and secondary Codex usage windows, reset times, credits, spend controls, and available rate-limit resets. When `rate_limits_by_limit_id` includes a Reserve/fallback bucket, the desktop client also shows its remaining percentage and reset time (for example, Luna Reserve). Account identity, email addresses, token contents, and reset credential identifiers are not exposed.
+Depending on the official response, the report can include the ChatGPT plan type, primary and secondary Codex usage windows, reset times, credits, spend controls, and available rate-limit resets. When `rate_limits_by_limit_id` includes a Reserve/fallback bucket, the desktop client also shows its remaining percentage and reset time (for example, Luna Reserve). Raw account identifiers, email addresses, and token contents are not exposed. An opaque account fingerprint supports shared quota caching.
 
 When an account reports an available rate-limit reset, the macOS app shows a Reset usage button. A bright warning sheet requires a second confirmation and calls the official Codex reset-credit method with an idempotency key. It warns when usable five-hour or weekly capacity would be replaced, then refreshes both windows after the operation. CAB selects the explicitly chosen credit and retains its opaque ID with the idempotency key while the result is uncertain.
 
@@ -393,3 +393,5 @@ The cache contains no conversation text and can be removed while CAB is idle to 
 reconstruction. `scanned_bytes` in `cab tokens --json` reports newly scanned event bytes.
 
 Preferences are grouped in the main window under **App settings**: general and display, quota refresh, resets and notifications, automation, and accounts and sessions. The overview highlights today's reset status and the alert switch; source details remain in settings. Command+, opens this main-window page instead of a separate settings window.
+
+Quota reads are shared across local and remote registrations only after both official responses establish the same SHA-256 fingerprint of the backend account and signed-in principal. Initial discovery reads each endpoint once. Later reads update both main-window caches and the menu bar; concurrent or immediately adjacent cross-endpoint refreshes within 30 seconds use one query. Display names do not establish identity. Links remain in memory, are reverified after at most one hour, and are cleared on login, account registration changes, resets, or probes. Missing identity and older remote clients retain independent reads. Only the fingerprint is emitted, never the raw email or account ID; CAB does not read credential files. Update the remote CAB executable to enable matching.

@@ -1,6 +1,15 @@
 import Foundation
 
 extension CABStore {
+    func receiveSharedUsage(_ update: UsageRepository.Update) {
+        for (key, report) in update.reports where key.namespace == "official" {
+            let scopes = key.target == "local" ? ["local"] : remoteServers
+                .filter { key.target == "ssh:" + $0.host }
+                .map { "remote:\($0.id.uuidString)" }
+            for scope in scopes { cacheUsageWakeReports(report.accounts, cacheKey: scope) }
+        }
+    }
+
     func reloadUsage(force: Bool, accountNames: [String]? = nil) async {
         let key = currentUsageCacheKey
         var requestedAccountNames: [String]?

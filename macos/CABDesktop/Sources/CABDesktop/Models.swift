@@ -208,12 +208,14 @@ struct AccountUsageReport: Codable, Equatable, Identifiable {
 }
 
 struct CodexUsageSnapshot: Codable, Equatable {
+    var accountFingerprint: String? = nil
     let planType: String?
     let rateLimits: UsageRateLimitSnapshot
     let rateLimitsByLimitID: [String: UsageRateLimitSnapshot]?
     let resetCredits: UsageResetCredits?
 
     enum CodingKeys: String, CodingKey {
+        case accountFingerprint = "account_fingerprint"
         case planType = "plan_type"
         case rateLimits = "rate_limits"
         case rateLimitsByLimitID = "rate_limits_by_limit_id"

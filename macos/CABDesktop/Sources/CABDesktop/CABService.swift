@@ -104,7 +104,8 @@ final class CABService {
                 group.addTask {
                     do {
                         return try await UsageRepository.shared.read(
-                            key: .init(target: target == .local ? "local" : "ssh:" + remoteHost, account: name),
+                            key: .init(target: target == .local ? "local" : "ssh:" + remoteHost, account: name,
+                                       namespace: self.executableOverride?.standardizedFileURL.path ?? "official"),
                             maximumAge: force ? 0 : 30
                         ) {
                             try Task.checkCancellation()
@@ -371,7 +372,18 @@ final class CABService {
         let readOnly = isReadOnlyCommand(arguments)
         if readOnly { register(execution, id: id) }
         defer { unregister(id) }
-        let result = try await execution.run(timeout: commandTimeout(arguments), onOutput: onOutput)
+        let changesUsage = arguments.first == "login"
+            || (arguments.first == "account" && arguments.count > 1 && ["add", "remove", "import-current"].contains(arguments[1]))
+            || (arguments.first == "usage" && arguments.count > 1 && ["reset", "probe"].contains(arguments[1]))
+        if changesUsage { await UsageRepository.shared.invalidate(namespace: executableOverride?.standardizedFileURL.path ?? "official") }
+        let result: CommandResult
+        do {
+            result = try await execution.run(timeout: commandTimeout(arguments), onOutput: onOutput)
+        } catch {
+            if changesUsage { await UsageRepository.shared.invalidate(namespace: executableOverride?.standardizedFileURL.path ?? "official") }
+            throw error
+        }
+        if changesUsage { await UsageRepository.shared.invalidate(namespace: executableOverride?.standardizedFileURL.path ?? "official") }
         if target == .remote, result.exitCode != 0 {
             return CommandResult(output: result.output, errorOutput: remoteCommandFailure(result), exitCode: result.exitCode)
         }

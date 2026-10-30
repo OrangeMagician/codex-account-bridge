@@ -1,11 +1,29 @@
 package codex
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestUsageAccountFingerprintRequiresBothWorkspaceAndPrincipal(t *testing.T) {
+	first := usageAccountFingerprint("workspace-a", "member@example.test")
+	if len(first) != 64 || first != usageAccountFingerprint(" workspace-a ", " Member@Example.test ") {
+		t.Fatal("fingerprint should normalize the same official identity")
+	}
+	if first == usageAccountFingerprint("workspace-b", "member@example.test") || first == usageAccountFingerprint("workspace-a", "other@example.test") {
+		t.Fatal("different workspaces or members must not share quota")
+	}
+	if usageAccountFingerprint("", "member@example.test") != "" || usageAccountFingerprint("workspace-a", "") != "" {
+		t.Fatal("incomplete identity must not establish a shared account")
+	}
+	data, err := json.Marshal(UsageSnapshot{AccountFingerprint: first})
+	if err != nil || strings.Contains(string(data), "workspace-a") || strings.Contains(string(data), "member@example.test") {
+		t.Fatal("raw identity must not leave the RPC client")
+	}
+}
 
 func TestReadUsageUsesOfficialAppServerWithoutExposingAccountEmail(t *testing.T) {
 	root := t.TempDir()
@@ -20,7 +38,7 @@ IFS= read -r initialized
 IFS= read -r account
 printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"private@example.com","planType":"plus"},"requiresOpenaiAuth":true}}'
 IFS= read -r limits
-printf '%s\n' '{"id":3,"result":{"rateLimits":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":42.5,"windowDurationMins":10080,"resetsAt":1788139274},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.50"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":42.5,"windowDurationMins":10080,"resetsAt":1788139274},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.50"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":1,"credits":[{"id":"secret-id","resetType":"codexRateLimits","status":"available","grantedAt":1788000000,"expiresAt":1789000000,"title":"Reset","description":"One reset"}]}}}'
+printf '%s\n' '{"id":3,"result":{"accountId":"workspace-a","rateLimits":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":42.5,"windowDurationMins":10080,"resetsAt":1788139274},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.50"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":42.5,"windowDurationMins":10080,"resetsAt":1788139274},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.50"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":1,"credits":[{"id":"secret-id","resetType":"codexRateLimits","status":"available","grantedAt":1788000000,"expiresAt":1789000000,"title":"Reset","description":"One reset"}]}}}'
 `
 	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -31,6 +49,9 @@ printf '%s\n' '{"id":3,"result":{"rateLimits":{"limitId":"codex","limitName":"Co
 	usage, err := ReadUsage(home)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if usage.AccountFingerprint != usageAccountFingerprint("workspace-a", "private@example.com") {
+		t.Fatal("official usage account identity was not fingerprinted")
 	}
 	if usage.PlanType != "plus" || usage.RateLimits.Primary == nil || usage.RateLimits.Primary.UsedPercent != 42.5 {
 		t.Fatalf("unexpected usage: %#v", usage)

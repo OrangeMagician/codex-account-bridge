@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,7 @@ func (b *synchronizedBuffer) String() string {
 }
 
 type UsageSnapshot struct {
+	AccountFingerprint  string                       `json:"account_fingerprint,omitempty"`
 	PlanType            string                       `json:"plan_type,omitempty"`
 	RateLimits          RateLimitSnapshot            `json:"rate_limits"`
 	RateLimitsByLimitID map[string]RateLimitSnapshot `json:"rate_limits_by_limit_id,omitempty"`
@@ -99,10 +101,12 @@ type rpcAccountRead struct {
 	Account *struct {
 		Type     string `json:"type"`
 		PlanType string `json:"planType"`
+		Email    string `json:"email"`
 	} `json:"account"`
 }
 
 type rpcRateLimitResponse struct {
+	AccountID           string                          `json:"accountId"`
 	RateLimits          rpcRateLimitSnapshot            `json:"rateLimits"`
 	RateLimitsByLimitID map[string]rpcRateLimitSnapshot `json:"rateLimitsByLimitId"`
 	ResetCredits        *rpcResetCreditsSummary         `json:"rateLimitResetCredits"`
@@ -260,6 +264,7 @@ func readUsageOnce(ctx context.Context, binary, home string) (UsageSnapshot, err
 	}
 
 	result := UsageSnapshot{
+		AccountFingerprint:  usageAccountFingerprint(rateLimits.AccountID, account.Account.Email),
 		PlanType:            account.Account.PlanType,
 		RateLimits:          convertRateLimit(rateLimits.RateLimits),
 		RateLimitsByLimitID: make(map[string]RateLimitSnapshot, len(rateLimits.RateLimitsByLimitID)),
@@ -272,6 +277,17 @@ func readUsageOnce(ctx context.Context, binary, home string) (UsageSnapshot, err
 		result.RateLimits.PlanType = result.PlanType
 	}
 	return result, nil
+}
+
+// The backend account identifies the workspace, while the principal distinguishes
+// members of the same workspace. Neither raw value leaves the official RPC client.
+func usageAccountFingerprint(accountID, email string) string {
+	accountID = strings.TrimSpace(accountID)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if accountID == "" || email == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte("cab-usage-v1\x00"+accountID+"\x00"+email)))
 }
 
 func waitForUsageRetry(ctx context.Context, attempt int) error {

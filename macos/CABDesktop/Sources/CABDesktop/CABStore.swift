@@ -96,6 +96,7 @@ final class CABStore: ObservableObject {
     var usageWakeState = UsageWakeState()
     var usageWakeInFlightKeys: Set<String> = []
     var usageSchedulerTask: Task<Void, Never>?
+    var usageRepositoryObserver: Task<Void, Never>?
     var usageWakeTickInFlight: Set<String> = []
     var usageWakeTickLogged: Set<String> = []
     var usageWakeDeferredLogged: Set<String> = []
@@ -297,6 +298,13 @@ final class CABStore: ObservableObject {
 
     func startUsageRefreshScheduler() {
         guard usageSchedulerTask == nil else { return }
+        usageRepositoryObserver = Task { @MainActor [weak self] in
+            let updates = await UsageRepository.shared.updates()
+            for await update in updates {
+                guard let self, !Task.isCancelled else { return }
+                self.receiveSharedUsage(update)
+            }
+        }
         usageSchedulerTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
@@ -314,6 +322,8 @@ final class CABStore: ObservableObject {
     func stopUsageRefreshScheduler() {
         usageSchedulerTask?.cancel()
         usageSchedulerTask = nil
+        usageRepositoryObserver?.cancel()
+        usageRepositoryObserver = nil
     }
 
     func setUsageRefreshInterval(_ interval: UsageRefreshInterval) {

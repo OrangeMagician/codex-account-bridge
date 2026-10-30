@@ -164,6 +164,7 @@ final class MenuBarUsageStore: ObservableObject {
     private let defaults: UserDefaults
     private let desktopHome: @MainActor () -> LocalDesktopHome
     private var monitor: Task<Void, Never>?
+    private var usageObserver: Task<Void, Never>?
     private var lastAttempt: Date?
     private let preferencesKey = "menuBarPreferences.v1"
 
@@ -186,6 +187,13 @@ final class MenuBarUsageStore: ObservableObject {
 
     func startMonitoring() {
         guard monitor == nil else { return }
+        usageObserver = Task { @MainActor [weak self] in
+            let updates = await UsageRepository.shared.updates()
+            for await update in updates {
+                guard let self, !Task.isCancelled else { return }
+                self.receiveSharedUsage(update)
+            }
+        }
         monitor = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh(force: false)
@@ -194,7 +202,19 @@ final class MenuBarUsageStore: ObservableObject {
         }
     }
 
-    deinit { monitor?.cancel() }
+    deinit { monitor?.cancel(); usageObserver?.cancel() }
+
+    func receiveSharedUsage(_ update: UsageRepository.Update) {
+        guard let account = snapshot.account, account.isLoggedIn, desktopHome() == snapshot.desktop,
+              let report = update.reports[.init(target: "local", account: account.name)],
+              let result = report.accounts.first(where: { $0.name == account.name }),
+              result.error == nil, let usage = result.usage else { return }
+        snapshot.usage = usage
+        snapshot.fetchedAt = result.fetchedAt ?? report.fetchedAt
+        snapshot.error = nil
+        snapshot.checkedAt = Date()
+        lastAttempt = Date()
+    }
 
     func launchCurrentAccount() {
         guard let account = snapshot.account, account.isLoggedIn else { return }
