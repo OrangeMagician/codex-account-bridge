@@ -288,7 +288,7 @@ struct UsageResetAutomationTests {
                 for enabled in [false, true] {
                     automation.setEnabled(enabled)
                     automation.setLeadMinutes(enabled ? 5 : 2)
-                    let content = SystemSettingsView().environmentObject(store).environmentObject(MenuBarUsageStore())
+                    let content = SystemSettingsView(performsLiveChecks: false).environmentObject(store).environmentObject(MenuBarUsageStore())
                         .frame(width: CGFloat(width), height: 1000)
                         .background(Color(nsColor: .windowBackgroundColor))
                         .environment(\.colorScheme, dark ? .dark : .light).cabPreservingActiveColors()

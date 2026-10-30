@@ -1,112 +1,87 @@
 import SwiftUI
 
+/// Preferences live inside the main window; its parent owns scrolling and padding.
 struct SystemSettingsView: View {
+    var publicResetMonitor = PublicResetMonitor.shared
+    var performsLiveChecks = true
     @EnvironmentObject private var store: CABStore
     @EnvironmentObject private var menuBar: MenuBarUsageStore
     @State private var pendingUsageWakeEnable = false
     @State private var usageWakeExpanded = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Label("系统设置", systemImage: "gearshape")
-                    .font(.title2.bold())
+        VStack(alignment: .leading, spacing: 20) {
+            Label("软件设置", systemImage: "gearshape").font(.title2.bold())
 
-                GroupBox {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Label("界面语言", systemImage: "globe")
                         Spacer()
                         Picker("界面语言", selection: Binding(
-                            get: { store.interfaceLanguage },
-                            set: store.setInterfaceLanguage
+                            get: { store.interfaceLanguage }, set: store.setInterfaceLanguage
                         )) {
-                            ForEach(InterfaceLanguage.allCases) { language in
-                                Text(language.title).tag(language)
-                            }
+                            ForEach(InterfaceLanguage.allCases) { language in Text(language.title).tag(language) }
                         }
-                        .labelsHidden()
-                        .fixedSize()
+                        .labelsHidden().fixedSize()
                     }
-                    .padding(8)
-                } label: {
-                    Text("通用")
-                }
+                    Divider()
+                    Label("状态栏", systemImage: "menubar.rectangle").fontWeight(.medium)
+                    MenuBarPreferencesView(model: menuBar)
+                }.padding(8)
+            } label: { Text("通用与显示") }
 
-                GroupBox {
-                    MenuBarPreferencesView(model: menuBar).padding(8)
-                } label: {
-                    Label("状态栏", systemImage: "menubar.rectangle")
-                }
-
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Label("自动刷新额度", systemImage: "arrow.clockwise")
-                            Spacer()
-                            Picker("刷新间隔", selection: Binding(
-                                get: { store.usageRefreshInterval },
-                                set: store.setUsageRefreshInterval
-                            )) {
-                                ForEach(UsageRefreshInterval.allCases) { interval in
-                                    Text(interval.title).tag(interval)
-                                }
-                            }
-                            .labelsHidden()
-                            .fixedSize()
-                        }
-
-                        Divider()
-
-                        HStack(spacing: 10) {
-                            Label("额度重置通知", systemImage: "bell.badge")
-                            if let error = store.usageResetNotificationError {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                    .help(error)
-                                    .accessibilityLabel(error)
-                            } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
-                                Text("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if store.isUsageResetNotificationUpdating {
-                                ProgressView().controlSize(.small)
-                            }
-                            Toggle("额度重置通知", isOn: Binding(
-                                get: { store.usageResetNotificationsEnabled },
-                                set: store.setUsageResetNotificationsEnabled
-                            ))
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .disabled(store.isUsageResetNotificationUpdating)
-                            .help("在官方额度周期到达重置时间时发送 macOS 通知")
-                        }
-
-                        Divider()
-
-                        PublicResetSettingsView()
-                        Divider()
-
-                        UsageResetAutomationSettingsView(automation: store.usageResetAutomation)
-                        Divider()
-
-                        LowQuotaSettingsView()
-                        Divider()
-
-                        UsageWakeControlsView(
-                            pendingEnable: $pendingUsageWakeEnable,
-                            isExpanded: $usageWakeExpanded
-                        )
+            GroupBox {
+                HStack {
+                    Label("自动刷新额度", systemImage: "arrow.clockwise")
+                    Spacer()
+                    Picker("刷新间隔", selection: Binding(
+                        get: { store.usageRefreshInterval }, set: store.setUsageRefreshInterval
+                    )) {
+                        ForEach(UsageRefreshInterval.allCases) { interval in Text(interval.title).tag(interval) }
                     }
-                    .padding(8)
-                } label: {
-                    Text("额度与通知")
-                }
-            }
+                    .labelsHidden().fixedSize()
+                }.padding(8)
+            } label: { Text("额度刷新") }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    PublicResetSettingsView(monitor: publicResetMonitor, performsLiveChecks: performsLiveChecks)
+                    Divider()
+                    usageResetNotificationControls
+                    Divider()
+                    LowQuotaSettingsView()
+                }.padding(8)
+            } label: { Text("重置与提醒") }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    UsageResetAutomationSettingsView(automation: store.usageResetAutomation)
+                    Divider()
+                    UsageWakeControlsView(pendingEnable: $pendingUsageWakeEnable, isExpanded: $usageWakeExpanded)
+                }.padding(8)
+            } label: { Text("自动任务") }
         }
-        .padding(24)
-        .frame(minWidth: 600, minHeight: 500)
+    }
+
+    private var usageResetNotificationControls: some View {
+        HStack(spacing: 10) {
+            Label("额度重置通知", systemImage: "bell.badge")
+            if let error = store.usageResetNotificationError {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).help(error).accessibilityLabel(error)
+            } else if store.usageResetNotificationsEnabled && store.scheduledUsageResetNotificationCount > 0 {
+                Text("\(store.scheduledUsageResetNotificationCount) \(cabLocalized("个已安排"))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if store.isUsageResetNotificationUpdating { ProgressView().controlSize(.small) }
+            Toggle("额度重置通知", isOn: Binding(
+                get: { store.usageResetNotificationsEnabled }, set: store.setUsageResetNotificationsEnabled
+            ))
+            .labelsHidden().toggleStyle(.switch).disabled(store.isUsageResetNotificationUpdating)
+            .help("在官方额度周期到达重置时间时发送 macOS 通知")
+        }
     }
 }
 

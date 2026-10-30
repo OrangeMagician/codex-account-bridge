@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -9,6 +10,7 @@ struct CABDesktopApp: App {
         WindowGroup(id: "cab-main") {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(menuBar)
                 .cabPreservingActiveColors()
                 .task {
                     menuBar.startMonitoring()
@@ -18,14 +20,6 @@ struct CABDesktopApp: App {
         .windowStyle(.titleBar)
         .commands {
             CABCommands(store: store)
-        }
-
-        Settings {
-            SystemSettingsView()
-                .environmentObject(store)
-                .environmentObject(menuBar)
-                .environment(\.locale, Locale(identifier: store.interfaceLanguage.localeIdentifier))
-                .cabPreservingActiveColors()
         }
 
         MenuBarExtra {
@@ -51,8 +45,21 @@ extension View {
 
 private struct CABCommands: Commands {
     @ObservedObject var store: CABStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("软件设置") {
+                store.sidebarSelection = CABStore.appSettingsSelection
+                if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("cab-main-") == true }) {
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                } else {
+                    openWindow(id: "cab-main")
+                }
+            }
+            .keyboardShortcut(",", modifiers: [.command])
+        }
         CommandMenu("操作") {
             Button("刷新") { store.refresh() }
                 .keyboardShortcut("r", modifiers: [.command])

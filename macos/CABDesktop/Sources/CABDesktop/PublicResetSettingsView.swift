@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PublicResetSettingsView: View {
     @ObservedObject var monitor = PublicResetMonitor.shared
+    var performsLiveChecks = true
     @Environment(\.locale) private var locale
 
     var body: some View {
@@ -14,6 +15,8 @@ struct PublicResetSettingsView: View {
                     .labelsHidden().toggleStyle(.switch).disabled(monitor.updating)
             }
             Text("开启后每 5 分钟检查公开公告，区分全局重置与重置卡发放。首次检查只展示现有消息，不补发历史通知。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("概览显示今日重置状态；关闭提醒后只在概览页检查，不发送通知。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if monitor.enabled {
                 if let snapshot = monitor.snapshot {
@@ -51,7 +54,7 @@ struct PublicResetSettingsView: View {
             Text("公开信号仅供参考，不代表你的账号额度已恢复。应用退出后停止检查。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .task { monitor.startMonitoring() }
+        .task { if performsLiveChecks { monitor.startMonitoring() } }
     }
 
     private func recordDetails(_ record: PublicResetRecord) -> some View {

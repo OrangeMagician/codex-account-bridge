@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     var performsLiveChecks = true
+    var publicResetMonitor = PublicResetMonitor.shared
     @EnvironmentObject private var store: CABStore
     @State private var pendingDesktopSwitchConfirmation: AccountStatus?
     @State private var pendingSessionSharing: Bool?
@@ -22,13 +23,15 @@ struct ContentView: View {
         } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    targetHeader
-                    if store.showingGlobalSettings {
+                    if !store.showingAppSettings { targetHeader }
+                    if store.showingAppSettings {
+                        applicationSettingsPage
+                    } else if store.showingGlobalSettings {
                         globalSettingsPage
                     } else if store.showingFeatures {
                         CodexFeaturesView(model: store.codexFeatures, section: store.sidebarSelection, performsLiveChecks: performsLiveChecks)
                     } else if store.showingTools {
-                        ManagementToolsView(model: store.tools, section: store.sidebarSelection)
+                        ManagementToolsView(model: store.tools, section: store.sidebarSelection, performsLiveChecks: performsLiveChecks)
                     } else {
                         if store.canImportCurrentLogin { existingLoginCard }
                         if let account = store.selectedAccountStatus {
@@ -56,8 +59,10 @@ struct ContentView: View {
                 Button(action: store.refresh) { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(store.isBusy)
                     .help("刷新当前目标的状态、账号和额度")
-                Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
-                    .help("在终端启动当前目标的 Codex")
+                if !store.showingAppSettings {
+                    Button(action: store.launchCodex) { Label("在终端启动", systemImage: "terminal") }
+                        .help("在终端启动当前目标的 Codex")
+                }
             }
         }
         .overlay {
@@ -259,6 +264,7 @@ struct ContentView: View {
                     Label("最近任务", systemImage: "text.bubble").tag("cab.tasks")
                     Label("CAB Worktree", systemImage: "arrow.triangle.branch").tag("cab.worktrees")
                     Label("切换记录", systemImage: "clock.arrow.circlepath").tag("cab.history")
+                    Label("软件设置", systemImage: "gearshape").tag(CABStore.appSettingsSelection)
                 }
                 Section("账号") {
                     ForEach(store.status.accounts) { account in
@@ -331,14 +337,24 @@ struct ContentView: View {
 
     private var globalSettingsPage: some View {
         VStack(alignment: .leading, spacing: 20) {
+            PublicResetOverviewCard(monitor: publicResetMonitor, performsLiveChecks: performsLiveChecks)
             globalOverviewCard
             usageOverviewCard
             if store.target == .remote { remoteCodexUpdateCard }
             tokenActivityCard
             if store.target == .local { desktopSwitcherCard }
+        }
+    }
+
+    private var applicationSettingsPage: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SystemSettingsView(publicResetMonitor: publicResetMonitor, performsLiveChecks: performsLiveChecks)
+            Label("账号与会话", systemImage: "person.2.badge.gearshape").font(.title3.bold())
+            LabeledContent("当前管理位置", value: store.targetTitle)
+                .foregroundStyle(.secondary)
             sessionSharingCard
-            if store.target == .remote { agentBindingsCard }
             rotationCard
+            if store.target == .remote { agentBindingsCard }
         }
     }
 

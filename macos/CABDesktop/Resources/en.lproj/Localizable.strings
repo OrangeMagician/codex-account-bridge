@@ -521,3 +521,21 @@
 "提前 %lld 分钟" = "%lld minutes before expiry";
 "默认提前 5 分钟，最少提前 2 分钟。" = "Defaults to 5 minutes before expiry; minimum 2 minutes.";
 "默认开启。重置卡进入设定的到期时间范围后，无论剩余额度多少，直接使用，不再确认。适用于本机及已配置的远程账号。" = "Enabled by default. Uses reset cards within the configured time before expiry, regardless of remaining quota, without confirmation. Applies to local accounts and configured remote servers.";
+
+// Main-window settings and reset overview
+"软件设置" = "App settings";
+"通用与显示" = "General and display";
+"额度刷新" = "Quota refresh";
+"重置与提醒" = "Resets and notifications";
+"自动任务" = "Automation";
+"账号与会话" = "Accounts and sessions";
+"当前管理位置" = "Current location";
+"今日重置" = "Today's reset";
+"今日有重置" = "Reset today";
+"今日暂无重置" = "No reset today";
+"正在检查" = "Checking";
+"暂时无法确认" = "Unable to confirm";
+"重置提醒" = "Reset alerts";
+"按本机日期显示公开全局重置公告；不代表具体账号额度已恢复。" = "Shows public global-reset announcements for the local date; does not confirm an individual account's quota recovery.";
+"检测到新的公开重置公告时发送通知。" = "Sends a notification when a new public reset announcement is detected.";
+"概览显示今日重置状态；关闭提醒后只在概览页检查，不发送通知。" = "The overview shows today's reset status. With alerts off, checks run only on the overview and send no notifications.";

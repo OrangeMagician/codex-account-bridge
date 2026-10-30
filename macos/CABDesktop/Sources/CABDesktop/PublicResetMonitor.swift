@@ -81,8 +81,12 @@ final class PublicResetMonitor: ObservableObject {
         }
     }
 
-    func check(now: Date = Date()) async {
-        guard enabled, !checking, nextCheckAt == nil || now >= nextCheckAt! else { return }
+    func checkForDisplay(now: Date = Date()) async {
+        await check(now: now, forDisplay: true)
+    }
+
+    func check(now: Date = Date(), forDisplay: Bool = false) async {
+        guard (enabled || forDisplay), !checking, nextCheckAt == nil || now >= nextCheckAt! else { return }
         checking = true
         let capturedGeneration = generation
         defer { checking = false }
@@ -90,10 +94,15 @@ final class PublicResetMonitor: ObservableObject {
         nextCheckAt = now.addingTimeInterval(300)
         do {
             let fetched = try await fetch()
-            guard enabled, capturedGeneration == generation, !Task.isCancelled else { return }
+            guard (enabled || forDisplay), capturedGeneration == generation, !Task.isCancelled else { return }
             snapshot = fetched
             checkedAt = now
             guard fetched.isFresh(at: now) else { throw PublicResetFeedError.stale }
+            if !enabled {
+                failures = 0
+                error = nil
+                return // Viewing the overview never authorizes notifications.
+            }
             if checkpoint.initializedAt == nil {
                 // Establish a baseline without replaying the source's historical announcements.
                 checkpoint.markSeen(fetched.records, now: now)
@@ -115,7 +124,7 @@ final class PublicResetMonitor: ObservableObject {
             failures = 0
             error = nil
         } catch {
-            guard enabled, capturedGeneration == generation, !Task.isCancelled else { return }
+            guard (enabled || forDisplay), capturedGeneration == generation, !Task.isCancelled else { return }
             failures = min(failures + 1, 4)
             var delay = min(3600, 300 * pow(2, Double(failures - 1)))
             if case let PublicResetFeedError.rateLimited(retry) = error { delay = max(delay, retry) }

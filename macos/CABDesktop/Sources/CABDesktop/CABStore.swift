@@ -158,7 +158,7 @@ final class CABStore: ObservableObject {
     }
 
     var selectedAccount: String? {
-        get { showingGlobalSettings || showingTools ? nil : sidebarSelection }
+        get { showingGlobalSettings || showingAppSettings || showingTools ? nil : sidebarSelection }
         set { sidebarSelection = newValue ?? Self.globalSettingsSelection }
     }
 
@@ -168,6 +168,8 @@ final class CABStore: ObservableObject {
     var showingGlobalSettings: Bool {
         sidebarSelection == Self.globalSettingsSelection
     }
+
+    var showingAppSettings: Bool { sidebarSelection == Self.appSettingsSelection }
 
     var canImportCurrentLogin: Bool {
         status.currentLogin?.isLoggedIn == true && status.currentLogin?.isRegistered == false
@@ -429,7 +431,7 @@ final class CABStore: ObservableObject {
 
     func changeTarget(_ next: BridgeTarget) {
         target = next
-        if !showingTools { selectedAccount = nil }
+        if !showingTools && !showingAppSettings { selectedAccount = nil }
         restoreUsageForCurrentTarget()
         restoreTokenUsageForCurrentTarget()
         restoreCodexUpdateStatusForCurrentTarget()
@@ -444,7 +446,7 @@ final class CABStore: ObservableObject {
     func selectRemoteServer(_ id: UUID?) {
         selectedRemoteID = id
         if let id { defaults.set(id.uuidString, forKey: selectedRemoteKey) }
-        if !showingTools { selectedAccount = nil }
+        if !showingTools && !showingAppSettings { selectedAccount = nil }
         restoreUsageForCurrentTarget()
         restoreTokenUsageForCurrentTarget()
         restoreCodexUpdateStatusForCurrentTarget()
@@ -899,7 +901,7 @@ final class CABStore: ObservableObject {
             if !hasSavedDesktopSessionPreference && capturedTarget == .local {
                 preserveSessionsOnDesktopSwitch = loaded.sharedSessions
             }
-            if !showingGlobalSettings && !showingTools && !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
+            if !showingGlobalSettings && !showingAppSettings && !showingTools && !loaded.accounts.contains(where: { $0.name == selectedAccount }) {
                 selectedAccount = loaded.defaultAccount ?? loaded.accounts.first?.name
             }
             let configured = loaded.rotation.orderedAccounts
@@ -933,6 +935,7 @@ final class CABStore: ObservableObject {
 
     static let emptyStatus = BridgeStatus(sharedSessions: false, rotation: RotationStatus(enabled: false, accounts: [], nextIndex: 0), currentLogin: nil, accounts: [])
     static let globalSettingsSelection = "__cab_global_settings__"
+    static let appSettingsSelection = "cab.settings"
 
     func run(
         _ arguments: [String],
