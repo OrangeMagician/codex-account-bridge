@@ -25,30 +25,64 @@ struct MenuBarPreferences: Codable, Equatable {
 
 enum LocalDesktopHome: Equatable {
     case running(String)
+    case multiple(homes: Set<String>, front: String?)
     case notRunning
     case unknown
+
+    var frontHome: String? {
+        switch self {
+        case let .running(home): return home
+        case let .multiple(_, front): return front
+        default: return nil
+        }
+    }
+
+    func contains(home: String) -> Bool {
+        let path = canonicalDesktopHome(home)
+        switch self {
+        case let .running(single): return canonicalDesktopHome(single) == path
+        case let .multiple(homes, _): return homes.contains(path)
+        default: return false
+        }
+    }
 }
 
-// Inspect only the official desktop's launch environment. Never inspect credentials
-// or infer the current account from a previous CAB launch or the selected sidebar.
+func canonicalDesktopHome(_ home: String) -> String {
+    URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+}
+
+func desktopProcessHome(_ pid: pid_t) -> String? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+    var size = 0
+    guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 4 else { return nil }
+    var bytes = [UInt8](repeating: 0, count: size)
+    let result = bytes.withUnsafeMutableBytes { sysctl(&mib, UInt32(mib.count), $0.baseAddress, &size, nil, 0) }
+    guard result == 0 else { return nil }
+    let defaultHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
+    return desktopHomeFromProcessArguments(Array(bytes.prefix(size)), defaultHome: defaultHome).map(canonicalDesktopHome)
+}
+
+// WindowServer returns on-screen windows in front-to-back order, even while CAB
+// itself is frontmost. Only the owning PID and the window layer are needed.
+func frontDesktopWindowPID(in pids: Set<pid_t>) -> pid_t? {
+    guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return nil }
+    for window in windows where window[kCGWindowLayer as String] as? Int == 0 {
+        if let pid = window[kCGWindowOwnerPID as String] as? pid_t, pids.contains(pid) { return pid }
+    }
+    return nil
+}
+
 @MainActor
 func currentLocalDesktopHome() -> LocalDesktopHome {
-    let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
-        .filter { desktopProcessIsRunning($0.processIdentifier) }
-    guard !apps.isEmpty else { return .notRunning }
-    var homes = Set<String>()
-    for app in apps {
-        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, app.processIdentifier]
-        var size = 0
-        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 4 else { return .unknown }
-        var bytes = [UInt8](repeating: 0, count: size)
-        let result = bytes.withUnsafeMutableBytes { sysctl(&mib, UInt32(mib.count), $0.baseAddress, &size, nil, 0) }
-        guard result == 0,
-              let home = desktopHomeFromProcessArguments(Array(bytes.prefix(size)), defaultHome: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
-        else { return .unknown }
-        homes.insert(home)
+    let apps = CodexDesktopLifecycle().runningApplications
+    guard let first = apps.first else { return .notRunning }
+    if apps.count == 1 {
+        return desktopProcessHome(first.processIdentifier).map(LocalDesktopHome.running) ?? .unknown
     }
-    return homes.count == 1 ? .running(homes.first!) : .unknown
+    let pids = Set(apps.map(\.processIdentifier))
+    let homes = Dictionary(uniqueKeysWithValues: pids.compactMap { pid in desktopProcessHome(pid).map { (pid, $0) } })
+    let activePID = apps.first(where: \.isActive)?.processIdentifier ?? frontDesktopWindowPID(in: pids)
+    return .multiple(homes: Set(homes.values), front: activePID.flatMap { homes[$0] })
 }
 
 func desktopHomeFromProcessArguments(_ bytes: [UInt8], defaultHome: String) -> String? {
@@ -79,13 +113,16 @@ func menuBarAccount(in status: BridgeStatus, desktop: LocalDesktopHome) -> Accou
     let home: String
     switch desktop {
     case let .running(path): home = path
+    case let .multiple(_, front):
+        guard let front else { return nil }
+        home = front
     case .notRunning:
         guard let path = status.currentLogin?.home else { return nil }
         home = path
     case .unknown: return nil
     }
-    let normalized = URL(fileURLWithPath: home).standardizedFileURL.path
-    return status.accounts.first { URL(fileURLWithPath: $0.home).standardizedFileURL.path == normalized }
+    let normalized = canonicalDesktopHome(home)
+    return status.accounts.first { canonicalDesktopHome($0.home) == normalized }
 }
 
 func menuBarPercent(_ value: UsagePeriodDisplayValue) -> String {
@@ -133,6 +170,7 @@ struct MenuBarSnapshot: Equatable {
     }
 
     var unavailableReason: String? {
+        if case .multiple(_, nil) = desktop { return cabLocalized("多个账号窗口已打开") }
         if desktop == .unknown { return cabLocalized("无法确认本机当前账号") }
         if account == nil { return cabLocalized("当前账号尚未纳入 CAB") }
         if account?.isLoginUnknown == true { return cabLocalized("登录状态未知") }
@@ -164,6 +202,7 @@ final class MenuBarUsageStore: ObservableObject {
     private let defaults: UserDefaults
     private let desktopHome: @MainActor () -> LocalDesktopHome
     private var monitor: Task<Void, Never>?
+    private var activationMonitor: Task<Void, Never>?
     private var usageObserver: Task<Void, Never>?
     private var lastAttempt: Date?
     private let preferencesKey = "menuBarPreferences.v1"
@@ -194,6 +233,15 @@ final class MenuBarUsageStore: ObservableObject {
                 self.receiveSharedUsage(update)
             }
         }
+        activationMonitor = Task { @MainActor [weak self] in
+            let changes = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didActivateApplicationNotification)
+                .map { ($0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier }
+            for await identifier in changes {
+                guard let self, !Task.isCancelled else { return }
+                guard identifier == "com.openai.codex", self.desktopHome() != self.snapshot.desktop else { continue }
+                await self.refresh(force: false)
+            }
+        }
         monitor = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh(force: false)
@@ -202,7 +250,11 @@ final class MenuBarUsageStore: ObservableObject {
         }
     }
 
-    deinit { monitor?.cancel(); usageObserver?.cancel() }
+    deinit {
+        monitor?.cancel()
+        activationMonitor?.cancel()
+        usageObserver?.cancel()
+    }
 
     func receiveSharedUsage(_ update: UsageRepository.Update) {
         guard let account = snapshot.account, account.isLoggedIn, desktopHome() == snapshot.desktop,

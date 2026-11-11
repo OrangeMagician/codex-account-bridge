@@ -2,6 +2,38 @@ import CABContinuity
 import Foundation
 
 extension CABStore {
+    func syncDesktopHistory() async throws {
+        if let desktopHistorySync { return try await desktopHistorySync.value }
+        let task = Task { try await service.syncSharedDesktopHistory() }
+        desktopHistorySync = task
+        defer { desktopHistorySync = nil }
+        try await task.value
+    }
+
+    func openDesktopWindow(for account: AccountStatus) {
+        guard target == .local, account.isLoggedIn, status.accounts.contains(account), !isBusy else { return }
+        isBusy = true
+        errorMessage = nil
+        Task {
+            defer {
+                refreshLocalDesktopAccount()
+                isBusy = false
+            }
+            do {
+                let alreadyOpen = desktopHome().contains(home: account.home)
+                do { try await syncDesktopHistory() }
+                catch { errorMessage = error.localizedDescription }
+                try await service.openCodexDesktopWindow(codexHome: account.home)
+                lastDesktopAccount = account.name
+                defaults.set(account.name, forKey: lastDesktopAccountKey)
+                // On first launch the native client creates its own databases.
+                if !alreadyOpen { try await syncDesktopHistory() }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func switchCodexDesktop(to account: AccountStatus) {
         refreshLocalDesktopAccount()
         guard !isCurrentDesktopAccount(account) else { return }
@@ -19,8 +51,13 @@ extension CABStore {
 
     func closeProcessesAndContinueDesktopSwitch(_ request: DesktopSwitchProcessRequest) {
         guard !isBusy else { return }
+        refreshLocalDesktopAccount()
+        guard !multipleDesktopsRunning else {
+            pendingDesktopSwitchError = cabLocalized("请先退出其他账号窗口，再重启切换。")
+            return
+        }
+        isBusy = true
         Task {
-            isBusy = true
             errorMessage = nil
             pendingDesktopSwitchError = nil
             var stopError: Error?
@@ -53,8 +90,12 @@ extension CABStore {
     func performDesktopSwitch(to account: AccountStatus, checkProcesses: Bool) {
         refreshLocalDesktopAccount()
         guard !isBusy, !isCurrentDesktopAccount(account) else { return }
+        guard !multipleDesktopsRunning else {
+            errorMessage = cabLocalized("请先退出其他账号窗口，再重启切换。")
+            return
+        }
+        isBusy = true
         Task {
-            isBusy = true
             errorMessage = nil
             desktopSwitchPartialResult = nil
             defer { refreshLocalDesktopAccount() }
@@ -79,6 +120,9 @@ extension CABStore {
                 if isCurrentDesktopAccount(account) {
                     isBusy = false
                     return
+                }
+                guard !multipleDesktopsRunning else {
+                    throw BridgeError.commandFailed(cabLocalized("请先退出其他账号窗口，再重启切换。"))
                 }
                 originalSharedSessions = liveStatus.sharedSessions
                 fallbackHome = previousDesktopHome(fallback: account.home)

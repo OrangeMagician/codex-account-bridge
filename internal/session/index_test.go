@@ -19,8 +19,12 @@ func TestIndexRepairRequiresSharedSessionOptIn(t *testing.T) {
 }
 
 func TestIndexRepairSQLiteRegressions(t *testing.T) {
-	cmd := exec.Command("/usr/bin/python3", "-I", "index_sync_test.py", "-v")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("index repair regressions: %v\n%s", err, output)
+	for _, script := range []string{"index_sync_test.py", "desktop_sync_test.py"} {
+		t.Run(script, func(t *testing.T) {
+			cmd := exec.Command("/usr/bin/python3", "-I", script, "-v")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("index repair regressions: %v\n%s", err, output)
+			}
+		})
 	}
 }

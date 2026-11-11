@@ -20,9 +20,13 @@ import (
 //go:embed index_sync.py
 var indexSyncScript string
 
+//go:embed desktop_sync.py
+var desktopSyncScript string
+
 type IndexRepairReport struct {
-	Updated int      `json:"updated"`
-	Backups []string `json:"backups"`
+	Conflicts int      `json:"conflicts,omitempty"`
+	Updated   int      `json:"updated"`
+	Backups   []string `json:"backups"`
 }
 
 // RepairIndexes only operates after the user has opted into shared history.
@@ -35,6 +39,14 @@ func RepairIndexes(paths config.Paths, cfg config.Config) (IndexRepairReport, er
 // RepairIndexesFrom uses the explicitly selected outgoing account for pin and
 // section edits; timestamps alone cannot order these user-managed fields.
 func RepairIndexesFrom(paths config.Paths, cfg config.Config, sourceHome string) (IndexRepairReport, error) {
+	return repairIndexes(paths, cfg, sourceHome, false)
+}
+
+func SyncDesktopHistory(paths config.Paths, cfg config.Config) (IndexRepairReport, error) {
+	return repairIndexes(paths, cfg, "", true)
+}
+
+func repairIndexes(paths config.Paths, cfg config.Config, sourceHome string, desktop bool) (IndexRepairReport, error) {
 	var report IndexRepairReport
 	if cfg.SharedSessionsDir == "" {
 		return report, nil
@@ -62,13 +74,17 @@ func RepairIndexesFrom(paths config.Paths, cfg config.Config, sourceHome string)
 	if python == "" {
 		return report, fmt.Errorf("shared session index repair requires system Python 3 with sqlite3; account was not switched")
 	}
-	input, err := json.Marshal(map[string]any{"homes": homes, "shared": cfg.SharedSessionsDir, "data": paths.DataDir, "source_home": sourceHome})
+	input, err := json.Marshal(map[string]any{"homes": homes, "shared": cfg.SharedSessionsDir, "data": paths.DataDir, "source_home": sourceHome, "desktop": desktop})
 	if err != nil {
 		return report, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, python, "-I", "-c", indexSyncScript)
+	script := indexSyncScript
+	if desktop {
+		script = desktopSyncScript + "\n" + script
+	}
+	cmd := exec.CommandContext(ctx, python, "-I", "-c", script)
 	cmd.Stdin = bytes.NewReader(input)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

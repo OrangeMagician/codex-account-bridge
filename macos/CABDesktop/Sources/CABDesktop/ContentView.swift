@@ -103,7 +103,7 @@ struct ContentView: View {
 
     private func withDialogs<Content: View>(_ content: Content) -> some View {
         content
-        .confirmationDialog("切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitchConfirmation != nil }, set: { if !$0 { pendingDesktopSwitchConfirmation = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("重启并切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitchConfirmation != nil }, set: { if !$0 { pendingDesktopSwitchConfirmation = nil } }), titleVisibility: .visible) {
             Button(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话并切换" : "使用独立项目与会话并切换", role: .destructive) {
                 if let account = pendingDesktopSwitchConfirmation { store.switchCodexDesktop(to: account) }
                 pendingDesktopSwitchConfirmation = nil
@@ -143,7 +143,7 @@ struct ContentView: View {
             }
         }
         .confirmationDialog(store.target == .local ? "更改项目与会话保留？" : "更改会话共享？", isPresented: Binding(get: { pendingSessionSharing != nil }, set: { if !$0 { pendingSessionSharing = nil } }), titleVisibility: .visible) {
-            Button(store.target == .local ? (pendingSessionSharing == true ? "确认切换时保留" : "确认保持独立") : (pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立")) {
+            Button(store.target == .local ? (pendingSessionSharing == true ? "确认重启切换时保留" : "确认保持独立") : (pendingSessionSharing == true ? "确认共享会话" : "确认恢复独立")) {
                 if let enabled = pendingSessionSharing {
                     if store.target == .local {
                         store.setPreserveSessionsOnDesktopSwitch(enabled)
@@ -281,11 +281,11 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
                                     Text(account.name)
-                                    if store.isCurrentDesktopAccount(account) {
+                                    if store.hasDesktopWindow(account) {
                                         Image(systemName: "desktopcomputer")
                                             .foregroundStyle(.green)
-                                            .help("本机正在使用")
-                                            .accessibilityLabel("本机正在使用")
+                                            .help("账号窗口已打开")
+                                            .accessibilityLabel("账号窗口已打开")
                                     }
                                     if account.default {
                                         Image(systemName: "star.fill")
@@ -444,10 +444,16 @@ struct ContentView: View {
         }
     }
 
+    private func desktopWindowButton(_ account: AccountStatus) -> some View {
+        Button(store.hasDesktopWindow(account) ? "显示账号窗口" : "打开账号窗口") {
+            store.openDesktopWindow(for: account)
+        }
+        .disabled(store.isBusy)
+    }
+
     private var desktopSwitcherCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
-                Text("切换 Codex 桌面端账号").font(.headline)
                 Label {
                     Text("本机当前账号") + Text("：") + Text(store.currentDesktopAccountDescription)
                 } icon: {
@@ -460,13 +466,8 @@ struct ContentView: View {
                         .font(.callout)
                 }
                 if let name = store.lastDesktopAccount {
-                    Label("CAB 上次启动：\(name)", systemImage: "clock.arrow.circlepath")
+                    Label("CAB 上次打开：\(name)", systemImage: "clock.arrow.circlepath")
                         .font(.callout).foregroundStyle(.secondary)
-                }
-                HStack {
-                    Label("切换策略", systemImage: "rectangle.2.swap")
-                    Spacer()
-                    statusBadge(cabLocalized(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话" : "项目与会话独立"), color: store.preserveSessionsOnDesktopSwitch ? .orange : .green)
                 }
                 if loggedInAccounts.isEmpty {
                     VStack(spacing: 8) {
@@ -489,13 +490,7 @@ struct ContentView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if store.isCurrentDesktopAccount(account) {
-                                    Label("本机正在使用", systemImage: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                } else {
-                                    Button("用此账号启动") { pendingDesktopSwitchConfirmation = account }
-                                        .disabled(store.isUsageRefreshing || store.isBusy)
-                                }
+                                desktopWindowButton(account)
                             }
                             .padding(.vertical, 9)
                             if account.id != loggedInAccounts.last?.id { Divider() }
@@ -515,7 +510,7 @@ struct ContentView: View {
             .padding(8)
         } label: {
             Label("Codex 桌面端", systemImage: "macwindow")
-                .help("“设为默认”只影响 cab run 和终端；这里会用所选账号的 CODEX_HOME 重启官方桌面客户端。")
+                .help("每个账号使用自己的窗口，再次打开会将已有窗口带到前台。")
         }
     }
 
@@ -804,16 +799,27 @@ struct ContentView: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 8) {
                         if store.target == .local && store.preserveSessionsOnDesktopSwitch != store.status.sharedSessions {
-                            statusBadge(cabLocalized(store.preserveSessionsOnDesktopSwitch ? "下次切换时开启" : "下次切换时关闭"), color: .blue)
+                            statusBadge(cabLocalized(store.preserveSessionsOnDesktopSwitch ? "下次重启切换时开启" : "下次重启切换时关闭"), color: .blue)
                         } else {
                             statusBadge(cabLocalized(store.status.sharedSessions ? "当前已共享" : "当前独立"), color: store.status.sharedSessions ? .orange : .green)
                         }
-                        Toggle(store.target == .local ? "切换时保留" : "共享", isOn: Binding(
+                        Toggle(store.target == .local ? "重启切换时保留" : "共享", isOn: Binding(
                             get: { store.target == .local ? store.preserveSessionsOnDesktopSwitch : store.status.sharedSessions },
                             set: { pendingSessionSharing = $0 }
                         ))
                         .toggleStyle(.switch)
                     }
+                }
+                if store.target == .local {
+                    Menu("重启并切换到…") {
+                        ForEach(loggedInAccounts) { account in
+                            Button(account.name) { pendingDesktopSwitchConfirmation = account }
+                                .disabled(store.isCurrentDesktopAccount(account))
+                        }
+                    }
+                    .fixedSize()
+                    .disabled(store.isBusy || store.isUsageRefreshing || loggedInAccounts.isEmpty || store.multipleDesktopsRunning)
+                    .help(store.multipleDesktopsRunning ? "请先退出其他账号窗口，再重启切换。" : "重启桌面端并应用项目与会话设置。")
                 }
                 if store.target == .remote, store.status.sharedSessions, let legacy = store.legacySessions, legacy.total > 0 {
                     Divider()
@@ -835,8 +841,8 @@ struct ContentView: View {
     private var sessionSharingDescription: String {
         if store.target == .local {
             return store.preserveSessionsOnDesktopSwitch
-                ? cabLocalized("切换桌面账号时同步项目、完整消息、记忆、目标、技能、附件、侧栏状态和未发送草稿。")
-                : cabLocalized("切换桌面账号时保持各账号自己的项目列表和任务历史。")
+                ? cabLocalized("重启切换时同步项目、完整消息、记忆、目标、技能、附件、侧栏状态和未发送草稿。")
+                : cabLocalized("重启切换时保持各账号自己的项目列表和任务历史。")
         }
         return store.status.sharedSessions
             ? cabLocalized("服务器上的账号共用任务历史，其中可能包含其他账号的上下文。")
@@ -846,8 +852,8 @@ struct ContentView: View {
     private var sessionSharingWarning: String {
         if store.target == .local {
             return pendingSessionSharing == true
-                ? cabLocalized("开启后，下次切换桌面账号前 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再同步项目、完整消息、目标、记忆、个人技能、规则、附件、侧栏状态、提示历史和未发送草稿。其他账号可能看到这些内容，但登录凭据、插件授权、设备连接和安全权限始终独立。")
-                : cabLocalized("关闭后，下次切换桌面账号时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。")
+                ? cabLocalized("开启后，下次选择“重启并切换到…”时 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再同步项目、完整消息、目标、记忆、个人技能、规则、附件、侧栏状态、提示历史和未发送草稿。其他账号可能看到这些内容，但登录凭据、插件授权、设备连接和安全权限始终独立。")
+                : cabLocalized("关闭后，下次选择“重启并切换到…”时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。")
         }
         return cabLocalized("操作前必须退出服务器上的所有 Codex 进程。共享后不同账号可以看到同一份任务历史，其中可能包含另一个账号的上下文。")
     }
@@ -931,14 +937,8 @@ struct ContentView: View {
                             Spacer()
                             reauthenticationMenu(account)
                             if store.target == .local {
-                                if store.isCurrentDesktopAccount(account) {
-                                    Label("本机正在使用", systemImage: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                } else {
-                                    Button("切换 Codex 桌面端") { pendingDesktopSwitchConfirmation = account }
-                                        .buttonStyle(.borderedProminent)
-                                        .disabled(store.isUsageRefreshing || store.isBusy)
-                                }
+                                desktopWindowButton(account)
+                                    .buttonStyle(.borderedProminent)
                             } else {
                                 Button(account.remote ? "重新连接并应用" : "切换远程 Codex") { store.switchRemoteCodex(to: account.name) }
                                     .buttonStyle(.borderedProminent)

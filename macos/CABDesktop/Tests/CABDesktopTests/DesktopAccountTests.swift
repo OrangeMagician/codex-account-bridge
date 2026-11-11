@@ -51,6 +51,25 @@ struct DesktopAccountTests {
         }
     }
 
+    @Test func twoOpenAccountsKeepTheirOwnWindowAndQuotaIdentity() {
+        let homes = Set([personal.home, work.home])
+        var desktop = LocalDesktopHome.multiple(homes: homes, front: work.home)
+        let store = CABStore(desktopHome: { desktop })
+        store.status = status()
+        #expect(store.hasDesktopWindow(personal))
+        #expect(store.hasDesktopWindow(work))
+        #expect(store.currentDesktopAccount == work)
+        #expect(menuBarAccount(in: status(), desktop: desktop) == work)
+        store.performDesktopSwitch(to: personal, checkProcesses: true)
+        #expect(store.errorMessage != nil)
+        #expect(!store.isBusy)
+        desktop = .multiple(homes: homes, front: nil)
+        store.refreshLocalDesktopAccount()
+        #expect(store.hasDesktopWindow(work))
+        #expect(store.currentDesktopAccount == nil)
+        #expect(menuBarAccount(in: status(), desktop: desktop) == nil)
+    }
+
     @Test func sameAccountSwitchUsesFreshProcessStateAndDoesNothing() async {
         var home = LocalDesktopHome.running(personal.home)
         let store = CABStore(desktopHome: { home })
@@ -91,14 +110,16 @@ struct DesktopAccountTests {
         for selection in [personal.name, work.name, CABStore.globalSettingsSelection] {
             store.sidebarSelection = selection
             for dark in [false, true] {
+                let width = CGFloat(Int(ProcessInfo.processInfo.environment["CAB_DESKTOP_RENDER_WIDTH"] ?? "") ?? 1000)
+                let height = CGFloat(Int(ProcessInfo.processInfo.environment["CAB_DESKTOP_RENDER_HEIGHT"] ?? "") ?? 800)
                 let content = ContentView(performsLiveChecks: false).environmentObject(store)
-                    .frame(width: 1000, height: 800)
+                    .frame(width: width, height: height)
                     .environment(\.colorScheme, dark ? .dark : .light).cabPreservingActiveColors()
                 let hosting = NSHostingView(rootView: content)
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 800), styleMask: .borderless, backing: .buffered, defer: false)
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: .borderless, backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 window.contentView = hosting
-                hosting.frame = NSRect(x: 0, y: 0, width: 1000, height: 800)
+                hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
                 hosting.layoutSubtreeIfNeeded()
                 try await Task.sleep(nanoseconds: 150_000_000)
                 hosting.layoutSubtreeIfNeeded()

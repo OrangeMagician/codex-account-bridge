@@ -95,6 +95,9 @@ final class CABStore: ObservableObject {
     var usageRefreshingKeys: Set<String> = []
     var usageWakeState = UsageWakeState()
     var usageWakeInFlightKeys: Set<String> = []
+    var desktopHistoryMonitor: Task<Void, Never>?
+    var desktopHistorySync: Task<Void, Error>?
+    var lastDesktopHistoryError: String?
     var usageSchedulerTask: Task<Void, Never>?
     var usageRepositoryObserver: Task<Void, Never>?
     var usageWakeTickInFlight: Set<String> = []
@@ -179,7 +182,7 @@ final class CABStore: ObservableObject {
     var defaultDesktopAccount: String? { status.currentLogin?.registeredAs }
 
     var currentDesktopAccount: AccountStatus? {
-        guard target == .local, case .running = localDesktopHome else { return nil }
+        guard target == .local, localDesktopHome.frontHome != nil else { return nil }
         return menuBarAccount(in: status, desktop: localDesktopHome)
     }
 
@@ -188,12 +191,22 @@ final class CABStore: ObservableObject {
         switch localDesktopHome {
         case .notRunning: return cabLocalized("Codex 桌面端未运行")
         case .unknown: return cabLocalized("无法确认本机当前账号")
-        case .running: return cabLocalized("当前账号尚未纳入 CAB")
+        case .multiple(_, nil): return cabLocalized("多个账号窗口已打开")
+        case .multiple, .running: return cabLocalized("当前账号尚未纳入 CAB")
         }
     }
 
     func isCurrentDesktopAccount(_ account: AccountStatus) -> Bool {
         currentDesktopAccount?.name == account.name
+    }
+
+    func hasDesktopWindow(_ account: AccountStatus) -> Bool {
+        target == .local && localDesktopHome.contains(home: account.home)
+    }
+
+    var multipleDesktopsRunning: Bool {
+        if case .multiple = localDesktopHome { return true }
+        return false
     }
 
     func refreshLocalDesktopAccount() {
@@ -298,6 +311,24 @@ final class CABStore: ObservableObject {
 
     func startUsageRefreshScheduler() {
         guard usageSchedulerTask == nil else { return }
+        desktopHistoryMonitor = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let self, !self.isBusy, self.desktopHome() != .notRunning {
+                    do {
+                        try await self.syncDesktopHistory()
+                        self.lastDesktopHistoryError = nil
+                    } catch {
+                        let message = error.localizedDescription
+                        if self.lastDesktopHistoryError != message {
+                            self.appendOutput("\n" + message + "\n")
+                            self.lastDesktopHistoryError = message
+                        }
+                    }
+                }
+                do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+                catch { return }
+            }
+        }
         usageRepositoryObserver = Task { @MainActor [weak self] in
             let updates = await UsageRepository.shared.updates()
             for await update in updates {
@@ -320,6 +351,8 @@ final class CABStore: ObservableObject {
     }
 
     func stopUsageRefreshScheduler() {
+        desktopHistoryMonitor?.cancel()
+        desktopHistoryMonitor = nil
         usageSchedulerTask?.cancel()
         usageSchedulerTask = nil
         usageRepositoryObserver?.cancel()

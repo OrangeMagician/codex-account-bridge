@@ -190,7 +190,7 @@ Commands:
   cab sessions enable --acknowledge-cross-account-context --confirm-codex-stopped
   cab sessions disable --confirm-codex-stopped
   cab sessions legacy-status [--json]
-  cab sessions repair-index [--json]
+  cab sessions repair-index [--desktop] [--json]
   cab sessions import-current --acknowledge-cross-account-context --confirm-codex-stopped
   cab shim install [--dir PATH] [--force]
   cab shim remove [--dir PATH]
@@ -1158,13 +1158,17 @@ func printJSON(value any) (int, error) {
 func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int, error) {
 	if len(args) > 0 && args[0] == "repair-index" {
 		flags := newFlags("sessions repair-index")
+		desktop := flags.Bool("desktop", false, "synchronize shared local desktop threads and paginated messages")
 		jsonOutput := flags.Bool("json", false, "print repair counts and backup paths")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-			return 2, errors.New("usage: cab sessions repair-index [--json]")
+			return 2, errors.New("usage: cab sessions repair-index [--desktop] [--json]")
 		}
 		var report session.IndexRepairReport
 		_, err := config.ReadLocked(paths, func(latest config.Config) error {
 			if latest.SharedSessionsDir == "" {
+				if *desktop {
+					return nil // The desktop monitor is also started for independent accounts.
+				}
 				return errors.New("session sharing must be explicitly enabled before repairing shared indexes")
 			}
 			unlock, err := session.AcquireRunLease(paths)
@@ -1172,7 +1176,11 @@ func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int
 				return err
 			}
 			defer unlock()
-			report, err = session.RepairIndexes(paths, latest)
+			if *desktop {
+				report, err = session.SyncDesktopHistory(paths, latest)
+			} else {
+				report, err = session.RepairIndexes(paths, latest)
+			}
 			return err
 		})
 		if err != nil {
@@ -1180,6 +1188,9 @@ func sessionsCommand(paths config.Paths, cfg *config.Config, args []string) (int
 		}
 		if *jsonOutput {
 			return printJSON(report)
+		}
+		if report.Conflicts > 0 {
+			fmt.Fprintf(os.Stderr, "unresolved shared history conflicts: %d\n", report.Conflicts)
 		}
 		fmt.Printf("repaired %d shared session index entries; backups: %s\n", report.Updated, strings.Join(report.Backups, ", "))
 		return 0, nil

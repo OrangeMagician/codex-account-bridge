@@ -334,7 +334,7 @@ if __name__ == "__main__":
             if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
                 raise ValueError("unsafe index lock")
             fcntl.flock(lock, fcntl.LOCK_EX)
-            print(json.dumps(repair(request)))
+            print(json.dumps(sync_desktops(request) if request.get("desktop") else repair(request)))
     except Exception as error:
         print("session index repair failed: " + str(error), file=sys.stderr)
         sys.exit(1)

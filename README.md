@@ -205,7 +205,11 @@ The app can:
 - Preserve approved projects, complete chat content and catalog state, goals, memories, personal skills, attachments, prompt history, and unsent drafts during deliberate desktop account changes.
 - Manage session-sharing policy, launch rotation, and supported agent bindings.
 
-Local desktop switching allows at least 30 seconds for a normal quit and checks the actual process state rather than relying on cached application flags. A remaining desktop instance blocks migration and relaunch; CAB never force-quits it. If the desktop finishes quitting as an error is handled, CAB attempts to reopen the original account.
+Choose **Open account window** in the account details or the Codex desktop overview to open a separate desktop instance with that account’s `CODEX_HOME` and Electron profile. **Show account window** brings an existing instance to the front. Other accounts can keep working. Opening a window uses the current session-sharing setting. If history is shared, resume each thread in only one window at a time.
+
+With session sharing enabled, CAB syncs the local thread list and saved messages in both directions when opening or showing an account window. While CAB and a desktop instance are running, it checks again every 30 seconds. Let the current reply finish before continuing in the other window. If the thread is already on screen, reopen it to load the latest messages. You can also run `cab sessions repair-index --desktop --json`. CAB saves an online backup of each database before its first change in `desktop-sync-backups/` under its data directory. Verifying compressed history requires zstd support in system Python 3.14 or the `zstd` executable.
+
+For project migration or a pending change to session sharing, choose **Restart and switch to…** under **App settings → Projects and sessions**. Leave only the outgoing account running before confirming. CAB waits for a normal quit, verifies the process has exited, and attempts to reopen the original account if migration fails.
 
 If an automatic usage refresh fails, CAB keeps the last successful values visible and marks them as cached instead of replacing them with an empty state.
 

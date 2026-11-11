@@ -539,3 +539,27 @@
 "按本机日期显示公开全局重置公告；不代表具体账号额度已恢复。" = "Shows public global-reset announcements for the local date; does not confirm an individual account's quota recovery.";
 "检测到新的公开重置公告时发送通知。" = "Sends a notification when a new public reset announcement is detected.";
 "概览显示今日重置状态；关闭提醒后只在概览页检查，不发送通知。" = "The overview shows today's reset status. With alerts off, checks run only on the overview and send no notifications.";
+"下次重启切换时开启" = "On at next restart and switch";
+"下次重启切换时关闭" = "Off at next restart and switch";
+"重启切换时保留" = "Keep on restart and switch";
+"CAB 上次打开：%@" = "Last opened by CAB: %@";
+"账号窗口已打开" = "Account window open";
+"多个账号窗口已打开" = "Multiple account windows open";
+"打开账号窗口" = "Open account window";
+"显示账号窗口" = "Show account window";
+"重启并切换到…" = "Restart and switch to…";
+"重启并切换 Codex 桌面账号？" = "Restart and switch Codex accounts?";
+"确认重启切换时保留" = "Keep on restart and switch";
+"无法显示账号窗口，请重试。" = "Could not show the account window. Try again.";
+"暂时无法识别已运行窗口的账号，请重试。" = "Could not identify a running account window. Try again.";
+"无法确认新窗口使用了所选账号。" = "Could not verify the account for the new window.";
+"账号窗口配置路径必须是独立目录。" = "The account window profile must be a separate directory.";
+"请先退出其他账号窗口，再重启切换。" = "Quit the other account instances before restarting to switch.";
+"每个账号使用自己的窗口，再次打开会将已有窗口带到前台。" = "Each account opens in its own window. Open it again to bring it to the front.";
+"重启桌面端并应用项目与会话设置。" = "Restart the desktop app to apply the project and session settings.";
+"重启切换时同步项目、完整消息、记忆、目标、技能、附件、侧栏状态和未发送草稿。" = "Sync projects, messages, memories, goals, skills, attachments, the sidebar, and drafts when restarting to switch accounts.";
+"重启切换时保持各账号自己的项目列表和任务历史。" = "Keep projects and task history separate when restarting to switch accounts.";
+"开启后，下次选择“重启并切换到…”时 CAB 会先检查 CLI 和编辑器扩展；确认没有任务写入后才关闭桌面端，再同步项目、完整消息、目标、记忆、个人技能、规则、附件、侧栏状态、提示历史和未发送草稿。其他账号可能看到这些内容，但登录凭据、插件授权、设备连接和安全权限始终独立。" = "Choosing Restart and switch to checks CLI and editor tasks, closes the desktop app, then shares projects, messages, goals, memories, skills, rules, attachments, sidebar state, prompt history, and drafts with other accounts. Credentials, plugin authorizations, device connections, and security permissions stay separate.";
+"关闭后，下次选择“重启并切换到…”时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。" = "Choosing Restart and switch to restores separate task history copies and keeps each account’s project list.";
+
+"部分会话的历史记录无法核对，已保留原始记录。" = "Some conversation histories could not be reconciled. Their original records have been kept.";

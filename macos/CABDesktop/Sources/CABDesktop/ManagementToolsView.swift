@@ -124,7 +124,9 @@ struct ManagementToolsView: View {
 
     private var currentDesktopAccount: String {
         switch currentLocalDesktopHome() {
-        case .running(let home): return store.status.accounts.first(where: { $0.home == home })?.name ?? home
+        case let .running(home), let .multiple(_, .some(home)):
+            return store.status.accounts.first(where: { canonicalDesktopHome($0.home) == home })?.name ?? home
+        case .multiple(_, nil): return cabLocalized("多个账号窗口已打开")
         case .notRunning: return cabLocalized("桌面客户端未运行")
         case .unknown: return cabLocalized("无法确认")
         }

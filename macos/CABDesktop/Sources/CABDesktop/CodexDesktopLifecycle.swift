@@ -43,7 +43,7 @@ struct CodexDesktopLifecycle {
         return url
     }
 
-    private var runningApplications: [NSRunningApplication] {
+    var runningApplications: [NSRunningApplication] {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
             .filter { desktopProcessIsRunning($0.processIdentifier) }
     }
@@ -53,6 +53,9 @@ struct CodexDesktopLifecycle {
     func stop() async throws {
         _ = try applicationURL()
         let applications = runningApplications
+        guard applications.count <= 1 else {
+            throw BridgeError.commandFailed(cabLocalized("请先退出其他账号窗口，再重启切换。"))
+        }
         let originalPIDs = applications.map(\.processIdentifier)
         for application in applications { _ = application.terminate() }
         try await waitForDesktopProcessesToExit {
@@ -64,27 +67,69 @@ struct CodexDesktopLifecycle {
     }
 
     func start(codexHome: String) async throws {
-        let url = try applicationURL()
         guard !isRunning else {
             throw BridgeError.commandFailed("Codex 桌面客户端仍在运行，请先保存任务并手动退出后重试。")
         }
+        _ = try await launch(codexHome: codexHome)
+    }
+
+    @discardableResult
+    func openAccountWindow(codexHome: String) async throws -> NSRunningApplication {
+        let home = canonicalDesktopHome(codexHome)
+        let applications = runningApplications
+        var unidentified = false
+        for app in applications {
+            guard let detected = desktopProcessHome(app.processIdentifier) else {
+                unidentified = true
+                continue
+            }
+            guard detected == home else { continue }
+            _ = app.unhide()
+            guard app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) else {
+                throw BridgeError.commandFailed(cabLocalized("无法显示账号窗口，请重试。"))
+            }
+            // Clicking the Dock icon also reopens an app after its last window
+            // closes. Address this instance by PID so another account stays put.
+            if frontDesktopWindowPID(in: [app.processIdentifier]) == nil {
+                let reopen = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass),
+                    eventID: AEEventID(kAEReopenApplication),
+                    targetDescriptor: NSAppleEventDescriptor(processIdentifier: app.processIdentifier),
+                    returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+                _ = try reopen.sendEvent(options: [.noReply, .neverInteract], timeout: 2)
+            }
+            return app
+        }
+        guard !unidentified else {
+            throw BridgeError.commandFailed(cabLocalized("暂时无法识别已运行窗口的账号，请重试。"))
+        }
+        return try await launch(codexHome: codexHome)
+    }
+
+    private func launch(codexHome: String) async throws -> NSRunningApplication {
+        let url = try applicationURL()
+        let home = canonicalDesktopHome(codexHome)
+        let profile = URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent(".cab-desktop-profile", isDirectory: true)
+        let manager = FileManager.default
+        if !manager.fileExists(atPath: profile.path) {
+            try manager.createDirectory(at: profile, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        }
+        guard try manager.attributesOfItem(atPath: profile.path)[.type] as? FileAttributeType == .typeDirectory else {
+            throw BridgeError.commandFailed(cabLocalized("账号窗口配置路径必须是独立目录。"))
+        }
         var environment = ProcessInfo.processInfo.environment
-        environment["CODEX_HOME"] = codexHome
+        environment["CODEX_HOME"] = home
+        environment["CODEX_ELECTRON_USER_DATA_PATH"] = profile.path
+        environment["CODEX_APP_SERVER_FORCE_CLI"] = "1"
         environment.removeValue(forKey: "CODEX_THREAD_ID")
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.environment = environment
+        configuration.arguments = ["--user-data-dir=" + profile.path]
+        configuration.createsNewApplicationInstance = true
         configuration.activates = true
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { application, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let application {
-                    application.activate(options: [.activateIgnoringOtherApps])
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: BridgeError.commandFailed("Codex 桌面客户端未能重新启动。"))
-                }
-            }
+        let app = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        guard app.bundleIdentifier == bundleIdentifier, desktopProcessHome(app.processIdentifier) == home else {
+            throw BridgeError.commandFailed(cabLocalized("无法确认新窗口使用了所选账号。"))
         }
+        return app
     }
 }

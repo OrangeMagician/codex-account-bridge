@@ -329,6 +329,16 @@ final class CABService {
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
     }
 
+    func syncSharedDesktopHistory() async throws {
+        struct Report: Decodable { let conflicts: Int? }
+        let result = try await execute(["sessions", "repair-index", "--desktop", "--json"], target: .local, remoteHost: "")
+        guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
+        let report = try JSONDecoder().decode(Report.self, from: Data(result.output.utf8))
+        if let conflicts = report.conflicts, conflicts > 0 {
+            throw BridgeError.commandFailed(cabLocalized("部分会话的历史记录无法核对，已保留原始记录。"))
+        }
+    }
+
     func loadLegacySessions(remoteHost: String) async throws -> LegacySessionReport {
         let result = try await execute(["sessions", "legacy-status", "--json"], target: .remote, remoteHost: remoteHost)
         guard result.exitCode == 0, let data = result.output.data(using: .utf8) else { throw BridgeError.commandFailed(preferredMessage(result)) }
@@ -452,9 +462,9 @@ final class CABService {
         try await CodexDesktopLifecycle().start(codexHome: codexHome)
     }
 
-    func restartCodexDesktop(codexHome: String) async throws {
-        try await stopCodexDesktop()
-        try await startCodexDesktop(codexHome: codexHome)
+    @MainActor
+    func openCodexDesktopWindow(codexHome: String) async throws {
+        try await CodexDesktopLifecycle().openAccountWindow(codexHome: codexHome)
     }
 
     /// Merges the official desktop app's portable workspace state into the target
