@@ -56,6 +56,14 @@ struct ContentView: View {
                 if store.isStatusRefreshing || store.isUsageRefreshing || store.isTokenUsageRefreshing || store.isCodexUpdateChecking {
                     Button(action: store.cancelRefresh) { Label("取消刷新", systemImage: "xmark.circle") }
                 }
+                if store.target == .local {
+                    Button(action: store.synchronizeSessionsNow) {
+                        Label(store.isDesktopHistorySyncing ? "正在同步会话…" : "同步会话", systemImage: "arrow.triangle.2.circlepath")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .disabled(store.isBusy || store.isDesktopHistorySyncing || !store.status.sharedSessions)
+                    .help("同步后，在另一账号返回列表并重新打开会话以加载最新消息。")
+                }
                 Button(action: store.refresh) { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(store.isBusy)
                     .help("刷新当前目标的状态、账号和额度")
@@ -64,6 +72,14 @@ struct ContentView: View {
                         .help("在终端启动当前目标的 Codex")
                 }
             }
+        }
+        .alert("会话同步结果", isPresented: Binding(
+            get: { store.manualDesktopHistoryResult != nil },
+            set: { if !$0 { store.manualDesktopHistoryResult = nil } }
+        )) {
+            Button("好") { store.manualDesktopHistoryResult = nil }
+        } message: {
+            Text((store.manualDesktopHistoryResult ?? "") + "\n" + cabLocalized("同步后，在另一账号返回列表并重新打开会话以加载最新消息。"))
         }
         .overlay {
             if store.isBusy {
@@ -451,6 +467,22 @@ struct ContentView: View {
         .disabled(store.isBusy)
     }
 
+    @ViewBuilder
+    private var desktopHistorySyncStatus: some View {
+        if store.target == .local {
+            if store.isDesktopHistorySyncing {
+                ProgressView("正在同步会话…").controlSize(.small)
+            } else if let message = store.desktopHistorySyncMessage {
+                Label(message, systemImage: store.desktopHistorySyncFailed ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(store.desktopHistorySyncFailed ? Color.orange : Color.secondary)
+                    .textSelection(.enabled)
+            }
+            Text("同步后，在另一账号返回列表并重新打开会话以加载最新消息。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var desktopSwitcherCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
@@ -461,6 +493,7 @@ struct ContentView: View {
                 }
                 .font(.callout)
                 .foregroundStyle(store.currentDesktopAccount == nil ? Color.secondary : Color.primary)
+                desktopHistorySyncStatus
                 if let name = store.defaultDesktopAccount {
                     Label("系统默认 ~/.codex 当前登记为 \(name)", systemImage: "house")
                         .font(.callout)
@@ -821,6 +854,7 @@ struct ContentView: View {
                     .disabled(store.isBusy || store.isUsageRefreshing || loggedInAccounts.isEmpty || store.multipleDesktopsRunning)
                     .help(store.multipleDesktopsRunning ? "请先退出其他账号窗口，再重启切换。" : "重启桌面端并应用项目与会话设置。")
                 }
+                desktopHistorySyncStatus
                 if store.target == .remote, store.status.sharedSessions, let legacy = store.legacySessions, legacy.total > 0 {
                     Divider()
                     HStack {

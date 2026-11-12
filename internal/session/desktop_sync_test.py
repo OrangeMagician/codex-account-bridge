@@ -137,6 +137,24 @@ class DesktopHistoryTests(unittest.TestCase):
         self.assertGreater(self.replicate()["conflicts"], 0)
         self.assertEqual(self.items(self.b, current), ["latest"])
 
+    def test_existing_thread_advances_to_explicit_continuation(self):
+        root = "11111111-1111-4111-8111-111111111111"
+        sid = "22222222-2222-4222-8222-222222222222"
+        old = self.index(self.b, root)
+        new = self.shared / ("rollout-test-" + root + "_" + sid + ".jsonl")
+        new.write_text(json.dumps({"type":"session_meta","payload":{"id":root,"history_base":{"thread_id":root}}}) + "\n" +
+                       json.dumps({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}) + "\n")
+        self.index(self.a, root, new)
+        self.page(self.a, "new segment", 2, sid)
+        self.page(self.b, "base", 5, root)
+        self.assertEqual(self.replicate()["conflicts"], 0)
+        self.assertEqual(self.items(self.b, sid), ["new segment"])
+        for home in (self.a, self.b):
+            with closing(sqlite3.connect(home / "state_5.sqlite")) as db:
+                self.assertEqual(db.execute("SELECT rollout_path FROM threads").fetchone()[0], str(new))
+        self.assertTrue(old.exists())
+        self.assertEqual(self.replicate()["updated"], 0)
+
     def test_missing_timing_metadata_at_identical_cursor(self):
         for home in (self.a, self.b):
             self.index(home)

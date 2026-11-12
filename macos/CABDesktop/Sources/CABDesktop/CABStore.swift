@@ -95,6 +95,10 @@ final class CABStore: ObservableObject {
     var usageRefreshingKeys: Set<String> = []
     var usageWakeState = UsageWakeState()
     var usageWakeInFlightKeys: Set<String> = []
+    @Published var isDesktopHistorySyncing = false
+    @Published var manualDesktopHistoryResult: String?
+    @Published var desktopHistorySyncMessage: String?
+    @Published var desktopHistorySyncFailed = false
     var desktopHistoryMonitor: Task<Void, Never>?
     var desktopHistorySync: Task<Void, Error>?
     var lastDesktopHistoryError: String?

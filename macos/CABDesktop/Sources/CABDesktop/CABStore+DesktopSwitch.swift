@@ -4,10 +4,33 @@ import Foundation
 extension CABStore {
     func syncDesktopHistory() async throws {
         if let desktopHistorySync { return try await desktopHistorySync.value }
-        let task = Task { try await service.syncSharedDesktopHistory() }
+        isDesktopHistorySyncing = true
+        let task = Task {
+            do {
+                let report = try await service.syncSharedDesktopHistory()
+                desktopHistorySyncFailed = report.conflicts > 0
+                desktopHistorySyncMessage = String(format: cabLocalized("已同步 %lld 项会话记录，%lld 项待核对。"), report.updated, report.conflicts)
+            } catch {
+                desktopHistorySyncFailed = true
+                desktopHistorySyncMessage = error.localizedDescription
+                throw error
+            }
+        }
         desktopHistorySync = task
-        defer { desktopHistorySync = nil }
+        defer { desktopHistorySync = nil; isDesktopHistorySyncing = false }
         try await task.value
+    }
+
+    func synchronizeSessionsNow() {
+        guard target == .local, status.sharedSessions, !isBusy, !isDesktopHistorySyncing else { return }
+        Task {
+            do {
+                try await syncDesktopHistory()
+                manualDesktopHistoryResult = desktopHistorySyncMessage
+            } catch {
+                manualDesktopHistoryResult = error.localizedDescription
+            }
+        }
     }
 
     func openDesktopWindow(for account: AccountStatus) {

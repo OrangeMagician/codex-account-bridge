@@ -6,6 +6,7 @@ allowlists and SQLite file checks. Each desktop keeps its own databases and WAL.
 from contextlib import contextmanager
 import hashlib
 import subprocess
+import time
 from itertools import permutations
 
 # Keys and portable columns. Unknown columns are never copied from another account.
@@ -61,6 +62,13 @@ def divergent_rollout(row, path, roots):
         return True
     other = shared_rollout(row, roots)
     return other is not None and other != path
+
+
+def linked_successor(path, previous, tid, verified):
+    if not path or not previous or not segment_id(path, tid):
+        return False
+    base, _ = verify_header(path, tid, verified)
+    return base == (segment_id(previous, tid) or tid)
 
 
 @contextmanager
@@ -354,7 +362,11 @@ def sync_pair(source, target, roots, data, verified, report):
             path = shared_rollout(src, roots)
             if path is None:
                 continue
-            if divergent_rollout(dest, path, roots):
+            other = shared_rollout(dest, roots) if dest else None
+            advance = divergent_rollout(dest, path, roots) and linked_successor(path, other, tid, verified)
+            if other != path and linked_successor(other, path, tid, verified):
+                continue
+            if divergent_rollout(dest, path, roots) and not advance:
                 # Both copies still exist. Combining their ordinal spaces could
                 # corrupt the paginated history. Leave the originals intact.
                 report["conflicts"] += 1
@@ -368,6 +380,8 @@ def sync_pair(source, target, roots, data, verified, report):
                 continue
             copy_catalog = newer_catalog(ac.get(tid), bc.get(tid))
             updates = thread_updates(src, dest, path, roots[1])
+            if advance:
+                updates["rollout_path"] = str(path)
             if dest and not (updates or page_ids or copy_catalog):
                 continue
             verify_header(path, tid, verified)
@@ -387,7 +401,9 @@ def sync_pair(source, target, roots, data, verified, report):
                     continue
                 src = dict(fresh)
                 dest = dict(live) if live else None
-                if divergent_rollout(dest, path, roots):
+                other = shared_rollout(dest, roots) if dest else None
+                advance = divergent_rollout(dest, path, roots) and linked_successor(path, other, tid, verified)
+                if divergent_rollout(dest, path, roots) and not advance:
                     report["conflicts"] += 1
                     continue
                 if dest is None and pages and any(db.execute(
@@ -400,6 +416,8 @@ def sync_pair(source, target, roots, data, verified, report):
                 verify_header(path, tid, verified)
                 before = db.total_changes
                 updates = thread_updates(src, dest, path, roots[1])
+                if advance:
+                    updates["rollout_path"] = str(path)
                 if not dest or updates:
                     for table, key, fk in (("projects","id","project_id"), ("project_roots","project_id","project_id"),
                                            ("thread_sections","id","thread_section_id")):
@@ -461,5 +479,14 @@ def sync_desktops(request):
     report = {"updated": 0, "conflicts": 0, "backups": []}
     verified = {}
     for source, target in permutations(homes, 2):
-        sync_pair(source, target, roots, Path(request["data"]), verified, report)
+        for attempt in range(3):
+            try:
+                sync_pair(source, target, roots, Path(request["data"]), verified, report)
+                break
+            except sqlite3.OperationalError as error:
+                if attempt == 2 or str(error) not in ("unable to open database file", "database is locked"):
+                    raise
+                # The official client can rotate WAL sidecars while attaching.
+                # Transactions already committed are safe to repeat.
+                time.sleep(0.25)
     return report

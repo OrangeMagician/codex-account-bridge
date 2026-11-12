@@ -329,14 +329,22 @@ final class CABService {
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
     }
 
-    func syncSharedDesktopHistory() async throws {
-        struct Report: Decodable { let conflicts: Int? }
+    struct DesktopHistoryReport: Decodable {
+        let updated: Int
+        var conflicts: Int = 0
+
+        enum CodingKeys: String, CodingKey { case updated, conflicts }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            updated = try values.decode(Int.self, forKey: .updated)
+            conflicts = try values.decodeIfPresent(Int.self, forKey: .conflicts) ?? 0
+        }
+    }
+
+    func syncSharedDesktopHistory() async throws -> DesktopHistoryReport {
         let result = try await execute(["sessions", "repair-index", "--desktop", "--json"], target: .local, remoteHost: "")
         guard result.exitCode == 0 else { throw BridgeError.commandFailed(preferredMessage(result)) }
-        let report = try JSONDecoder().decode(Report.self, from: Data(result.output.utf8))
-        if let conflicts = report.conflicts, conflicts > 0 {
-            throw BridgeError.commandFailed(cabLocalized("部分会话的历史记录无法核对，已保留原始记录。"))
-        }
+        return try JSONDecoder().decode(DesktopHistoryReport.self, from: Data(result.output.utf8))
     }
 
     func loadLegacySessions(remoteHost: String) async throws -> LegacySessionReport {

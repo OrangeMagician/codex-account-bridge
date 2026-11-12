@@ -563,3 +563,13 @@
 "关闭后，下次选择“重启并切换到…”时 CAB 会保持每个账号自己的项目列表，并恢复独立的任务历史副本。登录凭据不会改变。" = "Choosing Restart and switch to restores separate task history copies and keeps each account’s project list.";
 
 "部分会话的历史记录无法核对，已保留原始记录。" = "Some conversation histories could not be reconciled. Their original records have been kept.";
+
+"同步会话" = "Sync conversations";
+
+"正在同步会话…" = "Syncing conversations…";
+
+"同步后，在另一账号返回列表并重新打开会话以加载最新消息。" = "After syncing, return to the list in the other account and reopen the conversation to load its latest messages.";
+
+"已同步 %lld 项会话记录，%lld 项待核对。" = "Synced %lld conversation records. %lld need review.";
+
+"会话同步结果" = "Conversation sync result";
