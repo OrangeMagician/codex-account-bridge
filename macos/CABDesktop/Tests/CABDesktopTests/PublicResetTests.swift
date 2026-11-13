@@ -16,10 +16,10 @@ struct PublicResetTests {
 
     @Test func baselineAndRestartDeduplicateWhileKeepingBothResetTypes() throws {
         var checkpoint = PublicResetCheckpoint()
-        let initial = PublicResetSnapshot(records: [record("old")], generatedAt: now)
+        let initial = PublicResetSnapshot(records: [record("old", date: now.addingTimeInterval(-600))], generatedAt: now)
         #expect(checkpoint.alerts(in: initial, now: now).isEmpty)
         checkpoint.markSeen(initial.records, now: now)
-        let next = PublicResetSnapshot(records: [record("bank", type: "banked"), record("global"), record("old"), record("global")], generatedAt: now)
+        let next = PublicResetSnapshot(records: [record("bank", type: "banked"), record("global"), record("old", date: now.addingTimeInterval(-600)), record("global")], generatedAt: now)
         #expect(Set(checkpoint.alerts(in: next, now: now).map(\.id)) == ["bank", "global"])
         checkpoint.markSeen(next.records, now: now)
         let restored = try JSONDecoder().decode(PublicResetCheckpoint.self, from: JSONEncoder().encode(checkpoint))
@@ -71,6 +71,16 @@ struct PublicResetTests {
         }
     }
 
+    @Test func existingNotificationCleanupKeepsLatestCopyAndOtherNotificationTypes() {
+        let messages = [
+            DeliveredPublicResetMessage(identifier: "cab.public-reset.old", title: "banked", body: "06:30 · all", date: now),
+            DeliveredPublicResetMessage(identifier: "cab.public-reset.latest", title: "banked", body: "06:30 · all", date: now.addingTimeInterval(300)),
+            DeliveredPublicResetMessage(identifier: "cab.public-reset.other", title: "global", body: "06:30 · all", date: now),
+            DeliveredPublicResetMessage(identifier: "cab.usage-reset.keep", title: "banked", body: "06:30 · all", date: now)
+        ]
+        #expect(duplicatePublicResetNotificationIDs(messages) == ["cab.public-reset.old"])
+    }
+
     @Test func todayUsesLocalDayRatherThanUTC() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
@@ -79,15 +89,17 @@ struct PublicResetTests {
         #expect(publicResetOccurredToday(announcement, now: midnight, calendar: calendar))
     }
 
-    @MainActor @Test func monitorRetriesNotificationFailuresWithoutRepeatingDeliveredEvents() async throws {
+    @MainActor @Test func uncertainDeliveryIsAttemptedAtMostOnceAcrossRestart() async throws {
         let suite = "cab.public-reset.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: "publicResetEnabled.v1")
-        var records = [record("baseline")]
+        var records = [record("baseline", date: now.addingTimeInterval(-600))]
         var notifications: [String] = []
         var fail = true
+        var attempts: [String] = []
         let monitor = PublicResetMonitor(defaults: defaults, fetch: { .init(records: records, generatedAt: self.now) }, authorize: { true }, notify: { event in
+            attempts.append(event.id)
             if event.id == "bank" && fail { throw PublicResetFeedError.http(503) }
             notifications.append(event.id)
         })
@@ -99,10 +111,97 @@ struct PublicResetTests {
         #expect(monitor.error != nil)
         fail = false
         await monitor.check(now: now.addingTimeInterval(600))
-        #expect(notifications == ["new", "bank"])
+        #expect(notifications == ["new"])
+        #expect(attempts == ["new", "bank"])
         let restarted = PublicResetMonitor(defaults: defaults, fetch: { .init(records: records, generatedAt: self.now) }, authorize: { true }, notify: { notifications.append($0.id) })
         await restarted.check(now: now.addingTimeInterval(900))
-        #expect(notifications == ["new", "bank"])
+        #expect(notifications == ["new"])
+    }
+
+    @Test func regeneratedIDsAndMetadataChangesStillDescribeOneMessage() throws {
+        let first = record("manual:first", type: "banked")
+        let recreated = PublicResetRecord(id: "manual:regenerated", kind: first.kind, resetType: first.resetType,
+            announcedAt: nil, effectiveAt: ISO8601DateFormatter().string(from: now), completedAt: nil,
+            confidence: 1, scope: .init(plans: ["all", "plus"], windows: ["five_hour"]),
+            source: .init(url: nil))
+        #expect(first.notificationKey == recreated.notificationKey)
+        #expect(first.notificationIdentifier == recreated.notificationIdentifier)
+        var checkpoint = PublicResetCheckpoint()
+        checkpoint.markSeen([first], now: now)
+        let restored = try JSONDecoder().decode(PublicResetCheckpoint.self, from: JSONEncoder().encode(checkpoint))
+        #expect(restored.alerts(in: .init(records: [recreated], generatedAt: now), now: now).isEmpty)
+        #expect(first.notificationKey != record("later", type: "banked", date: now.addingTimeInterval(60)).notificationKey)
+        #expect(first.notificationKey != record("global").notificationKey)
+    }
+
+    @MainActor @Test func repeatedPollingWithChangingIDsOnlyNotifiesOnce() async throws {
+        let suite = "cab.public-reset.changing-id." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "publicResetEnabled.v1")
+        var records: [PublicResetRecord] = []
+        var generated = now
+        var sent = 0
+        let monitor = PublicResetMonitor(defaults: defaults, fetch: { .init(records: records, generatedAt: generated) },
+            authorize: { true }, notify: { _ in sent += 1 })
+        await monitor.check(now: now)
+        for index in 1...12 {
+            generated = now.addingTimeInterval(Double(index) * 300)
+            records = [record("manual:\(index)", type: "banked")]
+            await monitor.check(now: generated)
+        }
+        #expect(sent == 1)
+        let restarted = PublicResetMonitor(defaults: defaults, fetch: {
+            .init(records: [record("another-id", type: "banked")], generatedAt: generated)
+        }, authorize: { true }, notify: { _ in sent += 1 })
+        await restarted.check(now: generated)
+        #expect(sent == 1)
+        // A distinct later announcement remains eligible.
+        generated = generated.addingTimeInterval(300)
+        records = [record("new-event", type: "banked", date: generated)]
+        await monitor.check(now: generated)
+        #expect(sent == 2)
+    }
+
+    @MainActor @Test func oldCheckpointMigratesWithoutReplayingCurrentAnnouncement() async throws {
+        let suite = "cab.public-reset.migrate." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "publicResetEnabled.v1")
+        let legacy = Data("{\"initializedAt\":100,\"seenIDs\":[\"previous-manual-id\"]}".utf8)
+        defaults.set(legacy, forKey: "publicResetCheckpoint.v1")
+        var records = [record("regenerated-existing", type: "banked")]
+        var generated = now
+        var sent = 0
+        let monitor = PublicResetMonitor(defaults: defaults, fetch: { .init(records: records, generatedAt: generated) },
+            authorize: { true }, notify: { _ in sent += 1 })
+        await monitor.check(now: now)
+        #expect(sent == 0)
+        let saved = try JSONDecoder().decode(PublicResetCheckpoint.self, from: #require(defaults.data(forKey: "publicResetCheckpoint.v1")))
+        #expect(saved.seenNotificationKeys?.count == 1)
+        generated = now.addingTimeInterval(300)
+        records = [record("regenerated-again", type: "banked")]
+        await monitor.check(now: generated)
+        #expect(sent == 0)
+    }
+
+    @MainActor @Test func concurrentMonitorsReserveBeforeAwaitingNotificationDelivery() async throws {
+        let suite = "cab.public-reset.concurrent." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "publicResetEnabled.v1")
+        var checkpoint = PublicResetCheckpoint()
+        checkpoint.markSeen([], now: now)
+        defaults.set(try JSONEncoder().encode(checkpoint), forKey: "publicResetCheckpoint.v1")
+        var sent = 0
+        let fetch: () async throws -> PublicResetSnapshot = { .init(records: [record("event", type: "banked"), record("second-event")], generatedAt: now) }
+        let notify: (PublicResetRecord) async throws -> Void = { _ in sent += 1; await Task.yield() }
+        let first = PublicResetMonitor(defaults: defaults, fetch: fetch, authorize: { true }, notify: notify)
+        let second = PublicResetMonitor(defaults: defaults, fetch: fetch, authorize: { true }, notify: notify)
+        async let a: Void = first.check(now: now)
+        async let b: Void = second.check(now: now)
+        _ = await (a, b)
+        #expect(sent == 2)
     }
 
     @MainActor @Test func staleSnapshotsDoNotEstablishBaselineAndFailuresKeepLastSnapshot() async {

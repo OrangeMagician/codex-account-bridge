@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct PublicResetRecord: Codable, Equatable, Identifiable {
     struct Scope: Codable, Equatable { let plans: [String]; let windows: [String] }
@@ -35,6 +36,23 @@ struct PublicResetRecord: Codable, Equatable, Identifiable {
               ["x.com", "twitter.com"].contains(url.host?.lowercased() ?? "") else { return nil }
         return url
     }
+
+    /// Source records can be recreated with a different ID on every poll.
+    /// Match the visible message: event type, minute and affected plans. IDs,
+    /// source URLs and confidence updates must not turn it into a new alert.
+    var notificationKey: String? {
+        guard isCompleted, let date else { return nil }
+        let plans = scope?.plans ?? []
+        let normalizedPlans: [String]
+        if plans.isEmpty || plans.contains("unknown") { normalizedPlans = ["unknown"] }
+        else if plans.contains("all") { normalizedPlans = ["all"] }
+        else { normalizedPlans = Array(Set(plans)).sorted() }
+        let components = [kind, resetType, String(Int64(floor(date.timeIntervalSince1970 / 60)))] + normalizedPlans
+        guard let data = try? JSONEncoder().encode(components) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    var notificationIdentifier: String { "cab.public-reset." + (notificationKey ?? id) }
 }
 
 func publicResetOccurredToday(_ record: PublicResetRecord, now: Date = Date(), calendar: Calendar = .current) -> Bool {
@@ -60,14 +78,20 @@ struct PublicResetSnapshot: Equatable {
 struct PublicResetCheckpoint: Codable, Equatable {
     var initializedAt: Date?
     var seenIDs: [String] = []
+    // Optional so v1 checkpoints decode. The first fresh poll migrates their
+    // current records without replaying previously delivered announcements.
+    var seenNotificationKeys: [String]? = nil
 
     func alerts(in snapshot: PublicResetSnapshot, now: Date) -> [PublicResetRecord] {
         guard initializedAt != nil, snapshot.isFresh(at: now) else { return [] }
         var seen = Set(seenIDs)
+        var messages = Set(seenNotificationKeys ?? [])
         return snapshot.records.filter { record in
             guard record.isCompleted, let date = record.date, date <= now,
-                  date >= now.addingTimeInterval(-86400) else { return false }
-            return seen.insert(record.id).inserted
+                  date >= now.addingTimeInterval(-86400), let key = record.notificationKey else { return false }
+            let newID = seen.insert(record.id).inserted
+            let newMessage = messages.insert(key).inserted
+            return newID && newMessage
         }.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
     }
 
@@ -75,6 +99,11 @@ struct PublicResetCheckpoint: Codable, Equatable {
         if initializedAt == nil { initializedAt = now }
         for record in records where !seenIDs.contains(record.id) { seenIDs.append(record.id) }
         seenIDs = Array(seenIDs.suffix(512))
+        var messages = seenNotificationKeys ?? []
+        for record in records {
+            if let key = record.notificationKey, !messages.contains(key) { messages.append(key) }
+        }
+        seenNotificationKeys = Array(messages.suffix(512))
     }
 }
 

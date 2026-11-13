@@ -69,6 +69,7 @@ final class PublicResetMonitor: ObservableObject {
     func startMonitoring() {
         guard enabled, task == nil else { return }
         task = Task { [weak self] in
+            await UsageResetNotificationService.shared.removeDuplicatePublicResetNotifications()
             while !Task.isCancelled {
                 guard let self, self.enabled else { return }
                 await self.check()
@@ -103,20 +104,36 @@ final class PublicResetMonitor: ObservableObject {
                 error = nil
                 return // Viewing the overview never authorizes notifications.
             }
-            if checkpoint.initializedAt == nil {
+            // Reload before reserving a delivery, including if a second window
+            // or monitor instance saved a newer checkpoint while we fetched.
+            if let data = defaults.data(forKey: Self.checkpointKey),
+               let saved = try? JSONDecoder().decode(PublicResetCheckpoint.self, from: data) {
+                checkpoint = saved
+            }
+            if checkpoint.initializedAt == nil || checkpoint.seenNotificationKeys == nil {
                 // Establish a baseline without replaying the source's historical announcements.
                 checkpoint.markSeen(fetched.records, now: now)
-                persistCheckpoint()
+                try persistCheckpoint()
             } else {
                 for record in checkpoint.alerts(in: fetched, now: now) {
                     guard enabled, capturedGeneration == generation, !Task.isCancelled else { return }
-                    try await notify(record)
+                    if let data = defaults.data(forKey: Self.checkpointKey),
+                       let saved = try? JSONDecoder().decode(PublicResetCheckpoint.self, from: data) {
+                        checkpoint = saved
+                    }
+                    // Another instance may have reserved later items while this
+                    // instance awaited delivery of an earlier item in the batch.
+                    guard !checkpoint.alerts(in: .init(records: [record], generatedAt: fetched.generatedAt), now: now).isEmpty else { continue }
+                    // Persist BEFORE handing the message to macOS. Even if the
+                    // delivery response is lost, this logical alert is attempted
+                    // at most once, including after restarting the application.
                     checkpoint.markSeen([record], now: now)
-                    persistCheckpoint()
+                    try persistCheckpoint()
+                    try await notify(record)
                     if !enabled || capturedGeneration != generation {
                         let center = UNUserNotificationCenter.current()
-                        center.removePendingNotificationRequests(withIdentifiers: ["cab.public-reset." + record.id])
-                        center.removeDeliveredNotifications(withIdentifiers: ["cab.public-reset." + record.id])
+                        center.removePendingNotificationRequests(withIdentifiers: [record.notificationIdentifier])
+                        center.removeDeliveredNotifications(withIdentifiers: [record.notificationIdentifier])
                         return
                     }
                 }
@@ -134,7 +151,9 @@ final class PublicResetMonitor: ObservableObject {
         }
     }
 
-    private func persistCheckpoint() {
-        if let data = try? JSONEncoder().encode(checkpoint) { defaults.set(data, forKey: Self.checkpointKey) }
+    private func persistCheckpoint() throws {
+        let data = try JSONEncoder().encode(checkpoint)
+        defaults.set(data, forKey: Self.checkpointKey)
+        guard defaults.synchronize() else { throw PublicResetFeedError.invalidResponse }
     }
 }

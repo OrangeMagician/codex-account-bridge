@@ -4,6 +4,21 @@ import UserNotifications
 
 let usageResetNotificationIdentifierPrefix = "cab.usage-reset."
 
+struct DeliveredPublicResetMessage {
+    let identifier: String
+    let title: String
+    let body: String
+    let date: Date
+}
+
+func duplicatePublicResetNotificationIDs(_ messages: [DeliveredPublicResetMessage]) -> [String] {
+    var seen = Set<[String]>()
+    return messages.sorted { $0.date > $1.date }.compactMap { message in
+        guard message.identifier.hasPrefix("cab.public-reset.") else { return nil }
+        return seen.insert([message.title, message.body]).inserted ? nil : message.identifier
+    }
+}
+
 struct UsageNotificationSource: Equatable {
     let key: String
     let title: String
@@ -136,7 +151,17 @@ final class UsageResetNotificationService: NSObject, UNUserNotificationCenterDel
         content.body = "\(date) · \(record.plans)\n\(cabLocalized("来源：Did Codex Reset，公开信号仅供参考。请刷新账号额度确认。"))"
         content.userInfo = ["cabPublicResetURL": record.sourceURL?.absoluteString ?? "https://didcodexreset.com/"]
         content.sound = .default
-        try await center.add(UNNotificationRequest(identifier: "cab.public-reset." + record.id, content: content, trigger: nil))
+        try await center.add(UNNotificationRequest(identifier: record.notificationIdentifier, content: content, trigger: nil))
+    }
+
+    func removeDuplicatePublicResetNotifications() async {
+        let delivered = await center.deliveredNotifications()
+        let messages = delivered.map {
+            DeliveredPublicResetMessage(identifier: $0.request.identifier, title: $0.request.content.title,
+                                        body: $0.request.content.body, date: $0.date)
+        }
+        let duplicates = duplicatePublicResetNotificationIDs(messages)
+        if !duplicates.isEmpty { center.removeDeliveredNotifications(withIdentifiers: duplicates) }
     }
 
     func userNotificationCenter(
