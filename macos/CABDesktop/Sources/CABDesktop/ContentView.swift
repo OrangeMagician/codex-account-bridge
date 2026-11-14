@@ -62,7 +62,7 @@ struct ContentView: View {
                             .labelStyle(.titleAndIcon)
                     }
                     .disabled(store.isBusy || store.isDesktopHistorySyncing || !store.status.sharedSessions)
-                    .help("同步后，在另一账号返回列表并重新打开会话以加载最新消息。")
+                    .help("CAB 同步已保存的消息。已打开的 Codex 会话可能仍显示旧内容。")
                 }
                 Button(action: store.refresh) { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(store.isBusy)
@@ -79,7 +79,7 @@ struct ContentView: View {
         )) {
             Button("好") { store.manualDesktopHistoryResult = nil }
         } message: {
-            Text((store.manualDesktopHistoryResult ?? "") + "\n" + cabLocalized("同步后，在另一账号返回列表并重新打开会话以加载最新消息。"))
+            Text((store.manualDesktopHistoryResult ?? "") + "\n" + cabLocalized("CAB 同步已保存的消息。已打开的 Codex 会话可能仍显示旧内容。"))
         }
         .overlay {
             if store.isBusy {
@@ -100,6 +100,12 @@ struct ContentView: View {
         .sheet(isPresented: $store.showServerManager) {
             ServerManagerView()
                 .environmentObject(store)
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            if performsLiveChecks, store.target == .local,
+               NSApp.windows.contains(where: { $0.occlusionState.contains(.visible) }) {
+                store.refreshLocalDesktopAccount()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if performsLiveChecks { store.refreshLocalDesktopAccount() }
@@ -478,7 +484,7 @@ struct ContentView: View {
                     .foregroundStyle(store.desktopHistorySyncFailed ? Color.orange : Color.secondary)
                     .textSelection(.enabled)
             }
-            Text("同步后，在另一账号返回列表并重新打开会话以加载最新消息。")
+            Text("CAB 同步已保存的消息。已打开的 Codex 会话可能仍显示旧内容。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

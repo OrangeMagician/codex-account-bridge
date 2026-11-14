@@ -6,6 +6,38 @@ import Testing
 @Suite("Desktop shutdown and relaunch")
 @MainActor
 struct DesktopLifecycleTests {
+    @Test func restoringAnExistingWindowDoesNotOpenAnother() async throws {
+        var activated = false
+        let visible = try await revealDesktopWindow(isRunning: { true }, isVisible: { activated },
+            activate: { activated = true }, reopen: { Issue.record("Unexpected reopen") },
+            openLaunchURL: { Issue.record("Unexpected launch link") }, pause: {})
+        #expect(visible)
+    }
+
+    @Test func ignoredReopenUsesLaunchLinkAndWaitsForWindow() async throws {
+        var events: [String] = []
+        var visible = false
+        let shown = try await revealDesktopWindow(isRunning: { true }, isVisible: { visible },
+            activate: {}, reopen: { events.append("reopen") }, openLaunchURL: { events.append("launch") },
+            pause: { visible = events.last == "launch" })
+        #expect(events == ["reopen", "launch"])
+        #expect(shown)
+    }
+
+    @Test func closingProcessIsResolvedAgainBeforeSendingAnotherEvent() async throws {
+        var running = true
+        let shown = try await revealDesktopWindow(isRunning: { running }, isVisible: { false },
+            activate: {}, reopen: { running = false }, openLaunchURL: { Issue.record("Stale PID") }, pause: {})
+        #expect(!shown)
+    }
+
+    @Test func deliveredEventsWithoutAWindowAreReportedAsFailure() async {
+        await #expect(throws: BridgeError.self) {
+            _ = try await revealDesktopWindow(isRunning: { true }, isVisible: { false },
+                activate: {}, reopen: {}, openLaunchURL: {}, pause: {})
+        }
+    }
+
     @Test func alreadyExitedDoesNotWait() async throws {
         try await waitForDesktopProcessesToExit(runningProcessIDs: { [] }, pause: {
             Issue.record("An already stopped desktop must proceed immediately")
@@ -172,6 +204,13 @@ struct DesktopLifecycleTests {
         try """
         import AppKit
         final class Delegate: NSObject, NSApplicationDelegate {
+            var window: NSWindow?
+            func showWindow() {
+                let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+                                      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                self.window = window
+                window.makeKeyAndOrderFront(nil)
+            }
             func applicationDidFinishLaunching(_ notification: Notification) {
                 let environment = ProcessInfo.processInfo.environment
                 let home = URL(fileURLWithPath: environment["CODEX_HOME"]!)
@@ -180,6 +219,7 @@ struct DesktopLifecycleTests {
             }
             func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
                 let home = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEX_HOME"]!)
+                showWindow()
                 try! "reopened".write(to: home.appendingPathComponent("reopened"), atomically: true, encoding: .utf8)
                 return true
             }

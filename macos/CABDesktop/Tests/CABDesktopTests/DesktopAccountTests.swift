@@ -54,7 +54,8 @@ struct DesktopAccountTests {
     @Test func twoOpenAccountsKeepTheirOwnWindowAndQuotaIdentity() {
         let homes = Set([personal.home, work.home])
         var desktop = LocalDesktopHome.multiple(homes: homes, front: work.home)
-        let store = CABStore(desktopHome: { desktop })
+        var visibleHomes = homes
+        let store = CABStore(desktopHome: { desktop }, desktopWindowHomes: { visibleHomes })
         store.status = status()
         #expect(store.hasDesktopWindow(personal))
         #expect(store.hasDesktopWindow(work))
@@ -63,9 +64,12 @@ struct DesktopAccountTests {
         store.performDesktopSwitch(to: personal, checkProcesses: true)
         #expect(store.errorMessage != nil)
         #expect(!store.isBusy)
+        visibleHomes.remove(personal.home)
         desktop = .multiple(homes: homes, front: nil)
         store.refreshLocalDesktopAccount()
         #expect(store.hasDesktopWindow(work))
+        #expect(!store.hasDesktopWindow(personal))
+        #expect(store.multipleDesktopsRunning)
         #expect(store.currentDesktopAccount == nil)
         #expect(menuBarAccount(in: status(), desktop: desktop) == nil)
     }
@@ -104,7 +108,7 @@ struct DesktopAccountTests {
     @Test func rendersCurrentAndOtherAccountsWhenRequested() async throws {
         guard let directory = ProcessInfo.processInfo.environment["CAB_DESKTOP_ACCOUNT_RENDER_DIR"] else { return }
         _ = NSApplication.shared
-        let store = CABStore(desktopHome: { .running(self.personal.home) })
+        let store = CABStore(desktopHome: { .running(self.personal.home) }, desktopWindowHomes: { [self.personal.home] })
         store.status = status()
         store.interfaceLanguage = .simplifiedChinese
         for selection in [personal.name, work.name, CABStore.globalSettingsSelection] {

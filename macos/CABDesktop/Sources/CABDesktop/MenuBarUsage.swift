@@ -64,12 +64,28 @@ func desktopProcessHome(_ pid: pid_t) -> String? {
 
 // WindowServer returns on-screen windows in front-to-back order, even while CAB
 // itself is frontmost. Only the owning PID and the window layer are needed.
-func frontDesktopWindowPID(in pids: Set<pid_t>) -> pid_t? {
-    guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return nil }
-    for window in windows where window[kCGWindowLayer as String] as? Int == 0 {
-        if let pid = window[kCGWindowOwnerPID as String] as? pid_t, pids.contains(pid) { return pid }
+func onScreenDesktopWindowPIDs() -> [pid_t] {
+    guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return [] }
+    return windows.compactMap { window in
+        guard window[kCGWindowLayer as String] as? Int == 0,
+              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let width = bounds["Width"] as? Double, width > 1,
+              let height = bounds["Height"] as? Double, height > 1,
+              (window[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { return nil }
+        return window[kCGWindowOwnerPID as String] as? pid_t
     }
-    return nil
+}
+
+func frontDesktopWindowPID(in pids: Set<pid_t>) -> pid_t? {
+    onScreenDesktopWindowPIDs().first(where: pids.contains)
+}
+
+@MainActor
+func currentDesktopWindowHomes() -> Set<String> {
+    let visible = Set(onScreenDesktopWindowPIDs())
+    return Set(CodexDesktopLifecycle().runningApplications.compactMap { app in
+        visible.contains(app.processIdentifier) ? desktopProcessHome(app.processIdentifier) : nil
+    })
 }
 
 @MainActor

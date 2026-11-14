@@ -568,8 +568,9 @@
 
 "正在同步会话…" = "Syncing conversations…";
 
-"同步后，在另一账号返回列表并重新打开会话以加载最新消息。" = "After syncing, return to the list in the other account and reopen the conversation to load its latest messages.";
+"CAB 同步已保存的消息。已打开的 Codex 会话可能仍显示旧内容。" = "CAB syncs saved messages. An open Codex conversation may still show older messages.";
 
 "已同步 %lld 项会话记录，%lld 项待核对。" = "Synced %lld conversation records. %lld need review.";
 
 "会话同步结果" = "Conversation sync result";
+"未检测到所选账号的窗口，请重试。" = "No window appeared for the selected account. Please try again.";

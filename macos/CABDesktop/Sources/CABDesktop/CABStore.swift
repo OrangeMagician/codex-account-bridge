@@ -33,6 +33,8 @@ final class CABStore: ObservableObject {
     @Published var selectedRemoteID: UUID?
     @Published var showServerManager = false
     @Published private(set) var localDesktopHome: LocalDesktopHome = .unknown
+    @Published private(set) var visibleDesktopHomes: Set<String>
+    let desktopWindowHomes: @MainActor () -> Set<String>
     let desktopHome: @MainActor () -> LocalDesktopHome
     @Published var lastDesktopAccount: String?
     @Published var preserveSessionsOnDesktopSwitch = false
@@ -114,9 +116,11 @@ final class CABStore: ObservableObject {
     var codexUpdateErrorByKey: [String: String] = [:]
     var codexUpdateCheckingKeys: Set<String> = []
 
-    init(service: CABService = CABService(), desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome, usageResetAutomation: UsageResetAutomation? = nil) {
+    init(service: CABService = CABService(), desktopHome: @escaping @MainActor () -> LocalDesktopHome = currentLocalDesktopHome, desktopWindowHomes: @escaping @MainActor () -> Set<String> = currentDesktopWindowHomes, usageResetAutomation: UsageResetAutomation? = nil) {
         self.service = service
         self.usageResetAutomation = usageResetAutomation ?? UsageResetAutomation()
+        self.desktopWindowHomes = desktopWindowHomes
+        visibleDesktopHomes = desktopWindowHomes()
         self.desktopHome = desktopHome
         localDesktopHome = desktopHome()
         lastDesktopAccount = defaults.string(forKey: lastDesktopAccountKey)
@@ -205,7 +209,7 @@ final class CABStore: ObservableObject {
     }
 
     func hasDesktopWindow(_ account: AccountStatus) -> Bool {
-        target == .local && localDesktopHome.contains(home: account.home)
+        target == .local && visibleDesktopHomes.contains(canonicalDesktopHome(account.home))
     }
 
     var multipleDesktopsRunning: Bool {
@@ -216,6 +220,8 @@ final class CABStore: ObservableObject {
     func refreshLocalDesktopAccount() {
         let detected = desktopHome()
         if detected != localDesktopHome { localDesktopHome = detected }
+        let visible = desktopWindowHomes()
+        if visible != visibleDesktopHomes { visibleDesktopHomes = visible }
     }
 
     func usesDefaultCodexHome(_ account: AccountStatus) -> Bool {

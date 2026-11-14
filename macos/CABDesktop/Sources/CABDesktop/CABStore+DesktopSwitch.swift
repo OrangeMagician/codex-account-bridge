@@ -43,14 +43,17 @@ extension CABStore {
                 isBusy = false
             }
             do {
-                let alreadyOpen = desktopHome().contains(home: account.home)
-                do { try await syncDesktopHistory() }
-                catch { errorMessage = error.localizedDescription }
+                let alreadyRunning = desktopHome().contains(home: account.home)
+                if !alreadyRunning && status.sharedSessions {
+                    do { try await syncDesktopHistory() }
+                    catch { errorMessage = error.localizedDescription }
+                }
                 try await service.openCodexDesktopWindow(codexHome: account.home)
                 lastDesktopAccount = account.name
                 defaults.set(account.name, forKey: lastDesktopAccountKey)
-                // On first launch the native client creates its own databases.
-                if !alreadyOpen { try await syncDesktopHistory() }
+                // Show an existing window promptly. On first launch, Codex also
+                // creates account databases that can now receive saved history.
+                if status.sharedSessions { try await syncDesktopHistory() }
             } catch {
                 errorMessage = error.localizedDescription
             }

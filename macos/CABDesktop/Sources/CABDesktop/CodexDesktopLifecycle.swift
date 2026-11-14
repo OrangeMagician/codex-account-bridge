@@ -30,6 +30,44 @@ func waitForDesktopProcessesToExit(
     throw BridgeError.commandFailed("Codex 桌面客户端仍在运行，请先保存任务并手动退出后重试。")
 }
 
+// A delivered event can be ignored during shutdown. Only a visible window
+// confirms success. Returning false asks the caller to resolve the PID again.
+@MainActor
+func revealDesktopWindow(
+    isRunning: () -> Bool,
+    isVisible: () -> Bool,
+    activate: () -> Void,
+    reopen: () throws -> Void,
+    openLaunchURL: () throws -> Void,
+    pause: () async throws -> Void = { try await Task.sleep(nanoseconds: 100_000_000) }
+) async throws -> Bool {
+    func waitForWindow(polls: Int) async throws -> Bool {
+        for _ in 0..<polls {
+            if !isRunning() { return false }
+            if isVisible() { return true }
+            try await pause()
+        }
+        return isRunning() && isVisible()
+    }
+
+    guard isRunning() else { return false }
+    activate()
+    if try await waitForWindow(polls: 2) { return true }
+    guard isRunning() else { return false }
+    // The Dock reopen event is best-effort. The Codex launch link also
+    // handles an instance with no primary window or a minimized window.
+    try? reopen()
+    if try await waitForWindow(polls: 12) { return true }
+    guard isRunning() else { return false }
+    do { try openLaunchURL() } catch {
+        if !isRunning() { return false }
+        throw error
+    }
+    if try await waitForWindow(polls: 60) { return true }
+    guard isRunning() else { return false }
+    throw BridgeError.commandFailed(cabLocalized("未检测到所选账号的窗口，请重试。"))
+}
+
 @MainActor
 struct CodexDesktopLifecycle {
     var bundleIdentifier = "com.openai.codex"
@@ -76,33 +114,50 @@ struct CodexDesktopLifecycle {
     @discardableResult
     func openAccountWindow(codexHome: String) async throws -> NSRunningApplication {
         let home = canonicalDesktopHome(codexHome)
-        let applications = runningApplications
-        var unidentified = false
-        for app in applications {
-            guard let detected = desktopProcessHome(app.processIdentifier) else {
-                unidentified = true
+        // Closing the last window can leave an app in Launch Services while it
+        // exits. Resolve the account again if that PID disappears mid-request.
+        for _ in 0..<2 {
+            let apps = runningApplications
+            if let app = apps.first(where: { desktopProcessHome($0.processIdentifier) == home }) {
+                let pid = app.processIdentifier
+                let revealed = try await revealDesktopWindow(
+                    isRunning: { desktopProcessIsRunning(pid) },
+                    isVisible: { frontDesktopWindowPID(in: [pid]) != nil },
+                    activate: {
+                        _ = app.unhide()
+                        _ = app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    },
+                    reopen: { try sendWindowEvent(to: pid, openLaunchURL: false) },
+                    openLaunchURL: { try sendWindowEvent(to: pid, openLaunchURL: true) }
+                )
+                if revealed { return app }
                 continue
             }
-            guard detected == home else { continue }
-            _ = app.unhide()
-            guard app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) else {
-                throw BridgeError.commandFailed(cabLocalized("无法显示账号窗口，请重试。"))
+            guard !apps.contains(where: { desktopProcessIsRunning($0.processIdentifier) && desktopProcessHome($0.processIdentifier) == nil }) else {
+                throw BridgeError.commandFailed(cabLocalized("暂时无法识别已运行窗口的账号，请重试。"))
             }
-            // Clicking the Dock icon also reopens an app after its last window
-            // closes. Address this instance by PID so another account stays put.
-            if frontDesktopWindowPID(in: [app.processIdentifier]) == nil {
-                let reopen = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass),
-                    eventID: AEEventID(kAEReopenApplication),
-                    targetDescriptor: NSAppleEventDescriptor(processIdentifier: app.processIdentifier),
-                    returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
-                _ = try reopen.sendEvent(options: [.noReply, .neverInteract], timeout: 2)
+            let app = try await launch(codexHome: home)
+            let pid = app.processIdentifier
+            for _ in 0..<150 {
+                if frontDesktopWindowPID(in: [pid]) != nil { return app }
+                if !desktopProcessIsRunning(pid) { break }
+                try await Task.sleep(nanoseconds: 100_000_000)
             }
-            return app
+            throw BridgeError.commandFailed(cabLocalized("未检测到所选账号的窗口，请重试。"))
         }
-        guard !unidentified else {
-            throw BridgeError.commandFailed(cabLocalized("暂时无法识别已运行窗口的账号，请重试。"))
+        throw BridgeError.commandFailed(cabLocalized("未检测到所选账号的窗口，请重试。"))
+    }
+
+    private func sendWindowEvent(to pid: pid_t, openLaunchURL: Bool) throws {
+        let event = NSAppleEventDescriptor(
+            eventClass: openLaunchURL ? AEEventClass(kInternetEventClass) : AEEventClass(kCoreEventClass),
+            eventID: openLaunchURL ? AEEventID(kAEGetURL) : AEEventID(kAEReopenApplication),
+            targetDescriptor: NSAppleEventDescriptor(processIdentifier: pid),
+            returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+        if openLaunchURL {
+            event.setParam(NSAppleEventDescriptor(string: "codex://launch"), forKeyword: AEKeyword(keyDirectObject))
         }
-        return try await launch(codexHome: codexHome)
+        _ = try event.sendEvent(options: [.noReply, .neverInteract], timeout: 2)
     }
 
     private func launch(codexHome: String) async throws -> NSRunningApplication {
