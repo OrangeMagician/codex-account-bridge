@@ -5,6 +5,7 @@ struct ContentView: View {
     var publicResetMonitor = PublicResetMonitor.shared
     @EnvironmentObject private var store: CABStore
     @State private var pendingDesktopSwitchConfirmation: AccountStatus?
+    @State private var pendingDesktopReopen: AccountStatus?
     @State private var pendingSessionSharing: Bool?
     @State private var pendingReauthentication: ReauthenticationRequest?
     @State private var pendingAgentBinding: AgentBindingRequest?
@@ -125,6 +126,18 @@ struct ContentView: View {
 
     private func withDialogs<Content: View>(_ content: Content) -> some View {
         content
+        .confirmationDialog("重新打开账号窗口？", isPresented: Binding(
+            get: { pendingDesktopReopen != nil },
+            set: { if !$0 { pendingDesktopReopen = nil } }
+        ), titleVisibility: .visible) {
+            Button("重新打开", role: .destructive) {
+                if let account = pendingDesktopReopen { store.reopenDesktopWindow(for: account) }
+                pendingDesktopReopen = nil
+            }
+            Button("取消", role: .cancel) { pendingDesktopReopen = nil }
+        } message: {
+            Text(String(format: cabLocalized("将退出并重新打开“%@”的客户端。该账号正在运行的任务会中断，请先保存未发送的内容。"), pendingDesktopReopen?.name ?? ""))
+        }
         .confirmationDialog("重启并切换 Codex 桌面账号？", isPresented: Binding(get: { pendingDesktopSwitchConfirmation != nil }, set: { if !$0 { pendingDesktopSwitchConfirmation = nil } }), titleVisibility: .visible) {
             Button(store.preserveSessionsOnDesktopSwitch ? "保留项目与会话并切换" : "使用独立项目与会话并切换", role: .destructive) {
                 if let account = pendingDesktopSwitchConfirmation { store.switchCodexDesktop(to: account) }
@@ -467,8 +480,12 @@ struct ContentView: View {
     }
 
     private func desktopWindowButton(_ account: AccountStatus) -> some View {
-        Button(store.hasDesktopWindow(account) ? "显示账号窗口" : "打开账号窗口") {
-            store.openDesktopWindow(for: account)
+        HStack {
+            Button(store.hasDesktopWindow(account) ? "显示账号窗口" : "打开账号窗口") {
+                store.openDesktopWindow(for: account)
+            }
+            Button("重新打开") { pendingDesktopReopen = account }
+                .help("退出所选账号的客户端并重新打开，以加载已保存的会话。")
         }
         .disabled(store.isBusy)
     }

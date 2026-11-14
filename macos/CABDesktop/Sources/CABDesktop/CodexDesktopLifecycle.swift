@@ -111,6 +111,24 @@ struct CodexDesktopLifecycle {
         _ = try await launch(codexHome: codexHome)
     }
 
+    func stopAccount(codexHome: String) async throws {
+        _ = try applicationURL()
+        let home = canonicalDesktopHome(codexHome)
+        let applications = runningApplications.filter { desktopProcessHome($0.processIdentifier) == home }
+        let originalPIDs = applications.map(\.processIdentifier)
+        for app in applications {
+            guard app.terminate() else {
+                throw BridgeError.commandFailed(cabLocalized("账号窗口未能退出，请保存任务后重试。"))
+            }
+        }
+        try await waitForDesktopProcessesToExit {
+            let selectedPIDs = runningApplications.filter {
+                desktopProcessHome($0.processIdentifier) == home
+            }.map(\.processIdentifier)
+            return Set(originalPIDs + selectedPIDs).filter(desktopProcessIsRunning)
+        }
+    }
+
     @discardableResult
     func openAccountWindow(codexHome: String) async throws -> NSRunningApplication {
         let home = canonicalDesktopHome(codexHome)

@@ -1,5 +1,6 @@
 import CABContinuity
 import Foundation
+import AppKit
 
 extension CABStore {
     func syncDesktopHistory() async throws {
@@ -54,6 +55,27 @@ extension CABStore {
                 // Show an existing window promptly. On first launch, Codex also
                 // creates account databases that can now receive saved history.
                 if status.sharedSessions { try await syncDesktopHistory() }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func reopenDesktopWindow(for account: AccountStatus) {
+        guard target == .local, account.isLoggedIn, status.accounts.contains(account), !isBusy else { return }
+        isBusy = true
+        errorMessage = nil
+        Task {
+            defer {
+                refreshLocalDesktopAccount()
+                isBusy = false
+            }
+            do {
+                try await CodexDesktopLifecycle().stopAccount(codexHome: account.home)
+                if status.sharedSessions { try await syncDesktopHistory() }
+                try await service.openCodexDesktopWindow(codexHome: account.home)
+                lastDesktopAccount = account.name
+                defaults.set(account.name, forKey: lastDesktopAccountKey)
             } catch {
                 errorMessage = error.localizedDescription
             }

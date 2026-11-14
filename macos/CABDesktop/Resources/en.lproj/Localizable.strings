@@ -574,3 +574,8 @@
 
 "会话同步结果" = "Conversation sync result";
 "未检测到所选账号的窗口，请重试。" = "No window appeared for the selected account. Please try again.";
+"重新打开" = "Reopen";
+"重新打开账号窗口？" = "Reopen account window?";
+"退出所选账号的客户端并重新打开，以加载已保存的会话。" = "Quit and reopen the selected account’s client to load saved conversations.";
+"将退出并重新打开“%@”的客户端。该账号正在运行的任务会中断，请先保存未发送的内容。" = "The client for “%@” will quit and reopen. Running tasks for this account will be interrupted. Save unsent text first.";
+"账号窗口未能退出，请保存任务后重试。" = "The account window could not quit. Save your work and try again.";
