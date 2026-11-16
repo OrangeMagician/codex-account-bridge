@@ -214,3 +214,28 @@ func TestRemovingRotationAccountDisablesUnsafeRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRegistrationAndRemovalRequireExplicitDefaultSelection(t *testing.T) {
+	cfg := Empty()
+	for _, name := range []string{"a", "b", "c"} {
+		if err := cfg.Add(Account{Name: name, Home: filepath.Join(t.TempDir(), name)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg.DefaultAccount != "" {
+		t.Fatal("registration silently selected a default")
+	}
+	cfg.DefaultAccount, cfg.RemoteAccount = "A", "a"
+	cfg.Rotation = Rotation{Enabled: true, Accounts: []string{"a", "b", "c"}, NextIndex: 1}
+	cfg.Remove("a")
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultAccount != "" || cfg.RemoteAccount != "" {
+		t.Fatal("removing the selected account should clear its selections")
+	}
+	account, err := cfg.NextRotationAccount()
+	if err != nil || account.Name != "b" {
+		t.Fatal("removing an earlier account skipped the next rotation slot", account, err)
+	}
+}

@@ -10,7 +10,7 @@ Developers who use multiple official Codex or ChatGPT accounts on macOS and Linu
 
 ## Product Purpose
 
-CodexAccountBridge provides a conservative CLI and native macOS interface for managing independent official Codex login environments. Success means users can understand which account and machine are active, make deliberate account changes, and retain control of cross-account disclosure without CAB proxying requests or handling token contents.
+CodexAccountBridge provides a conservative CLI and native macOS interface for managing independent official Codex login environments. Success means users can understand which account and machine are active, make deliberate account changes, and retain control of cross-account disclosure while the official CLI handles authentication and inference, including for the optional local chat endpoint.
 
 ## Brand Personality
 

@@ -144,8 +144,16 @@ func TestEnableRefusesConflictingSessionsWithoutMutation(t *testing.T) {
 	writeSession(t, two, "same.jsonl", "two")
 	cfg := config.Empty()
 	cfg.Accounts = []config.Account{{Name: "one", Home: one}, {Name: "two", Home: two}}
+	shared := filepath.Join(paths.DataDir, "shared")
+	writeSession(t, shared, "existing.jsonl", "keep")
 	if err := Enable(paths, &cfg); err == nil {
 		t.Fatal("expected collision")
+	}
+	if _, err := os.Lstat(filepath.Join(shared, "sessions", "same.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("failed merge left private history in shared storage", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(shared, "sessions", "existing.jsonl")); err != nil || string(data) != "keep" {
+		t.Fatal("failed merge changed existing shared history", err)
 	}
 	for _, home := range []string{one, two} {
 		info, err := os.Lstat(filepath.Join(home, "sessions"))
@@ -338,5 +346,55 @@ func writeHistory(t *testing.T, home, directory, name, value string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEnableRefusesNestedCredentialsInPrivateOrSharedHistory(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		root := t.TempDir()
+		paths := config.Paths{DataDir: filepath.Join(root, "data")}
+		home := filepath.Join(root, "one")
+		cfg := config.Empty()
+		cfg.Accounts = []config.Account{{Name: "one", Home: home}, {Name: "two", Home: filepath.Join(root, "two")}}
+		history := filepath.Join(home, "archived_sessions")
+		if shared {
+			history = filepath.Join(paths.DataDir, "shared", "archived_sessions")
+		}
+		// A directory exercises filename rejection without any credential contents.
+		if err := os.MkdirAll(filepath.Join(history, "nested", "AUTH.json"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := Enable(paths, &cfg); err == nil || cfg.SharedSessionsDir != "" {
+			t.Fatal("enabled sharing of a protected name")
+		}
+		if _, err := os.Lstat(filepath.Join(cfg.Accounts[1].Home, "sessions")); !os.IsNotExist(err) {
+			t.Fatal("unexpected account link", err)
+		}
+	}
+}
+
+func TestFailedDisableRemovesPartialStageAndKeepsAccountLinks(t *testing.T) {
+	root := t.TempDir()
+	paths := config.Paths{DataDir: filepath.Join(root, "data")}
+	cfg := config.Empty()
+	cfg.Accounts = []config.Account{{Name: "one", Home: filepath.Join(root, "one")}, {Name: "two", Home: filepath.Join(root, "two")}}
+	writeSession(t, cfg.Accounts[0].Home, "a.jsonl", "sample")
+	if err := Enable(paths, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.jsonl", filepath.Join(cfg.SharedSessionsDir, "z-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Disable(paths, &cfg); err == nil {
+		t.Fatal("expected unsafe history rejection")
+	}
+	for _, account := range cfg.Accounts {
+		if !sameResolvedPath(filepath.Join(account.Home, "sessions"), cfg.SharedSessionsDir) {
+			t.Fatal("lost shared history link")
+		}
+		stages, err := filepath.Glob(filepath.Join(account.Home, ".cab-*-disable-*"))
+		if err != nil || len(stages) != 0 {
+			t.Fatal("partial stage remains", stages, err)
+		}
 	}
 }

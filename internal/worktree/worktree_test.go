@@ -60,6 +60,19 @@ func TestCreateRemovePreservesCommitsAndDoesNotRunHooks(t *testing.T) {
 	if err != nil || len(other) != 0 {
 		t.Fatal(other, err)
 	}
+	if err = os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte("local.env\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ignored := filepath.Join(e.Path, "local.env")
+	if err = os.WriteFile(ignored, []byte("local settings"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = Remove(data, "work", e.ID); err == nil {
+		t.Fatal("worktree containing ignored local files removed")
+	}
+	if err = os.Remove(ignored); err != nil {
+		t.Fatal(err)
+	}
 	if err = os.WriteFile(filepath.Join(e.Path, "untracked"), []byte("save me"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -403,7 +403,7 @@ func fileLock(path string) (func(), error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -565,9 +565,6 @@ func (cfg *Config) Add(account Account) error {
 	}
 	cfg.Accounts = append(cfg.Accounts, account)
 	sort.Slice(cfg.Accounts, func(i, j int) bool { return cfg.Accounts[i].Name < cfg.Accounts[j].Name })
-	if cfg.DefaultAccount == "" {
-		cfg.DefaultAccount = account.Name
-	}
 	return cfg.Validate()
 }
 
@@ -579,10 +576,18 @@ func (cfg *Config) Remove(name string) {
 		}
 	}
 	cfg.Accounts = next
+	if strings.EqualFold(cfg.DefaultAccount, name) {
+		cfg.DefaultAccount = ""
+	}
+	if strings.EqualFold(cfg.RemoteAccount, name) {
+		cfg.RemoteAccount = ""
+	}
 	rotation := cfg.Rotation.Accounts[:0]
-	for _, selected := range cfg.Rotation.Accounts {
+	for index, selected := range cfg.Rotation.Accounts {
 		if !strings.EqualFold(selected, name) {
 			rotation = append(rotation, selected)
+		} else if index < cfg.Rotation.NextIndex {
+			cfg.Rotation.NextIndex--
 		}
 	}
 	cfg.Rotation.Accounts = rotation

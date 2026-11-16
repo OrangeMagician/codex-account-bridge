@@ -283,7 +283,7 @@ func Remove(dataDir, account, id string) error {
 		if err = safeDirectory(e.Repository, false); err != nil {
 			return err
 		}
-		status, err := git("-C", e.Path, "status", "--porcelain", "--untracked-files=all")
+		status, err := git("-C", e.Path, "status", "--porcelain", "--untracked-files=all", "--ignored")
 		if err != nil {
 			return err
 		}

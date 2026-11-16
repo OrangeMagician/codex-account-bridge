@@ -1,3 +1,4 @@
+import CABContinuity
 import Foundation
 
 struct CodexThreadCatalogSyncResult {
@@ -48,8 +49,8 @@ enum CodexThreadCatalogState {
         }
         guard !sourceURLs.isEmpty else { return nil }
 
-        let checked = try runSQLite(targetURL, sql: "PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA integrity_check;")
-        guard checked.split(whereSeparator: \.isNewline).contains("ok") else {
+        let checked = try ContinuitySQLite.run(targetURL, sql: ContinuitySQLite.checkpointSQL)
+        guard ContinuitySQLite.readyForBackup(checked) else {
             throw BridgeError.commandFailed("Codex 会话目录完整性检查失败，已停止切换。")
         }
         let backupURL = targetURL.deletingLastPathComponent().appendingPathComponent(
@@ -72,11 +73,11 @@ enum CodexThreadCatalogState {
             sql += " UPDATE main.local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1 WHERE id = 1; COMMIT;"
             for index in sourceURLs.indices { sql += " DETACH DATABASE cab_source_\(index);" }
             sql += " PRAGMA integrity_check;"
-            let merged = try runSQLite(targetURL, sql: sql)
+            let merged = try ContinuitySQLite.run(targetURL, sql: sql)
             guard merged.split(whereSeparator: \.isNewline).contains("ok") else {
                 throw BridgeError.commandFailed("同步 Codex 会话目录后的完整性检查失败。")
             }
-            let count = Int(try runSQLite(targetURL, sql: "SELECT count(*) FROM local_thread_catalog;").trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            let count = Int(try ContinuitySQLite.run(targetURL, sql: "SELECT count(*) FROM local_thread_catalog;").trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
             return CodexThreadCatalogSyncResult(targetURL: targetURL, backupURL: backupURL, rowCount: count)
         } catch {
             try? restore(CodexThreadCatalogSyncResult(targetURL: targetURL, backupURL: backupURL, rowCount: 0))
@@ -128,12 +129,12 @@ enum CodexThreadCatalogState {
     }
 
     private static func validateSchema(_ databaseURL: URL) throws {
-        let columns = try runSQLite(databaseURL, sql: "SELECT name FROM pragma_table_info('local_thread_catalog') ORDER BY cid;")
+        let columns = try ContinuitySQLite.run(databaseURL, sql: "SELECT name FROM pragma_table_info('local_thread_catalog') ORDER BY cid;")
             .split(whereSeparator: \.isNewline).map(String.init)
         guard Set(catalogColumns).isSubset(of: Set(columns)) else {
             throw BridgeError.commandFailed("Codex 会话目录结构不兼容，已停止切换。")
         }
-        let tables = try runSQLite(databaseURL, sql: "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('local_thread_catalog_hosts','local_thread_catalog_metadata');")
+        let tables = try ContinuitySQLite.run(databaseURL, sql: "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('local_thread_catalog_hosts','local_thread_catalog_metadata');")
         guard tables.contains("local_thread_catalog_hosts"), tables.contains("local_thread_catalog_metadata") else {
             throw BridgeError.commandFailed("Codex 会话目录缺少必要表，已停止切换。")
         }
@@ -155,24 +156,6 @@ enum CodexThreadCatalogState {
         guard values.isRegularFile == true, values.isSymbolicLink != true else {
             throw BridgeError.commandFailed("拒绝读取非普通文件或符号链接形式的 Codex 会话目录。")
         }
-    }
-
-    private static func runSQLite(_ databaseURL: URL, sql: String) throws -> String {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-batch", "-bail", databaseURL.path, sql]
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let message = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "sqlite3 failed"
-            throw BridgeError.commandFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return output
     }
 
     private static func quoted(_ value: String) -> String { value.replacingOccurrences(of: "'", with: "''") }

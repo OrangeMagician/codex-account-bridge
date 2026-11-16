@@ -70,6 +70,9 @@ func Run(argv []string, version string) (int, error) {
 	if command == "capabilities" {
 		return printJSON(map[string]any{"protocol_version": 1, "cab_version": version, "capabilities": supportedCapabilities})
 	}
+	if command == "api" {
+		return localAPICommand(paths, args)
+	}
 	if command == "init" {
 		if err := config.EnsureDataDir(paths); err != nil {
 			return 1, err
@@ -155,6 +158,7 @@ Secure, explicit account selection for the official Codex CLI.
 
 Commands:
   cab init
+  cab api use NAME | status | key | start|serve [--listen IP:PORT --client IP] | stop
   cab account add [--home PATH] NAME
   cab account import-current NAME
   cab account list
@@ -203,7 +207,7 @@ Commands:
   cab version
 
 Safety defaults: launch rotation is opt-in and never reacts to quota/errors;
-no proxy, auth copying, automatic project trust, or approval/sandbox bypass.
+no auth copying, automatic project trust, or approval/sandbox bypass.
 `)
 }
 
@@ -771,15 +775,6 @@ func accountCommand(paths config.Paths, cfg *config.Config, args []string) (int,
 				return fmt.Errorf("unknown account %q", name)
 			}
 			latest.Remove(name)
-			if strings.EqualFold(latest.DefaultAccount, name) {
-				latest.DefaultAccount = ""
-				if len(latest.Accounts) > 0 {
-					latest.DefaultAccount = latest.Accounts[0].Name
-				}
-			}
-			if strings.EqualFold(latest.RemoteAccount, name) {
-				latest.RemoteAccount = ""
-			}
 			return nil
 		})
 		if err != nil {

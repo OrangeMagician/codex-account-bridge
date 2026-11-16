@@ -564,9 +564,9 @@ final class CABService {
 
         let checked = try await runSQLite(
             databaseURL,
-            sql: "PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA integrity_check;"
+            sql: ContinuitySQLite.checkpointSQL
         )
-        guard checked.split(whereSeparator: \.isNewline).contains("ok") else {
+        guard ContinuitySQLite.readyForBackup(checked) else {
             throw BridgeError.commandFailed("Codex 线程索引完整性检查失败，已停止切换。")
         }
 
@@ -610,64 +610,28 @@ final class CABService {
     }
 
     private func runSQLite(_ databaseURL: URL, sql: String) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-            process.arguments = [databaseURL.path, sql]
-            process.standardOutput = stdout
-            process.standardError = stderr
-            process.terminationHandler = { finished in
-                let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                if finished.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    continuation.resume(throwing: BridgeError.commandFailed(errorOutput.isEmpty ? "sqlite3 执行失败。" : errorOutput))
-                }
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
+        // A caller may restore a backup as soon as this returns. Wait for the
+        // database writer to actually exit, including when the caller cancels.
+        try await Task.detached(priority: .utility) {
+            try ContinuitySQLite.run(databaseURL, sql: sql)
+        }.value
     }
 
     func hasRunningCodexProcesses(target: BridgeTarget, remoteHost: String) async throws -> Bool {
-        let process = Process()
+        let result: CommandResult
         if target == .local {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-            process.arguments = ["-x", "codex"]
+            result = try await runLocalProcess("/usr/bin/pgrep", arguments: ["-x", "codex"])
         } else {
             let host = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { throw BridgeError.commandFailed("请先填写 SSH 主机。") }
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = ["--", host, "pgrep", "-x", "codex"]
+            result = try await runLocalProcess("/usr/bin/ssh", arguments: ["--", host, "pgrep", "-x", "codex"])
         }
-        process.standardOutput = FileHandle.nullDevice
-        let stderr = Pipe()
-        process.standardError = stderr
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { finished in
-                switch finished.terminationStatus {
-                case 0:
-                    continuation.resume(returning: true)
-                case 1:
-                    continuation.resume(returning: false)
-                default:
-                    let detail = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    let message = detail.flatMap { $0.isEmpty ? nil : $0 } ?? "无法确认 Codex 是否已经退出。"
-                    continuation.resume(throwing: BridgeError.commandFailed(message))
-                }
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
+        switch result.exitCode {
+        case 0: return true
+        case 1: return false
+        default:
+            let detail = result.errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BridgeError.commandFailed(detail.isEmpty ? "无法确认 Codex 是否已经退出。" : detail)
         }
     }
 
@@ -910,6 +874,7 @@ func localCABEnvironment(
 
     if baseEnvironment["CAB_REAL_CODEX"]?.isEmpty != false {
         let candidates = [
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "/Applications/Codex.app/Contents/Resources/codex",
         ] + searchDirectories.map { URL(fileURLWithPath: $0).appendingPathComponent("codex").path }

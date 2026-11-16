@@ -31,6 +31,8 @@ struct SystemSettingsView: View {
                 }.padding(8)
             } label: { Text("通用与显示") }
 
+            if store.target == .local { LocalAPISettingsView(performsLiveChecks: performsLiveChecks) }
+
             GroupBox {
                 HStack {
                     Label("自动刷新额度", systemImage: "arrow.clockwise")

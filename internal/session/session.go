@@ -104,7 +104,7 @@ func ImportLegacy(paths config.Paths, cfg config.Config, sourceHome string) (Leg
 	}
 	defer unlock()
 	for _, name := range historyDirectoryNames {
-		if err := mergeTree(filepath.Join(sourceHome, name), sharedHistoryDir(cfg.SharedSessionsDir, name)); err != nil {
+		if err := mergeTree(filepath.Join(sourceHome, name), sharedHistoryDir(cfg.SharedSessionsDir, name), nil); err != nil {
 			return report, fmt.Errorf("import legacy %s: %w", name, err)
 		}
 	}
@@ -171,9 +171,21 @@ func PrepareEnable(paths config.Paths, cfg *config.Config) (config.Mutation, err
 	if err != nil {
 		return config.Mutation{}, err
 	}
+	// Undo only entries added by this merge. Earlier shared history must
+	// survive a collision in a later account or a configuration save error.
+	var additions []string
+	undoMerge := func() error {
+		var result error
+		for i := len(additions) - 1; i >= 0; i-- {
+			if err := os.Remove(additions[i]); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				result = errors.Join(result, err)
+			}
+		}
+		return result
+	}
 	fail := func(err error) (config.Mutation, error) {
-		unlock()
-		return config.Mutation{}, err
+		defer unlock()
+		return config.Mutation{}, errors.Join(err, undoMerge())
 	}
 	sharedSessions := cfg.SharedSessionsDir
 	if sharedSessions == "" {
@@ -184,11 +196,25 @@ func PrepareEnable(paths config.Paths, cfg *config.Config) (config.Mutation, err
 	}
 	for _, name := range historyDirectoryNames {
 		shared := sharedHistoryDir(sharedSessions, name)
+		for _, account := range cfg.Accounts {
+			if config.PathsOverlap(shared, account.Home) {
+				return fail(fmt.Errorf("shared history overlaps account home: %s and %s", shared, account.Home))
+			}
+		}
 		if err := secureDir(shared); err != nil {
 			return fail(err)
 		}
+		// Existing history becomes visible through every new account link.
+		if err := filepath.WalkDir(shared, func(_ string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			return validateHistoryEntry(entry)
+		}); err != nil {
+			return fail(err)
+		}
 		for _, account := range cfg.Accounts {
-			if err := mergeTree(filepath.Join(account.Home, name), shared); err != nil {
+			if err := mergeTree(filepath.Join(account.Home, name), shared, &additions); err != nil {
 				return fail(fmt.Errorf("merge %s: %w", filepath.Join(account.Home, name), err))
 			}
 		}
@@ -232,7 +258,11 @@ func PrepareEnable(paths config.Paths, cfg *config.Config) (config.Mutation, err
 		return fail(err)
 	}
 	abort := func(cause error) (config.Mutation, error) {
-		return fail(errors.Join(cause, rollbackEnableOperation(paths, items)))
+		if err := rollbackEnableOperation(paths, items); err != nil {
+			unlock()
+			return config.Mutation{}, errors.Join(cause, err)
+		}
+		return fail(cause)
 	}
 	for _, item := range items {
 		if item.Backup != "" {
@@ -258,7 +288,12 @@ func PrepareEnable(paths config.Paths, cfg *config.Config) (config.Mutation, err
 	return config.Mutation{
 		Rollback: func() error {
 			cfg.SharedSessionsDir = previous
-			return finish(func() error { return rollbackEnableOperation(paths, items) })
+			return finish(func() error {
+				if err := rollbackEnableOperation(paths, items); err != nil {
+					return err
+				}
+				return undoMerge()
+			})
 		},
 		Commit: func() error { return finish(func() error { return clearJournal(paths) }) },
 	}, nil
@@ -314,11 +349,11 @@ func PrepareDisable(paths config.Paths, cfg *config.Config) (config.Mutation, er
 				cleanupOperationStages(items)
 				return fail(err)
 			}
-			if err := mergeTree(shared, stage); err != nil {
+			items = append(items, operationTarget{Target: target, Stage: stage, Shared: shared})
+			if err := mergeTree(shared, stage, nil); err != nil {
 				cleanupOperationStages(items)
 				return fail(err)
 			}
-			items = append(items, operationTarget{Target: target, Stage: stage, Shared: shared})
 		}
 	}
 	journal := operationJournal{Version: 1, Operation: "disable", Shared: cfg.SharedSessionsDir, Items: items}
@@ -380,7 +415,17 @@ func sharedHistoryDir(sharedSessions, name string) string {
 	return filepath.Join(filepath.Dir(sharedSessions), name)
 }
 
-func mergeTree(source, destination string) error {
+func validateHistoryEntry(entry fs.DirEntry) error {
+	if strings.EqualFold(entry.Name(), "auth.json") {
+		return errors.New("credential files cannot be shared")
+	}
+	if !entry.IsDir() && !entry.Type().IsRegular() {
+		return fmt.Errorf("refusing symlink or special session file %s", entry.Name())
+	}
+	return nil
+}
+
+func mergeTree(source, destination string, additions *[]string) error {
 	info, err := os.Lstat(source)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -397,6 +442,9 @@ func mergeTree(source, destination string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("source is not a directory")
 	}
+	if config.PathsOverlap(source, destination) {
+		return fmt.Errorf("session source and destination overlap: %s and %s", source, destination)
+	}
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -406,10 +454,20 @@ func mergeTree(source, destination string) error {
 			return err
 		}
 		target := filepath.Join(destination, relative)
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing nested symlink %s", path)
+		if err := validateHistoryEntry(entry); err != nil {
+			return err
 		}
 		if entry.IsDir() {
+			if additions != nil {
+				// WalkDir visits parents first. Mkdir's result tells us
+				// whether this transaction owns the new directory.
+				if err := os.Mkdir(target, 0o700); err == nil {
+					*additions = append(*additions, target)
+					return nil
+				} else if !errors.Is(err, fs.ErrExist) {
+					return err
+				}
+			}
 			return secureDir(target)
 		}
 		info, err := entry.Info()
@@ -434,7 +492,13 @@ func mergeTree(source, destination string) error {
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
-		return copyFile(path, target)
+		if err := copyFile(path, target); err != nil {
+			return err
+		}
+		if additions != nil {
+			*additions = append(*additions, target)
+		}
+		return nil
 	})
 }
 
@@ -545,7 +609,7 @@ func lockWithMode(dataDir string, mode int) (func(), error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, err
 	}

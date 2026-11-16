@@ -158,18 +158,23 @@ public enum CodexContinuityState {
 
     public static func restore(_ result: CodexContinuitySyncResult, fileManager: FileManager = .default) throws {
         for backup in result.backups.reversed() {
-            for suffix in ["-wal", "-shm"] {
-                let sidecar = URL(fileURLWithPath: backup.targetURL.path + suffix)
-                if fileManager.fileExists(atPath: sidecar.path) { try fileManager.removeItem(at: sidecar) }
-            }
-            if fileManager.fileExists(atPath: backup.targetURL.path) {
-                try fileManager.removeItem(at: backup.targetURL)
-            }
+            let target = backup.targetURL
+            let staging = target.deletingLastPathComponent().appendingPathComponent(".cab-restore-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: staging) }
             if let backupURL = backup.backupURL {
-                try fileManager.copyItem(at: backupURL, to: backup.targetURL)
+                // Verify and stage the backup before removing the current target.
+                try copyBackupItem(backupURL, to: staging, directory: portableDirectories.contains(target.lastPathComponent), fileManager: fileManager)
             } else if backup.targetPreviouslyExisted {
-                throw CodexContinuityError.failure("完整工作区备份缺失：\(backup.targetURL.lastPathComponent)")
+                throw CodexContinuityError.failure("完整工作区备份缺失：\(target.lastPathComponent)")
             }
+            if target.pathExtension == "sqlite" {
+                for suffix in ["-wal", "-shm"] {
+                    let sidecar = URL(fileURLWithPath: target.path + suffix)
+                    if fileManager.fileExists(atPath: sidecar.path) { try fileManager.removeItem(at: sidecar) }
+                }
+            }
+            if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
+            if backup.backupURL != nil { try fileManager.moveItem(at: staging, to: target) }
         }
     }
 
@@ -262,8 +267,8 @@ public enum CodexContinuityState {
         }
         guard !sources.isEmpty else { return nil }
 
-        let checked = try runSQLite(targetURL, sql: "PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA integrity_check;")
-        guard checked.split(whereSeparator: \.isNewline).contains("ok") else {
+        let checked = try ContinuitySQLite.run(targetURL, sql: ContinuitySQLite.checkpointSQL)
+        guard ContinuitySQLite.readyForBackup(checked) else {
             throw CodexContinuityError.failure("\(specification.relativePath) 完整性检查失败，已停止切换。")
         }
         let backup = try backupItem(targetURL, stamp: stamp, fileManager: fileManager)
@@ -282,7 +287,7 @@ public enum CodexContinuityState {
             sql += " COMMIT;"
             for index in sources.indices { sql += " DETACH DATABASE cab_source_\(index);" }
             sql += " PRAGMA integrity_check;"
-            let merged = try runSQLite(targetURL, sql: sql)
+            let merged = try ContinuitySQLite.run(targetURL, sql: sql)
             guard merged.split(whereSeparator: \.isNewline).contains("ok") else {
                 throw CodexContinuityError.failure("\(specification.relativePath) 同步后完整性检查失败。")
             }
@@ -368,7 +373,7 @@ public enum CodexContinuityState {
     private static func compatibleSpecification(_ specification: DatabaseSpecification, at url: URL) throws -> DatabaseSpecification {
         guard specification.relativePath == "state_5.sqlite" else { return specification }
         try validatePortableFile(url)
-        let tables = Set(try runSQLite(url, sql: "SELECT name FROM sqlite_master WHERE type='table';")
+        let tables = Set(try ContinuitySQLite.run(url, sql: "SELECT name FROM sqlite_master WHERE type='table';")
             .split(whereSeparator: \.isNewline).map(String.init))
         var columns = specification.requiredColumns
         columns.removeValue(forKey: "thread_artifacts")
@@ -388,7 +393,7 @@ public enum CodexContinuityState {
             throw CodexContinuityError.failure("\(url.lastPathComponent) 超过安全大小限制，已停止切换。")
         }
         for (table, expectedColumns) in requiredColumns {
-            let columns = try runSQLite(url, sql: "SELECT name FROM pragma_table_info('\(quoted(table))') ORDER BY cid;")
+            let columns = try ContinuitySQLite.run(url, sql: "SELECT name FROM pragma_table_info('\(quoted(table))') ORDER BY cid;")
                 .split(whereSeparator: \.isNewline).map(String.init)
             guard Set(expectedColumns).isSubset(of: Set(columns)) else {
                 throw CodexContinuityError.failure("\(url.lastPathComponent) 的 \(table) 结构不兼容，已停止切换。")
@@ -424,24 +429,9 @@ public enum CodexContinuityState {
         totalBytes: inout Int64,
         fileManager: FileManager
     ) throws {
-        let values = try source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true else {
-            throw CodexContinuityError.failure("拒绝同步非目录或符号链接形式的工作区内容。\n来源目录：\(source.path)")
-        }
-        guard let enumerator = fileManager.enumerator(
-            at: source,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
-            options: []
-        ) else { return }
-        while let item = enumerator.nextObject() as? URL {
-            if shouldSkipTransientGitItem(item) {
-                continue
-            }
-            let itemValues = try item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-            guard itemValues.isSymbolicLink != true else {
-                throw CodexContinuityError.failure("工作区内容包含符号链接。\n来源目录：\(source.path)\n未同步文件：\(item.path)")
-            }
-            let resolvedSourcePath = source.resolvingSymlinksInPath().path
+        let resolvedSourcePath = source.resolvingSymlinksInPath().path
+        try walkPortableDirectory(source, fileManager: fileManager) { item, itemValues in
+            if shouldSkipTransientGitItem(item) { return }
             let resolvedItemPath = item.resolvingSymlinksInPath().path
             let relative = resolvedItemPath.replacingOccurrences(of: resolvedSourcePath + "/", with: "", options: [.anchored])
             guard !relative.isEmpty, relative != resolvedItemPath, !relative.hasPrefix("/") else {
@@ -469,6 +459,32 @@ public enum CodexContinuityState {
                 throw CodexContinuityError.failure("工作区内容包含不支持的特殊文件。\n来源目录：\(source.path)\n未同步文件：\(item.path)")
             }
         }
+    }
+
+    private static func walkPortableDirectory(
+        _ source: URL, fileManager: FileManager, visit: (URL, URLResourceValues) throws -> Void
+    ) throws {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        let root = try source.resourceValues(forKeys: keys)
+        guard root.isDirectory == true, root.isSymbolicLink != true else {
+            throw CodexContinuityError.failure("拒绝同步非目录或符号链接形式的工作区内容。\n来源目录：\(source.path)")
+        }
+        var traversalError: Error?
+        guard let entries = fileManager.enumerator(at: source, includingPropertiesForKeys: Array(keys), options: [], errorHandler: { _, error in
+            traversalError = error
+            return false
+        }) else { throw CodexContinuityError.failure("无法遍历工作区目录：\(source.path)") }
+        while let item = entries.nextObject() as? URL {
+            guard item.lastPathComponent.caseInsensitiveCompare("auth.json") != .orderedSame else {
+                throw CodexContinuityError.failure("工作区目录中包含认证文件，已停止同步。")
+            }
+            let values = try item.resourceValues(forKeys: keys)
+            guard values.isSymbolicLink != true else {
+                throw CodexContinuityError.failure("工作区内容包含符号链接。\n来源目录：\(source.path)\n未同步文件：\(item.path)")
+            }
+            try visit(item, values)
+        }
+        if let traversalError { throw traversalError }
     }
 
     private static func shouldSkipTransientGitItem(_ url: URL) -> Bool {
@@ -529,13 +545,28 @@ public enum CodexContinuityState {
             return CodexContinuityBackup(targetURL: targetURL, backupURL: nil, targetPreviouslyExisted: false)
         }
         let backupURL = targetURL.deletingLastPathComponent().appendingPathComponent("\(targetURL.lastPathComponent).cab-backup-\(stamp)-\(UUID().uuidString)")
-        try fileManager.copyItem(at: targetURL, to: backupURL)
+        try copyBackupItem(targetURL, to: backupURL, directory: portableDirectories.contains(targetURL.lastPathComponent), fileManager: fileManager)
         return CodexContinuityBackup(targetURL: targetURL, backupURL: backupURL, targetPreviouslyExisted: true)
+    }
+
+    private static func copyBackupItem(_ source: URL, to destination: URL, directory: Bool, fileManager: FileManager) throws {
+        if directory {
+            try walkPortableDirectory(source, fileManager: fileManager) { _, _ in }
+        } else {
+            try validatePortableFile(source)
+        }
+        do {
+            try fileManager.copyItem(at: source, to: destination)
+        } catch {
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
     }
 
     private static func replaceFile(from source: URL, to target: URL, fileManager: FileManager) throws {
         try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         let staging = target.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).cab-stage-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: staging) }
         try fileManager.copyItem(at: source, to: staging)
         if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
         try fileManager.moveItem(at: staging, to: target)
@@ -554,24 +585,6 @@ public enum CodexContinuityState {
         var homes = uniqueHomes(knownHomes).filter { $0 != target && $0 != source }
         homes.append(source)
         return homes
-    }
-
-    private static func runSQLite(_ databaseURL: URL, sql: String) throws -> String {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-batch", "-bail", databaseURL.path, sql]
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let message = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "sqlite3 failed"
-            throw CodexContinuityError.failure(message.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return output
     }
 
     private static func quoted(_ value: String) -> String { value.replacingOccurrences(of: "'", with: "''") }

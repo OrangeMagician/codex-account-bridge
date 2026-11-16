@@ -16,7 +16,14 @@ See [Codex feature details](docs/CODEX_FEATURES.md) for compatibility and comman
 
 CodexAccountBridge (`cab`) is an open-source Codex account manager for macOS and Linux. It provides a command-line tool and a native SwiftUI app for managing multiple official Codex or ChatGPT logins across local machines, SSH servers, remote projects, and supported agent services.
 
-CAB keeps every login in an independent `CODEX_HOME` and delegates authentication and model traffic to the official Codex executable. It does not implement OAuth, proxy model requests, inspect token contents, or silently switch accounts after quota, authentication, or runtime errors.
+CAB keeps every login in an independent `CODEX_HOME` and delegates authentication and model traffic to the official Codex executable. It does not implement OAuth, inspect token contents, or silently switch accounts after quota, authentication, or runtime errors.
+
+## Local model API
+
+In the local Mac's **Settings → Local model API**, select the service account, enter the Mac listen address and the VM's client IP, then start the service. Configure the client with the OpenAI protocol, the displayed base URL, the copied CAB key and an explicit `MODEL@EFFORT@SPEED` model ID, such as `gpt-6.1-sol@high@standard` or `gpt-6.1-sol@high@fast`, from the account model list. API clients can also send the actual `model`, `reasoning_effort` and `service_tier` fields. Speed defaults to standard when omitted. A bare model ID uses its catalog reasoning effort. Conflicting or unsupported choices return an error. The login agent also runs when the CAB window is closed. Use private HTTP only on a trusted network.
+
+Use `cab api use NAME` to route new requests, including any history the client supplies, to that account. In-flight requests keep their original account. The endpoint and key stay the same. Use `cab api status` and `cab api stop` to manage the macOS background service. On macOS and Linux use `cab api serve --listen IP:8787 --client CLIENT_IP` for foreground operation. The service supports text Chat Completions and client-side function calls. SSE connections start immediately, send keepalives and forward official Codex public reasoning summaries and answer events as available. Client function calls are delivered after the structured result is complete.
+
 
 ## What it does
 
@@ -63,7 +70,7 @@ Requirements:
 
 - The official Codex CLI installed and available on `PATH`.
 - Python 3 for the read-only Token dashboard (standard library only).
-- Go 1.26.7 or newer for building the current source tree.
+- Go 1.26.10+ on the 1.26 branch, or Go 1.27.3 or later for building the current source tree.
 - macOS 13 or newer for the native desktop app.
 
 ```bash
@@ -137,7 +144,7 @@ host and refresh the remote target; the host is running an older bridge binary.
 `cab tokens --json` returns the same read-only usage data shown in the desktop
 dashboard. Daily values are grouped by each thread's last activity date.
 
-Arguments after `cab run` are passed through to the official Codex executable. Removing a CAB registration does not delete the account directory, login, or sessions.
+Arguments after `cab run` are passed through to the official Codex executable. Removing a CAB registration does not delete the account directory, login, or sessions. After registering your first account or removing your default, select a default with `cab use NAME` or launch with `--account NAME`.
 
 If the default `~/.codex` directory is already signed in, register it without copying credentials:
 
@@ -250,7 +257,7 @@ cab sessions disable --confirm-codex-stopped
 
 CAB stops on conflicting session files instead of overwriting either side. Timestamped backups are retained for recovery.
 
-With shared history enabled, CAB repairs existing thread indexes before account selection and before launching Codex. For duplicate rollout files with the same thread ID, the last complete event timestamp selects the newest history; all original files remain intact. CAB also retains projectless threads, pins, section membership and useful display names. Empty or working-directory titles cannot replace a useful name. Missing rows are imported only from an existing official index and a verified shared rollout, retaining that thread’s original settings; existing approval, sandbox, archive and runtime fields are never overwritten. The outgoing account supplies explicit pin/unpin and membership edits. Desktop switches additionally retain legacy pins, per-host pin order and local/remote sidebar membership. Unrelated account tables and trust settings stay untouched.
+With shared history enabled, CAB repairs existing thread indexes before account selection and before launching Codex. For duplicate rollout files with the same thread ID, the last complete event timestamp selects the newest history; all original files remain intact. CAB also retains projectless threads, pins, section membership and useful display names. Empty or working-directory titles cannot replace a useful name. Missing rows are imported only from an existing official index and a verified shared rollout, retaining that thread’s original settings; existing approval, sandbox, archive and runtime fields are never overwritten. The outgoing account supplies explicit pin/unpin and membership edits. Desktop migrations additionally retain legacy pins, per-host pin order and local/remote sidebar membership. Unrelated account tables and trust settings stay untouched.
 
 Repair already stale indexes without stopping running tasks:
 
@@ -312,7 +319,6 @@ Diagnostics inspect executable availability, directories, symlinks, transaction 
 ## Non-goals
 
 - Automatic switching based on quota, rate limits, authentication failures, or runtime errors.
-- A third-party OpenAI-compatible API proxy.
 - Custom OAuth, token import/export, or a browser-based token dashboard.
 - Real-time replication of Codex internal databases between machines.
 - Changing Codex approval, sandbox, or project-trust behavior.

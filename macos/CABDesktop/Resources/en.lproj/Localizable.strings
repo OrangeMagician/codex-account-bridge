@@ -579,6 +579,20 @@
 "退出所选账号的客户端并重新打开，以加载已保存的会话。" = "Quit and reopen the selected account’s client to load saved conversations.";
 "将退出并重新打开“%@”的客户端。该账号正在运行的任务会中断，请先保存未发送的内容。" = "The client for “%@” will quit and reopen. Running tasks for this account will be interrupted. Save unsent text first.";
 "账号窗口未能退出，请保存任务后重试。" = "The account window could not quit. Save your work and try again.";
+"本地模型接口" = "Local model API";
+"服务未就绪" = "Service unavailable";
+"未启动" = "Stopped";
+"停止服务" = "Stop service";
+"启动服务" = "Start service";
+"服务账号" = "Service account";
+"切换后，新请求及客户端附带的对话历史将使用所选账号。" = "New requests and any conversation history sent by the client will use the selected account.";
+"请求地址" = "Base URL";
+"允许的客户端 IP" = "Allowed client IP";
+"监听地址" = "Listen address";
+"复制 API 密钥" = "Copy API key";
+"已复制" = "Copied";
+"模型 ID" = "Model ID";
+"同花顺可填写实际模型 ID，或使用 模型@推理强度。追加 @fast 开启快速档位。省略推理强度时用 medium，省略速度时用普通速度。" = "Enter a real model ID or MODEL@EFFORT in the client. Append @fast for fast speed. Omit it for standard speed. Omitted effort uses medium.";
 
 // Reset card usage history
 "手动使用" = "Manual";
