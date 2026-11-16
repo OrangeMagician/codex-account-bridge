@@ -198,7 +198,7 @@ extension CABStore {
                 self.isBusy = true
                 defer { self.usageResettingAccount = nil; self.isBusy = false }
                 return try await self.service.resetUsage(target: endpoint.target, remoteHost: endpoint.host,
-                                                         accountName: account, creditID: credit, idempotencyKey: id)
+                                                         accountName: account, creditID: credit, idempotencyKey: id, trigger: .automatic)
             },
             cache: { endpoint, reports in self.cacheUsageWakeReports(reports, cacheKey: endpoint.key) }
         )

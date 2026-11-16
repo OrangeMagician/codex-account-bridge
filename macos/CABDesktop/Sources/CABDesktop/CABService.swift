@@ -67,7 +67,12 @@ final class CommandOutputBuffer: @unchecked Sendable {
 final class CABService {
     private let executableOverride: URL?
 
-    init(executable: URL? = nil) { executableOverride = executable }
+    private let resetHistory: UsageResetHistory?
+
+    init(executable: URL? = nil, resetHistory: UsageResetHistory? = nil) {
+        executableOverride = executable
+        self.resetHistory = resetHistory
+    }
     private let fileManager = FileManager.default
     private let executionLock = NSLock()
     private var readExecutions: [UUID: CommandExecution] = [:]
@@ -234,13 +239,24 @@ final class CABService {
         }
     }
 
+    @MainActor
     func resetUsage(
         target: BridgeTarget,
         remoteHost: String,
         accountName: String,
         creditID: String?,
-        idempotencyKey: UUID
+        idempotencyKey: UUID,
+        trigger: UsageResetTrigger = .manual
     ) async throws -> UsageResetResult {
+        try await (resetHistory ?? UsageResetHistory.shared).perform(id: idempotencyKey, account: accountName,
+                                                  target: target, host: remoteHost, trigger: trigger) {
+            try await self.executeUsageReset(target: target, remoteHost: remoteHost, accountName: accountName,
+                                            creditID: creditID, idempotencyKey: idempotencyKey)
+        }
+    }
+
+    private func executeUsageReset(target: BridgeTarget, remoteHost: String, accountName: String,
+                                   creditID: String?, idempotencyKey: UUID) async throws -> UsageResetResult {
         var arguments = [
             "usage", "reset",
             "--account", accountName,

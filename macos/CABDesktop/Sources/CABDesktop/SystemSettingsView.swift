@@ -61,6 +61,8 @@ struct SystemSettingsView: View {
                     UsageWakeControlsView(pendingEnable: $pendingUsageWakeEnable, isExpanded: $usageWakeExpanded)
                 }.padding(8)
             } label: { Text("自动任务") }
+
+            UsageResetHistoryView(history: .shared)
         }
     }
 

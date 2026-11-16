@@ -254,7 +254,7 @@ struct UsageResetAutomationTests {
             """
             try script.write(to: executable, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
-            let store = CABStore(service: CABService(executable: executable), desktopHome: { .notRunning }, usageResetAutomation: fixture.automation)
+            let store = CABStore(service: CABService(executable: executable, resetHistory: UsageResetHistory(defaults: fixture.defaults)), desktopHome: { .notRunning }, usageResetAutomation: fixture.automation)
             store.remoteServers = []
             store.usageRefreshInterval = .manual
             store.usageWakeSettings.enabled = true
@@ -271,6 +271,10 @@ struct UsageResetAutomationTests {
             #expect(store.usageResetResult == nil) // automation never opens a result dialog
             #expect(store.usageResettingAccount == nil && !store.isBusy)
             #expect(store.usageByAccount[account]?.usage != nil)
+            let recorded = UsageResetHistory(defaults: fixture.defaults).entries
+            #expect(recorded.count == 1)
+            #expect(recorded.first?.trigger == .automatic)
+            #expect(recorded.first?.account == account && recorded.first?.outcome == .reset)
         }
     }
 

@@ -579,3 +579,17 @@
 "退出所选账号的客户端并重新打开，以加载已保存的会话。" = "Quit and reopen the selected account’s client to load saved conversations.";
 "将退出并重新打开“%@”的客户端。该账号正在运行的任务会中断，请先保存未发送的内容。" = "The client for “%@” will quit and reopen. Running tasks for this account will be interrupted. Save unsent text first.";
 "账号窗口未能退出，请保存任务后重试。" = "The account window could not quit. Save your work and try again.";
+
+// Reset card usage history
+"手动使用" = "Manual";
+"自动使用" = "Automatic";
+"使用成功" = "Used successfully";
+"已兑换（本次未重复使用）" = "Already redeemed (no additional use)";
+"无需重置（未使用）" = "No reset needed (not used)";
+"无可用卡（未使用）" = "No card available (not used)";
+"结果未确认，请刷新额度核对" = "Result unconfirmed; refresh usage to verify";
+"等待使用结果" = "Awaiting result";
+"暂无使用记录" = "No usage records yet";
+"显示更多" = "Show more";
+"记录本机发起的手动和自动使用，重启后保留。从此版本开始记录，之前的使用无法补录。" = "Records manual and automatic uses initiated by this Mac, including remote accounts. History survives restarts and starts with this version; earlier uses cannot be recovered.";
+"重置卡使用记录" = "Reset card usage history";
